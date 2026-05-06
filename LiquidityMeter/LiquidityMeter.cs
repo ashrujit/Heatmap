@@ -2,12 +2,14 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TradingPlatform.BusinessLayer;
+using TradingPlatform.BusinessLayer.Chart;
+using TradingPlatform.BusinessLayer.Native;
 
 namespace LiquidityMeter
 {
     public class LiquidityMeter : Indicator
     {
-        private const string IndicatorVersion = "0.1.0";
+        private const string IndicatorVersion = "0.2.0";
 
         // ── Detection (sortIndex 900-905) ───────────────────────────────────
         [InputParameter("Lookback Seconds (rolling baseline)", sortIndex: 900,
@@ -86,6 +88,12 @@ namespace LiquidityMeter
         private ConcurrentQueue<Level2Quote> _l2Queue;
         private bool _l2Subscribed;
         private DateTime _lastSampleUtc = DateTime.MinValue;
+
+        // Manual-click anchor override: set by left-click on the meter strip,
+        // cleared by right-click. Wins over the configured Anchor Mode while
+        // active. Cleared on indicator unload (in-memory only).
+        private DateTime? _manualAnchorUtc;
+        private IChart _subscribedChart;
 
         public LiquidityMeter() : base()
         {
@@ -225,8 +233,23 @@ namespace LiquidityMeter
         {
             try
             {
+                // Lazy chart subscribe — CurrentChart isn't reliably non-null
+                // until first paint.
+                if (_subscribedChart == null)
+                {
+                    var chart = this.CurrentChart;
+                    if (chart != null)
+                    {
+                        chart.MouseClick += Chart_MouseClick;
+                        _subscribedChart = chart;
+                    }
+                }
+
                 if (_painter != null && _engine != null)
+                {
+                    _painter.ManualAnchorUtc = _manualAnchorUtc;
                     _painter.Paint(args, _engine);
+                }
             }
             catch (Exception ex)
             {
@@ -240,6 +263,35 @@ namespace LiquidityMeter
             }
         }
 
+        private void Chart_MouseClick(object sender, ChartMouseNativeEventArgs e)
+        {
+            if (_painter == null || _engine == null) return;
+            var hit = _painter.LastHitRect;
+            if (hit.Width <= 0 || hit.Height <= 0) return;
+            if (e.X < hit.Left || e.X > hit.Right) return;
+            if (e.Y < hit.Top  || e.Y > hit.Bottom) return;
+
+            if (e.Button == NativeMouseButtons.Left)
+            {
+                // Left-click sets anchor at NOW. The semantic is "I just entered /
+                // started caring about this moment" — same posture as Codex
+                // suggested but with the anchor at click instant rather than at
+                // a clicked-bar timestamp (avoids accidental backdating).
+                _manualAnchorUtc = DateTime.UtcNow;
+                _engine.RollingAnchorWindow = null;     // disable rolling re-anchor
+                _engine.SetAnchor(_manualAnchorUtc.Value);
+                e.NeedRedraw = true;
+                e.Handled = true;
+            }
+            else if (e.Button == NativeMouseButtons.Right && _manualAnchorUtc.HasValue)
+            {
+                _manualAnchorUtc = null;
+                ApplyAnchor(_engine, DateTime.UtcNow);   // restore configured mode
+                e.NeedRedraw = true;
+                e.Handled = true;
+            }
+        }
+
         protected override void OnClear()
         {
             try
@@ -249,11 +301,17 @@ namespace LiquidityMeter
                     try { this.Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
                     _l2Subscribed = false;
                 }
+                if (_subscribedChart != null)
+                {
+                    try { _subscribedChart.MouseClick -= Chart_MouseClick; } catch { }
+                    _subscribedChart = null;
+                }
                 _painter = null;
                 _engine = null;
                 _bookState?.Clear();
                 _bookState = null;
                 _l2Queue = null;
+                _manualAnchorUtc = null;
             }
             catch { }
         }

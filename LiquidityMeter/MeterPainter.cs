@@ -39,6 +39,12 @@ namespace LiquidityMeter
         public int VodFadeSeconds = 6;
         public int VodCountForFullSteady = 4;   // VOD events in last 30s for max steady-fill
 
+        // Manual-anchor override. When set, painter renders the asterisk + timestamp
+        // line and the indicator's MouseClick handler uses LastHitRect to decide
+        // whether a click landed on the meter.
+        public DateTime? ManualAnchorUtc;
+        public Rectangle LastHitRect;           // written each Paint; read by hit-test on click
+
         private static readonly Color BullColor   = Color.FromArgb(80, 200, 110);
         private static readonly Color BearColor   = Color.FromArgb(225, 75, 75);
         private static readonly Color CenterColor = Color.FromArgb(180, 160, 160, 160);
@@ -70,7 +76,7 @@ namespace LiquidityMeter
             const int topPad = 10;
             const int gap = 14;
             const int labelLineHeight = 14;
-            const int labelsCount = 4;
+            int labelsCount = ManualAnchorUtc.HasValue ? 5 : 4;  // extra @HH:MM:SS line
             int labelsH = labelsCount * labelLineHeight + 4;
 
             int rocTop = regionTop + topPad;
@@ -222,7 +228,8 @@ namespace LiquidityMeter
                 using var labelBrush = new SolidBrush(LabelColor);
 
                 int y = labelsTop;
-                g.DrawString($"cum {(cum >= 0 ? "+" : "")}{cum:0.0}",
+                string cumTag = ManualAnchorUtc.HasValue ? "cum*" : "cum";
+                g.DrawString($"{cumTag} {(cum >= 0 ? "+" : "")}{cum:0.0}",
                              labelFont, labelBrush, labelLeft, y);
                 y += labelLineHeight;
                 g.DrawString($"roc {(roc >= 0 ? "+" : "")}{roc:0.0}",
@@ -235,6 +242,33 @@ namespace LiquidityMeter
                 y += labelLineHeight;
                 g.DrawString($"n={engine.EventCount}",
                              labelFont, labelBrush, labelLeft, y);
+
+                if (ManualAnchorUtc.HasValue)
+                {
+                    y += labelLineHeight;
+                    string anchorLocal;
+                    try
+                    {
+                        var ny = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+                        var t = TimeZoneInfo.ConvertTime(ManualAnchorUtc.Value, ny);
+                        anchorLocal = t.ToString("HH:mm:ss");
+                    }
+                    catch { anchorLocal = ManualAnchorUtc.Value.ToString("HH:mm:ss") + "Z"; }
+                    using var anchorBrush = new SolidBrush(Color.FromArgb(220, 200, 180, 80));
+                    g.DrawString($"@{anchorLocal}", labelFont, anchorBrush, labelLeft, y);
+                }
+
+                // Hit rect spans the visual region (ROC dial + VOD strip + cum bar +
+                // labels block). Indicator's MouseClick handler reads this to tell
+                // meter-region clicks from chart-area clicks.
+                int hitLeft = Math.Min(rocLeft, cumLeft) - 4;
+                int hitRight = Math.Max(vodLeft + vodWidth, cumLeft + CumBarWidth) + 4;
+                // Labels can extend right of the dial — give a generous right pad
+                // since "vod 12/30s" is wider than the dial when count is 2-digit.
+                hitRight = Math.Max(hitRight, labelLeft + 80);
+                int hitTop = rocTop - 4;
+                int hitBottom = labelsTop + labelsH + 2;
+                LastHitRect = new Rectangle(hitLeft, hitTop, hitRight - hitLeft, hitBottom - hitTop);
             }
             finally
             {

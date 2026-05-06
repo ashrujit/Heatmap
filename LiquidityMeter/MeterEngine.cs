@@ -141,7 +141,14 @@ namespace LiquidityMeter
 
             RecomputeCumulative();
             RecomputeROC(nowUtc);
-            EvictOlderThan(_events, nowUtc, _rocWindowSec * 6);  // keep generously
+            // Retention must cover the active anchor horizon. With only a
+            // rocWindow*6 floor, cum silently became a ~6min sum even when
+            // the configured anchor was rolling-30m / session / load.
+            int rocFloorSec = _rocWindowSec * 6;
+            int retentionSec = RollingAnchorWindow.HasValue
+                ? Math.Max(rocFloorSec, (int)RollingAnchorWindow.Value.TotalSeconds + _rocWindowSec)
+                : Math.Max(rocFloorSec, (int)Math.Max(0, (nowUtc - _anchorUtc).TotalSeconds) + _rocWindowSec);
+            EvictOlderThan(_events, nowUtc, retentionSec);
         }
 
         // bias_pos is the bias of the POSITIVE-z event. Negative-z gets the

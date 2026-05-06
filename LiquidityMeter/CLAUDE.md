@@ -51,7 +51,17 @@ The 12:47:00 inflection on 2026-05-05 (loss-trade narrative): cumulative had bee
 - **Indicator Load**: anchor fixed at the moment the indicator was added. Cum accumulates from there. Resets if indicator is removed/re-added.
 - **Session Start (NY 09:30)**: anchor at today's RTH open. Cum = full session lean.
 
-A manual click-anchor (mark anchor at trade entry) is the natural next addition but deferred to v0.2 — we want to validate the math first against several sessions before adding interaction surface.
+### Manual click-anchor (v0.2, override)
+
+Left-click anywhere inside the meter strip (ROC dial, VOD strip, cum bar, or labels block) → sets anchor at *now*. Right-click inside the strip → clears, reverts to whichever mode is configured above.
+
+Deliberately implemented as an **override**, not a fourth mode, so the existing dropdown semantics stay intact and a click always works regardless of the configured default. While active: `cum` label shows `cum*` and a `@HH:MM:SS` line (NY time) appears below the labels showing the anchor instant.
+
+Click target is restricted to the meter region — clicks elsewhere on the chart are unaffected (won't conflict with crosshair, drawing tools, or pan).
+
+In-memory only: clears on indicator unload. Same posture as Indicator Load mode.
+
+The anchor is set at the click instant, not at a clicked-bar timestamp. Backdating would have required converting click X to chart time and risks anchoring off-by-one if the click lands between bars; "anchor at now" matches the actual trader question ("I just entered, start counting from now").
 
 ## Architectural invariants
 

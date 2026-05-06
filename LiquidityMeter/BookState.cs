@@ -74,7 +74,10 @@ namespace LiquidityMeter
                 if (side.TryGetValue(priorTicks, out var priorLvl))
                 {
                     priorLvl.TotalSize -= prior.Size;
-                    if (priorTicks != newTicks)
+                    // Also drop the ID/level when shrinking to zero at the same
+                    // price — otherwise a non-Closed zero-size update leaves a
+                    // stale ID in the set with TotalSize == 0.
+                    if (priorTicks != newTicks || q.Size <= 0)
                     {
                         priorLvl.Ids.Remove(q.Id);
                         if (priorLvl.TotalSize <= 0 || priorLvl.Ids.Count == 0)
