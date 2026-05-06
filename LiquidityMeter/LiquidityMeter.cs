@@ -1,0 +1,261 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using TradingPlatform.BusinessLayer;
+
+namespace LiquidityMeter
+{
+    public class LiquidityMeter : Indicator
+    {
+        private const string IndicatorVersion = "0.1.0";
+
+        // ── Detection (sortIndex 900-905) ───────────────────────────────────
+        [InputParameter("Lookback Seconds (rolling baseline)", sortIndex: 900,
+            minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
+        public int LookbackSeconds = 30;
+
+        [InputParameter("Event Z Threshold", sortIndex: 901,
+            minimum: 1.5, maximum: 5.0, increment: 0.1, decimalPlaces: 2)]
+        public double EventZThreshold = 2.5;
+
+        [InputParameter("ROC Window Seconds", sortIndex: 902,
+            minimum: 15, maximum: 300, increment: 5, decimalPlaces: 0)]
+        public int ROCWindowSeconds = 60;
+
+        [InputParameter("Sample Interval (ms)", sortIndex: 903,
+            minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
+        public int SampleIntervalMs = 1000;
+
+        [InputParameter("Anchor Mode", sortIndex: 904, variants: new object[]
+        {
+            "Rolling Window",  AnchorModeRolling,
+            "Indicator Load",  AnchorModeLoad,
+            "Session Start (NY 09:30)", AnchorModeSession,
+        })]
+        public int AnchorMode = AnchorModeRolling;
+
+        [InputParameter("Rolling Anchor Minutes (when Anchor=Rolling)", sortIndex: 905,
+            minimum: 5, maximum: 240, increment: 5, decimalPlaces: 0)]
+        public int RollingAnchorMin = 30;
+
+        // ── Render (sortIndex 910-915) ──────────────────────────────────────
+        [InputParameter("Meter Left Offset (px)", sortIndex: 910,
+            minimum: 4, maximum: 400, increment: 2, decimalPlaces: 0)]
+        public int MeterLeftOffsetPx = 70;
+
+        [InputParameter("Cum Bar Width (px)", sortIndex: 911,
+            minimum: 8, maximum: 60, increment: 2, decimalPlaces: 0)]
+        public int CumBarWidth = 18;
+
+        [InputParameter("ROC Dial Width (px)", sortIndex: 915,
+            minimum: 30, maximum: 200, increment: 5, decimalPlaces: 0)]
+        public int RocDialWidth = 90;
+
+        [InputParameter("ROC Dial Height (px)", sortIndex: 916,
+            minimum: 12, maximum: 50, increment: 2, decimalPlaces: 0)]
+        public int RocDialHeight = 22;
+
+        [InputParameter("VOD Strip Width (px)", sortIndex: 917,
+            minimum: 6, maximum: 40, increment: 2, decimalPlaces: 0)]
+        public int VodStripWidth = 14;
+
+        [InputParameter("VOD Steady-Glow Saturation Count (events/30s)", sortIndex: 918,
+            minimum: 1, maximum: 20, increment: 1, decimalPlaces: 0)]
+        public int VodCountForFullSteady = 4;
+
+        [InputParameter("Meter Height (% of chart)", sortIndex: 912,
+            minimum: 20, maximum: 90, increment: 5, decimalPlaces: 0)]
+        public int MeterHeightPercent = 55;
+
+        [InputParameter("Cum Scale (full bar at this magnitude)", sortIndex: 913,
+            minimum: 5, maximum: 200, increment: 5, decimalPlaces: 0)]
+        public double CumScale = 30.0;
+
+        [InputParameter("ROC Scale (full needle deflection at this magnitude)", sortIndex: 914,
+            minimum: 2, maximum: 50, increment: 1, decimalPlaces: 0)]
+        public double ROCScale = 10.0;
+
+        public const int AnchorModeRolling = 0;
+        public const int AnchorModeLoad    = 1;
+        public const int AnchorModeSession = 2;
+
+        // ── Internal state ──────────────────────────────────────────────────
+        private BookState _bookState;
+        private MeterEngine _engine;
+        private MeterPainter _painter;
+        private ConcurrentQueue<Level2Quote> _l2Queue;
+        private bool _l2Subscribed;
+        private DateTime _lastSampleUtc = DateTime.MinValue;
+
+        public LiquidityMeter() : base()
+        {
+            this.Name = "Liquidity Meter";
+            this.SeparateWindow = false;
+        }
+
+        public override IList<SettingItem> Settings
+        {
+            get
+            {
+                var settings = base.Settings;
+                if (settings != null)
+                {
+                    var grpDetect = new SettingItemSeparatorGroup("Detection", 900);
+                    var grpRender = new SettingItemSeparatorGroup("Render", 910);
+                    foreach (var item in settings)
+                    {
+                        if (item == null) continue;
+                        if (item.SortIndex >= 900 && item.SortIndex < 910)
+                            item.SeparatorGroup = grpDetect;
+                        else if (item.SortIndex >= 910 && item.SortIndex < 920)
+                            item.SeparatorGroup = grpRender;
+                    }
+                }
+                return settings;
+            }
+            set => base.Settings = value;
+        }
+
+        protected override void OnInit()
+        {
+            try
+            {
+                if (this.Symbol == null) return;
+                double tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
+
+                _bookState = new BookState(tickSize);
+                _engine = new MeterEngine(LookbackSeconds, EventZThreshold, ROCWindowSeconds);
+                ApplyAnchor(_engine, DateTime.UtcNow);
+
+                _painter = new MeterPainter
+                {
+                    LeftOffsetPx = MeterLeftOffsetPx,
+                    CumBarWidth = CumBarWidth,
+                    RocDialWidth = RocDialWidth,
+                    RocDialHeight = RocDialHeight,
+                    VodStripWidth = VodStripWidth,
+                    VodCountForFullSteady = VodCountForFullSteady,
+                    MeterHeightFraction = MeterHeightPercent / 100.0,
+                    CumScale = CumScale,
+                    ROCScale = ROCScale,
+                };
+                _l2Queue = new ConcurrentQueue<Level2Quote>();
+
+                this.Symbol.NewLevel2 += Symbol_NewLevel2;
+                _l2Subscribed = true;
+            }
+            catch (Exception ex)
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(LiquidityMeter)}] OnInit failed: {ex.Message}",
+                    LoggingLevel.Error);
+            }
+        }
+
+        private void ApplyAnchor(MeterEngine eng, DateTime nowUtc)
+        {
+            switch (AnchorMode)
+            {
+                case AnchorModeRolling:
+                    eng.RollingAnchorWindow = TimeSpan.FromMinutes(RollingAnchorMin);
+                    eng.SetAnchor(nowUtc - eng.RollingAnchorWindow.Value);
+                    break;
+                case AnchorModeLoad:
+                    eng.RollingAnchorWindow = null;
+                    eng.SetAnchor(nowUtc);
+                    break;
+                case AnchorModeSession:
+                    eng.RollingAnchorWindow = null;
+                    eng.SetAnchor(NyTodaysSessionStart());
+                    break;
+            }
+        }
+
+        private static DateTime NyTodaysSessionStart()
+        {
+            // 09:30 New York time, today, in UTC.
+            try
+            {
+                var ny = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+                var nowNy = TimeZoneInfo.ConvertTime(DateTime.UtcNow, ny);
+                var todayOpen = new DateTime(nowNy.Year, nowNy.Month, nowNy.Day,
+                                             9, 30, 0, DateTimeKind.Unspecified);
+                return TimeZoneInfo.ConvertTimeToUtc(todayOpen, ny);
+            }
+            catch
+            {
+                return DateTime.UtcNow.Date.AddHours(13).AddMinutes(30);  // fallback ~13:30 UTC
+            }
+        }
+
+        private void Symbol_NewLevel2(Symbol symbol, Level2Quote l2, DOMQuote dom)
+        {
+            if (l2 == null) return;
+            _l2Queue?.Enqueue(l2);
+        }
+
+        protected override void OnUpdate(UpdateArgs args)
+        {
+            if (_l2Queue == null || _bookState == null || _engine == null) return;
+
+            // Drain L2 deltas onto the live book.
+            while (_l2Queue.TryDequeue(out var q))
+            {
+                try { _bookState.Apply(q); }
+                catch { /* skip bad quote */ }
+            }
+
+            // Fixed-cadence book sample — independent of L2 burst rate. The
+            // research data is at 1 Hz; we match that by default.
+            var now = DateTime.UtcNow;
+            if ((now - _lastSampleUtc).TotalMilliseconds >= SampleIntervalMs)
+            {
+                _lastSampleUtc = now;
+                try { _engine.OnSample(now, _bookState); }
+                catch (Exception ex)
+                {
+                    Core.Instance.Loggers.Log(
+                        $"[{nameof(LiquidityMeter)}] sample failed: {ex.Message}",
+                        LoggingLevel.Error);
+                }
+            }
+        }
+
+        public override void OnPaintChart(PaintChartEventArgs args)
+        {
+            try
+            {
+                if (_painter != null && _engine != null)
+                    _painter.Paint(args, _engine);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    Core.Instance.Loggers.Log(
+                        $"[{nameof(LiquidityMeter)}] paint failed: {ex.Message}",
+                        LoggingLevel.Error);
+                }
+                catch { }
+            }
+        }
+
+        protected override void OnClear()
+        {
+            try
+            {
+                if (_l2Subscribed && this.Symbol != null)
+                {
+                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
+                    _l2Subscribed = false;
+                }
+                _painter = null;
+                _engine = null;
+                _bookState?.Clear();
+                _bookState = null;
+                _l2Queue = null;
+            }
+            catch { }
+        }
+    }
+}

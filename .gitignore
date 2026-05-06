@@ -1,0 +1,41 @@
+# Build artifacts ─────────────────────────────────────────────────────
+**/bin/
+**/obj/
+*.pdb
+
+# IDE / editor state ──────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# Python (research/) ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+.python-version
+
+# Research outputs ────────────────────────────────────────────────────
+# Generated CSVs from research/liq_events.py and similar — large,
+# regenerable from captures, no value in version-controlling.
+research/out/
+
+# Captures ────────────────────────────────────────────────────────────
+# Should never land in the repo (they live under Quantower's deploy
+# tree), but defensive: any captures/ folder under any path is excluded.
+captures/
+
+# Decompiled QT API reference ─────────────────────────────────────────
+# 16+ MB of decompiled BusinessLayer materials. Easily re-extracted
+# from a QT install; no point bloating the repo. See root CLAUDE.md.
+api-recon/
+
+# OS detritus ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs ────────────────────────────────────────────────────────────────
+*.log
