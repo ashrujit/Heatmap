@@ -195,6 +195,80 @@ Today's session was not captured (no `snapshots-2026-05-06.parquet` exists). **R
 
 ---
 
+## Session 2026-05-07 — liquidation day + VOD-as-fragility-indicator observation
+
+NQ liquidation-day session: price 28868 → 28600, ~270 pts down. User didn't lean on cum/ROC for decision-making (paid more attention to ladder), but contributed an important observation about VOD now that it's visible.
+
+### User's VOD observation (worth permanent capture)
+
+> "vod usually flickered when level/position might get taken out, especially at swing points when range behavior started"
+
+Two distinct contexts the user named:
+1. **Level / position about to break** — VOD spikes
+2. **Swing points where range behavior begins** — VOD spikes
+
+Structurally this is exactly what σ-belief theory would predict: VOD = rolling stdev of Δinner_depth = rate at which providers are *changing* their depth. Heavy VOD means providers are repositioning rapidly. That happens at:
+- **Level fragility moments**: some providers exiting (defenders giving up), others stepping in (new participants taking the level), all in seconds → high Δinner_depth variance.
+- **Regime transitions** (trend → range, range → trend): providers shift from "fade the move" posture to "set the new range" posture (or vice versa). Same population repositioning their σ-expectation.
+
+VOD isn't measuring direction; it's measuring **how unsettled provider conviction is at this moment**. That makes it a *fragility / regime-shift signal*, complementary to the directional cum/ROC.
+
+### Today's data confirms this is a heavy regime
+
+Top 20 events |z|-sorted are dominated by VOD:
+
+```
+12:15:48  VOD z=+10.26  @ 28651.75  inner=598    ← largest of the day
+14:00:12  VOD z= +8.70  @ 28696.75
+14:44:45  VOD z= +8.31  @ 28600.25  ← at session low (level break)
+13:29:24  VOD z= +8.19  @ 28619.50
+09:48:58  VOD z= +7.89  @ 28727.00
+13:22:45  VOD z= +7.61  @ 28655.25
+13:54:44  VOD z= +6.63  @ 28629.50
+11:19:54  VOD z= +6.54  @ 28868.75  ← at session high (level break — opposite side)
+14:12:15  VOD z= +6.53  @ 28676.00
+14:18:51  VOD z= +6.38  @ 28705.50
+10:36:52  VOD z= +6.20  @ 28870.75  ← also near session high
+12:02:21  VOD z= +5.99  @ 28765.75
+```
+
+12 of 20 top events are VOD spikes. Several cluster at session extremes (28868 = day high near 11:19 / 10:36; 28600 = day low at 14:44:45). **The user's hypothesis is supported by the data on this session**: VOD spikes correlate with level-break moments. The 12:15:48 event is the strongest of the day (z=10.26) at inner=598 — way above median ~300, suggesting a major participant repositioning a lot of size in seconds.
+
+### Daily summary
+
+```
+BID_BUILD  253   ┐
+ASK_OUT    173   ├─ 597 bullish
+BID_IN     112   │
+ASK_PULL    59   ┘
+ASK_BUILD  242   ┐
+BID_OUT    226   ├─ 651 bearish
+ASK_IN     126   │
+BID_PULL    57   ┘
+VOL_OF_DEPTH_SPIKE 136 (neutral)
+```
+
+Asymmetry = (597 - 651) / (597 + 651) = **-0.043** (mild bear lean). Compare to 2026-05-05 (+0.045 bull on a directional-up day). The asymmetry sign matched price direction both days, with similar small magnitudes (~0.04 each side). Whether this metric distinguishes regime types (trend vs balance vs forced-flow) needs more sessions.
+
+### Cross-correlogram
+
+Peak at lag **+5s** (corr +0.1118), slightly biased to *positive* lag — which would mean RV slightly leads VOD (provider repositioning trails realized vol). Opposite of the σ-belief-leads-RV hypothesis. **One day, no signal yet**, but on a forced-flow regime day it's structurally consistent: liquidation-driven vol spikes happen first, providers reposition after. The hypothesis predicts negative-k peaks on *normal* discretionary regimes; tracking this peak's drift across regime types is the long-game.
+
+### Implication for the meter
+
+VOD-as-fragility makes the indicator more useful than pure "chaos noise" framing. New mental model: **a strong VOD glow at a swing point is a regime-transition warning shot**. Combined with cum/ROC reading:
+- Strong VOD + cum and ROC aligned with current price direction → "trend continuing, but some level turbulence — watch for breaks of nearby levels"
+- Strong VOD + cum/ROC diverging from price → "regime shifting; the meter's directional read is about to update; be cautious about leaning on the current cum interpretation"
+- Strong VOD at a session extreme → "this level is being tested and contested; outcome is fragile"
+
+Keep VOD detection on. Worth tracking session-over-session whether VOD events cluster at user-identified swing points (manual marking would help for that study).
+
+### Code changes this session
+
+- L2_Heatmap & LiquidityMeter `BookState.cs`: fixed a stale-ID bug. Original logic only removed the order ID when the *price changed*; on a non-Closed quote update where size shrinks to zero at the *same price*, the ID was kept in the set with `TotalSize == 0`, eventually leaking. Fix: also drop the ID/level when `q.Size <= 0` even at the same price. Both mirror copies updated.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.

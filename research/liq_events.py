@@ -32,7 +32,7 @@ except Exception: pass
 
 LIVE = r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\NQM6"
 COPY = r"C:\Users\j\AppData\Local\Temp\cap_copy"  # used while live writer holds lock
-SESSION = "2026-05-05"
+SESSION = "2026-05-07"
 INNER_LEVELS = 10
 BROAD_LEVELS = 30
 ROLL_S = 30                   # rolling-window seconds for baselines
