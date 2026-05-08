@@ -269,6 +269,127 @@ Keep VOD detection on. Worth tracking session-over-session whether VOD events cl
 
 ---
 
+## Session 2026-05-07 (continued) — design conversation: indicator suite plan + L2_Heatmap demotion
+
+User came back through today's session after the live trading retro and walked three decision windows from today against the captured events:
+
+1. **11:24–11:38 — VWAP touch + 880 fizzle** (the trade where user bought 28875/28880, flattened at BE, then read VPOC accumulation correctly as distribution-lower)
+2. **11:38–12:18 — down leg into 28640s** (where user took the short but couldn't add into the fast-ladder leg)
+3. **12:18–12:55 — bounce to 28760 + open rejection** (where user identified the rejection but anxiety overrode the entry)
+
+The retro produced a permanent set of design fixtures + design laws + a multi-indicator build plan. This session's content informs everything we ship next.
+
+### Three fixtures from 2026-05-07 (canonical)
+
+**Fixture A — distribution-while-rallying (11:24–11:38)**
+
+The 11:26:54 VWAP touch at 28834 had a legitimate responsive-buy signature: `ASK_OUT z=3.69 + ASK_PULL z=-2.84` at the touch tick paired with `BID_BUILD` z=2.51/2.68/2.94 stacked at 28842/28848 over the next two minutes. Cum momentarily improved from -12 → -0.5; ROC peaked +5.3 by 11:28. *Same shape as the 2026-05-05 win-trade at 28050.75.*
+
+But from 11:30 onward, **five `ASK_BUILD` events with z>2.5 fired between 28874 and 28888** in 7 minutes (11:30:48, 11:32:50, 11:35:10, 11:36:08, 11:37:31). Three `ASK_IN` (sellers leaning into top-of-book offers). No `BID_BUILD ≥ 3` below price in this stretch. The only strong bull event was at the very top: `BID_BUILD z=4.19 + BID_IN z=-4.08 + VOD z=4.0` at 28894.75 at 11:37:45 — the "fragility-at-swing-point" signature, landed on the top tick.
+
+**Cum/ROC at 11:32:09 (when user bought 28880): cum –17.2, ROC –5.4**. Cum stayed pinned bear through the entire arc, never recovered, contrasting sharply with the 05-05 win-trade where cum climbed monotonically positive across scale-ins. The 05-05 rule applied verbatim: *ROC alone is a warning shot; cum following ROC is the confirmation.* Cum never followed.
+
+**Fixture B — down-leg add zones in fast liquidation (11:38–12:18)**
+
+User couldn't add into the ladder once it accelerated. The events stream had clean re-add zones at every level where `ASK_BUILD ≥ 3` reasserted on a small bounce:
+- 28859 (11:48:50, z=4.01 + VOD 3.17)
+- 28831 (11:50:27, z=**4.87**) — at the prior VWAP test from below
+- 28812 (11:55:41, z=3.20)
+- 28786 (11:58:06, z=3.52)
+- 28722 (12:11:42, z=**4.44**) — last clean layer before the climax leg
+
+Bid-vacuum companion signals (the leg-not-done tells, distinct from add zones): 12:00:32 BID_OUT z=3.76 @ 28757; 12:08:02 BID_OUT z=3.61 @ 28720; 12:15:04–17 cascade @ 28678 → 28669 → 28660. The "stop adding" tell was the day's loudest event: 12:15:48 VOD z=**10.26** + BID_BUILD z=5.19 at 28651.75 (inner_depth 70 → 598 in one snapshot).
+
+**Fixture C — bounce-rejection at supply (12:18–12:55)**
+
+Cum bounced briefly to +5 by 12:30. Then **12:31:42 ASK_BUILD z=4.19 + VOD z=3.21 + ASK_IN z=-2.91 at 28744** — triple-fire. Cum flipped +3 → –7 in 30 seconds, ROC tanked to –10. From 12:31:42 onward cum monotonically deteriorated to –51.5 by 12:47.
+
+Cascading supply: 28756 (12:36:20, z=3.97), 28737 (12:41:45, z=3.42), 28734 (12:42:21), 28727 (12:43:34), 28720 (12:47:45, z=3.17). Each bounce attempt got sold into. **28744 was the structural rejection; 28732–28737 was the second clean entry, 12–15 ticks better than where user actually engaged at 28720.** Anxiety-about-position-average overrode an unambiguous structural signal.
+
+### LiquidityMeter v0.2 manual-anchor click — first validated live use
+
+User clicked the meter to anchor at ~11:32:09 when buying 28880. From the anchor cum painted **flat**, ROC painted **red**. User initially read this as "feature broken — shouldn't this reset on a bull leg." On reflection: math was correct.
+
+Post-anchor 11:32:09 → 11:35:00 weights:
+- Bull events: BID_BUILD z=3.55 at 28882 (only one) → ~3.5 weight
+- Bear events: BID_OUT 3.10 + ASK_BUILD 3.74 + ASK_IN 2.75 + BID_OUT 3.19 + BID_OUT 2.91 + VOD 2.71 → ~17 weight
+- Net cum ≈ –13, painted as flat-to-mildly-red on a +cum scale; ROC dominated by ASK_BUILD/BID_OUT cluster painting deep red.
+
+**Cum should have been "filling green" if the buy was leveraging into provider commitment. It wasn't.** The anchor surfaced absence-of-bull-commitment immediately, in real time. The failure mode it exposed was structural, not behavioral. First live validation of the manual-anchor feature.
+
+### Design laws confirmed/refined this session
+
+1. **Persistence-as-confirmation** (new). The 28744 structural rejection didn't act on its own — user saw it but didn't engage. The cascade *below* 28744 (28737, 28734, 28732) confirmed the rejection. Self-clearing markers would have lost the cascade structure that made the second entry tradeable. **L2 event markers should default to no-auto-clear**, configurable TTL but off by default, optional price-through clearing for BUILD-type events only. Direct user words: *"keeping them around for 10-15 mins is important... 737 is now the best available, take it before too late."*
+
+2. **Edge is a prompt, not a signal** (new). For climax/edge detection (L2_Flow), the line marks "level was contested, look here" — not "act now." Decision lives in what the bounce does after the line, read from L2_Events dots painting in the post-edge window. The indicator never tries to make the add/reverse/flatten call.
+
+3. **Eyes on the road, glance at the mile marker** (user's framing, locked). All indicators in the suite are guideposts in decision-making; none are decision-makers. Consistent across A/E, LiquidityMeter, SinglePrints, and the new L2_* family.
+
+### L2_Heatmap demotion decision
+
+User explicit: *"since the day 0 of making L2 Heatmap live, I haven't made a single practical use of it. rather the cum/roc has been useful from day 0."* Across three captured sessions (05-05 win/loss, 05-06 squeeze-day caveat, 05-07 liquidation), the cloud overlay drove zero decisions. The events stream + cum/ROC carried the full decision load, including all of today's retro analysis (no heatmap visualization was opened to derive any of the three fixtures above).
+
+**Decision**: keep `L2_Heatmap` capture infrastructure exactly as-is (it's the data foundation for everything else); make the cloud display a flippable toggle. Renamed `LiquidityHeatmapEnabled` display string to `"Show Heatmap Painting (capture is independent)"` (sortIndex 700) so the decoupling is obvious in the settings dialog. Default stays `true` for backward compat; user flips false on main chart, optionally true on a spare chart.
+
+No siblings (one project), no code restructure, no capture-path changes.
+
+### Indicator suite plan — five new indicators, each surfacing a different shape
+
+Each indicator paints a specific structural element. Together they layer into a complete view; alone each one is its own guidepost. All follow the design laws above.
+
+| # | Indicator | Surfaces | Today's signal |
+|---|---|---|---|
+| 1 | **L2_Events** | Per-tick BUILD/PULL/IN/OUT events as side-colored dots on price track | The 28744 → 28737 → 28734 cascade |
+| 2 | **L2_Inflection** | Cum-joins-ROC moments labeled at price level | The 11:32 anchor read; the 12:31:42 cum-flip |
+| 3 | **L2_Flow** | Vacuum-traversal *band* (vertical) + climax/thrash *lines* (horizontal) | 28619 climax line, 28651 climax line, 11:38–12:18 down-leg band |
+| 4 | **L2_Supply_Layer** | Same-side BUILDs clustered into horizontal bands | The 28732–28744 supply zone |
+| 5 | (L2_Heatmap demotion) | n/a — settings change only, no new indicator | shipped 2026-05-07 |
+
+Build order: 1 (smallest, foundational, reuses MeterEngine pattern) → 2 → 3 (most consequential, builds on pattern from 1+2) → 4. Each gets its own `CLAUDE.md` capturing design fixtures and rationale.
+
+### L2_Events specific design (locked in this session)
+
+- **Trigger**: any `BID_BUILD`/`ASK_BUILD`/`BID_PULL`/`ASK_PULL`/`BID_IN`/`ASK_IN`/`BID_OUT`/`ASK_OUT` with `|z| ≥ 3` (configurable). VOD spikes get their own neutral color.
+- **Color scheme**: 3 colors total. Blue = bull-leaning (BID_BUILD, BID_IN, ASK_OUT, ASK_PULL). Orange = bear-leaning (ASK_BUILD, ASK_IN, BID_OUT, BID_PULL). Amber = VOD (neutral / fragility). Side is meaningful; event-type-within-side is not. Trader doesn't need to remember 8 colors.
+- **Density via additive alpha**: each dot rendered at α≈70/255. Five overlapping dots → α≈245 = bright saturated cluster. No clustering logic. Cluster intensity emerges from rendering. Today's 12:31:42 28744 (3 events same tick) → loud blob; lone ASK_BUILD elsewhere → faint dot.
+- **Persistence**: default no auto-clear (full session). Configurable `Auto-Clear After (min)` defaults 0=never. Optional `Clear BUILDs On Price-Through` toggle, default off.
+- **Size**: 6×6 px default, configurable 4–12 range.
+- **No count badges, no labels.** Density alone communicates. *"intensity alone is enough."*
+
+### L2_Flow specific design (locked, build deferred to after L2_Events + L2_Inflection)
+
+- **Line trigger**: `VOD z≥5 AND any BUILD z≥4 within 5s at same tick`. Persistent until price-through. Line color amber (neutral — line marks level, not direction).
+- **Band trigger**: rolling 30s — vacuum-event density (count of OUT/PULL z≥3 same direction) AND RV elevated AND inner_depth thinning, all sustained for 10s. Band ends when criteria normalize for 30s. Band color tinted by vacuum direction (orange = bear flow, blue = bull flow). Vertical translucent strip across full chart height.
+- **Validation against 5/5 (trend day, +444pts)**: 4 fingerprint candidates fired (28087, 28107, 28139, 28147). On a trending day all eventually traded through upward → lines self-clear → indicator behaves correctly. Only `12:11:03 28147.5` was strictly contested (both BUILDs ≥4); others were one-sided.
+- **Validation against 5/7 (liquidation)**: 3 lines would fire (28765, 28651, 28619). None traded through up → lines accumulate → confirms regime. The 12:31:42 28744 case (`VOD only z=3.21`) does **not** fire L2_Flow line — it's a cascade-start, naturally handled by L2_Events dots + L2_Supply_Layer band. **The not-firing is correct division of labor.**
+
+### Future test cases (data not in capture; mark and validate when sessions accumulate)
+
+- **5/4 12:05pm** — flush worth flattening, no day reversal expected (Type A: continuation). News-driven crash 27711 → 27613 in 10s. Capture infrastructure was being built that session; not in parquet.
+- **5/6 9:30am** — failed initial drive lower (Type B: auction-failed-at-extreme). User added on the failure, plans for 27350. *Auction failure shape, not a vacuum* — would likely fire L2_Flow line without a band (gentler shape than today's flush+band+line). Capture was off (defaults bug).
+- **5/1 9:30am** — opening-range thin-air drive (Type C: vacuum screams "join"). User failed to tag on. Pre-capture.
+- **4/30 9:30am** — opening-range thin-air drive (Type C). User joined right price. Pre-capture.
+
+Three flush taxonomy types: continuation, auction-failed, thin-air-join. Same indicator surfaces them; trader read of post-edge dots discriminates. *"the indicator's job is identical across all three: paint the band, paint the line, paint the dots. The trader's job is different in each — and that's the design law working."*
+
+### The "right sequence" — canonical L2_Flow workflow target
+
+User's articulation of the intended trade arc that L2_Flow should support, paraphrased and locked:
+
+> 28641 lighten significantly (flush in progress, post-edge band still active, climax line forming) → 28744 / 28737 / 28735 add back **heavier than what was lightened by** (post-edge dots painting orange on bounce, line at 28744 holding as supply, structural confirmation) → flatten below 28608 (PD VVAH structural reference reached/breached, regime question resolved).
+
+Three different reads at three different timescales. Lighten = react to flush band. Add back = read post-edge dot character against climax line. Flatten = price interaction with structural reference (volume-profile / market-profile, NOT an L2 thing — indicator's job is just "we got here"). Richard's "if you see a flush, flatten" rule (Axia, ES-era 5-pt-was-mega-win) was correct at the lighten step; the user's nuance is that lightening prevents seeing the deeper structural pivots. The indicator suite should support both reads: the band = "lighten now," the post-edge dots + climax line = "add back here," and your VP framework = "flatten there."
+
+### Consolidation: one indicator (L2_Surface), four layers
+
+Mid-build the originally-planned four separate indicators (L2_Events, L2_Inflection, L2_Flow, L2_Supply_Layer) consolidated into a single `L2_Surface` indicator with toggleable layers. User flagged correctly that they share `BookState`, the event-detection math, the sample loop, and the thesis — four separate `.csproj`s would have meant four BookState copies, four L2 subscriptions, four sample loops, for no functional gain. Layers also compose better visually with explicit z-order (Flow band background → Build Bands → Climax → Inflection → Events dots in front) than as four independently-rendering chart instances.
+
+L2_Events (which had shipped earlier in this session as a standalone indicator) was deleted; its design + code folded into L2_Surface's Events layer. Same defaults (z=3.0, dot size 6, alpha 70, no auto-clear). The L2_Inflection scaffolding was discarded mid-creation; its math went into L2_Surface's Inflection layer. L2_Flow and L2_Supply_Layer never shipped as separate projects; they were built directly as layers from day one.
+
+Naming: "Surface" matches the design law ("surface structure, don't classify"). Single instance on the chart now hosts all four layers under one settings dialog with six grouped sections.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.

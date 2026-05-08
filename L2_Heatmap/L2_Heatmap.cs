@@ -10,7 +10,9 @@ namespace L2_Heatmap
         private const string IndicatorVersion = "0.1.0";
 
         // ── Liquidity Heatmap (sortIndex 700-707) ───────────────────────────
-        [InputParameter("Liquidity Heatmap Enabled", sortIndex: 700)]
+        // Capture below is independent of this flag — set to false on your
+        // main chart to turn off the cloud overlay while capture keeps writing.
+        [InputParameter("Show Heatmap Painting (capture is independent)", sortIndex: 700)]
         public bool LiquidityHeatmapEnabled = true;
 
         [InputParameter("Retention (sec)", sortIndex: 701,

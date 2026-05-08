@@ -75,6 +75,17 @@ Default 600 s × 2 Hz = 1200 snapshots × ~200 entries/side × 2 sides × ~16 by
 
 The `Settings` override on the indicator class wraps the eight `[InputParameter]` fields (sortIndex 700-707) in a `SettingItemSeparatorGroup("Liquidity Heatmap", 700)`. Without this override, Quantower renders the inputs ungrouped at the top of the dialog. `IList<SettingItem>` requires `using System.Collections.Generic;`.
 
+## Display vs capture decoupling (post-2026-05-07)
+
+The `Show Heatmap Painting` toggle (sortIndex 700, `LiquidityHeatmapEnabled` field) controls only the cloud overlay. **Capture is fully independent**: it consumes `BookState` directly, not the snapshot buffer. So the standard deployment is:
+
+- **Main trading chart**: `Show Heatmap Painting = false`. No clouds. Capture writes silently.
+- **Spare chart** (optional, separate chart instance): `Show Heatmap Painting = true`. Visual study only.
+
+When the toggle is false: `_heatmap` buffer is never created, `_painter.Heatmap` is null, and `ChartPainter.Paint` early-returns on the null check. Zero render cost, no snapshot-buffer memory (~7.7 MB peak savings), capture path untouched. Toggling to true via settings dialog triggers QT's standard re-init and the buffer rebuilds from live data.
+
+Why the demotion: through three sessions of live use (2026-05-05 to 2026-05-07), the cloud overlay never drove a single decision. The events stream + LiquidityMeter cum/ROC carried the entire decision load. The new indicator suite (L2_Events, L2_Inflection, L2_Flow, L2_Supply_Layer) replaces the cloud's "where is supply/demand parked" intuition with discrete, timestamped, self-clearing markers. The capture path remains the data foundation for everything else; the cloud is now opt-in.
+
 ## Capture (L2 + Ticks → parquet)
 
 Opt-in via `Capture Enabled`. When on, every `NewLevel2` drain pass also evaluates whether `CaptureSnapshotIntervalMs` has elapsed since the last capture; if so, the current `BookState` is sampled to a `SnapshotRow` and enqueued. `NewLast` events are subscribed only when capture is on, and each tick enqueues a `TickRow`. A background `Task` (kicked off in `OnInit`) wakes every 10 s and flushes the queues — appending a row group to the day's parquet file, snappy compression, day-partitioned files per symbol.
