@@ -30,9 +30,10 @@ from zoneinfo import ZoneInfo
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
-LIVE = r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\NQM6"
+SYMBOL_DIR = os.environ.get("SYMBOL_DIR", "NQM6")
+LIVE = rf"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\{SYMBOL_DIR}"
 COPY = r"C:\Users\j\AppData\Local\Temp\cap_copy"  # used while live writer holds lock
-SESSION = "2026-05-07"
+SESSION = os.environ.get("SESSION", "2026-05-07")
 INNER_LEVELS = 10
 BROAD_LEVELS = 30
 ROLL_S = 30                   # rolling-window seconds for baselines

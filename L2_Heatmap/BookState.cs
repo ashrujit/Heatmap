@@ -32,7 +32,7 @@ namespace L2_Heatmap
             _asks.Clear();
         }
 
-        public void Apply(Level2Quote q)
+        public void Apply(Level2Quote q, DateTime nowUtc)
         {
             if (q == null || string.IsNullOrEmpty(q.Id)) return;
             // Skip Quantower's pseudo-L2 events synthesized from L1 best-bid/ask changes
@@ -49,11 +49,15 @@ namespace L2_Heatmap
                 if (prior.Size > 0)
                 {
                     long priorTicks = PriceToTicks(prior.Price);
-                    if (side.TryGetValue(priorTicks, out var lvl))
+                    // Use prior.IsBid to find the level — current q.PriceType could
+                    // disagree if the feed ever recycles an ID across sides.
+                    var priorSide = prior.IsBid ? _bids : _asks;
+                    if (priorSide.TryGetValue(priorTicks, out var lvl))
                     {
                         lvl.TotalSize -= prior.Size;
                         lvl.Ids.Remove(q.Id);
-                        if (lvl.TotalSize <= 0 || lvl.Ids.Count == 0) side.Remove(priorTicks);
+                        lvl.LastUpdate = nowUtc;
+                        if (lvl.TotalSize <= 0 || lvl.Ids.Count == 0) priorSide.Remove(priorTicks);
                     }
                 }
                 _orders.Remove(q.Id);
@@ -71,17 +75,18 @@ namespace L2_Heatmap
             if (prior.Size > 0)
             {
                 long priorTicks = PriceToTicks(prior.Price);
-                if (side.TryGetValue(priorTicks, out var priorLvl))
+                // Same robustness: pick prior side from prior.IsBid, not current q.PriceType.
+                var priorSide = prior.IsBid ? _bids : _asks;
+                if (priorSide.TryGetValue(priorTicks, out var priorLvl))
                 {
                     priorLvl.TotalSize -= prior.Size;
-                    // Also drop the ID/level when shrinking to zero at the same
-                    // price — otherwise a non-Closed zero-size update leaves a
-                    // stale ID in the set with TotalSize == 0.
-                    if (priorTicks != newTicks || q.Size <= 0)
+                    priorLvl.LastUpdate = nowUtc;
+                    bool sameSlot = priorSide == side && priorTicks == newTicks && q.Size > 0;
+                    if (!sameSlot)
                     {
                         priorLvl.Ids.Remove(q.Id);
                         if (priorLvl.TotalSize <= 0 || priorLvl.Ids.Count == 0)
-                            side.Remove(priorTicks);
+                            priorSide.Remove(priorTicks);
                     }
                     else if (priorLvl.TotalSize < 0)
                     {
@@ -100,6 +105,45 @@ namespace L2_Heatmap
                 }
                 newLvl.TotalSize += q.Size;
                 newLvl.Ids.Add(q.Id);
+                newLvl.LastUpdate = nowUtc;
+            }
+        }
+
+        // Defense in depth against missed Closed events / feed gaps / contract
+        // rolls: if a level hasn't been touched in `ttlSec`, treat it as stale
+        // and remove. On 2026-05-08 we saw `_asks` retain entries at ~28915
+        // through a 29300+ session — best ask got pinned to a phantom low and
+        // ref_tick drifted ~200pts below the trade tape. Periodic prune keeps
+        // the book honest even when the feed misses a Closed.
+        public void PruneStale(DateTime nowUtc, double ttlSec)
+        {
+            if (ttlSec <= 0) return;
+            var cutoff = nowUtc.AddSeconds(-ttlSec);
+            PruneSide(_bids, cutoff);
+            PruneSide(_asks, cutoff);
+        }
+
+        private void PruneSide(SortedDictionary<long, PriceLevel> side, DateTime cutoff)
+        {
+            List<long> toRemove = null;
+            foreach (var kv in side)
+            {
+                if (kv.Value.LastUpdate < cutoff)
+                {
+                    toRemove ??= new List<long>();
+                    toRemove.Add(kv.Key);
+                }
+            }
+            if (toRemove == null) return;
+            foreach (var t in toRemove)
+            {
+                if (side.TryGetValue(t, out var lvl))
+                {
+                    // Drop _orders entries that pointed at this stale level, so
+                    // a late Closed for one of these IDs won't re-create it.
+                    foreach (var id in lvl.Ids) _orders.Remove(id);
+                    side.Remove(t);
+                }
             }
         }
 
@@ -108,6 +152,7 @@ namespace L2_Heatmap
             public double Price;
             public double TotalSize;
             public HashSet<string> Ids = new();
+            public DateTime LastUpdate;
         }
 
         public struct OrderEntry

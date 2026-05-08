@@ -390,6 +390,100 @@ Naming: "Surface" matches the design law ("surface structure, don't classify"). 
 
 ---
 
+## Session 2026-05-08 — L2_Surface first live session, BookState stale-level bug discovered
+
+L2_Surface shipped late 2026-05-07. Today (Friday 5/8) was its first full RTH session. User read: "non-stop buying with anemic auctions, no retracements, no opportunities." Headline NQ move ~190pts up.
+
+Set out to do per-session L2_Surface effectiveness research. Discovered a fundamental data-quality bug en route: **BookState was retaining orphaned ask levels through the day, pinning best ask to a phantom low price and dragging `ref_tick` ~200pts below the actual market**. This corrupted every L2_Surface paint coordinate (Build Bands, Climax lines, Inflection lines, Events dots) for the entire session. Effectiveness analysis on this data is invalid; reposting it would mislead future sessions. Bug fixed in code; this entry documents the diagnosis + fix instead.
+
+### How the bug was found
+
+Built `research/surface_walk.py` as the per-session L2_Surface effectiveness simulator — forward-pass replay of captured snapshots+ticks through the same per-layer trigger logic as `SurfaceEngine.cs` (same bias map, z-thresholds, proximity/cooldown rules). Output is a per-layer firing report: count, time, price, persistence.
+
+### Capture-folder change to know about
+
+Today's parquet landed under `captures/NQ/` instead of `captures/NQM6/`. User flagged the cause and will fix on the indicator side; for now, research scripts (`liq_events.py`, `surface_walk.py`) accept `SYMBOL_DIR` env var (default `NQM6`).
+
+### The discovery — tape vs L2 mid disagree by 200pts
+
+User cross-checked surface_walk's reported price levels (Build Bands at 29111-29112 / 29103.50) against the actual market (NQ open 28878.5, day high 29387, ~29311 at 13:28 NY). My output disagreed by ~200pts.
+
+Inspecting the same parquet directly:
+
+```
+RTH ticks (trade tape):    open 28878.50, last 29324.25 at 15:56, max 29331.75
+L2 snapshot ref_tick:      09:30 = 28895.25, 13:28 = 29109.25, peak ~29115
+```
+
+Tape matches the user's reality; L2 ref_tick lags by a gap that **grows** through the day (open: +34pt → midday: +186pt → close: +197pt). A calendar spread or fixed contract mismatch can't produce a growing gap. Drilling into a sample snapshot at 13:28 NY revealed the cause:
+
+```
+ref_tick = 116437  (mid 29109.25)
+bids at offsets +766..+776  → absolute ticks 117203-117213 → price 29300-29303 ✓ matches tape
+asks at offsets -776..-771  → ticks ~115661 → price ~28915 ✗ STALE (~400 ticks below tape)
+asks at offsets +778..+784  → ticks 117215-117222 → price 29303-29305 ✓ matches tape
+tape at 13:28 NY:           29300.75 - 29310.75
+```
+
+The book had **valid fresh bids around 29302 and valid fresh asks around 29303** (1-2 tick spread, normal NQ). It also had **stale asks pinned at ~28915 from earlier in the session that were never cleared.** Since `bestAsk = _asks.Keys.First()` (lowest tick), the stale low ask wins, and `refTick = (bestBid + bestAsk) / 2` gets dragged to a phantom midpoint between the real top-of-book and the stale low.
+
+### Root cause
+
+`BookState.Apply` removes a level when an order ID's `Closed` event arrives for it (or when a non-Closed update at a different price arrives, in which case the prior price's contribution is subtracted). The removal path relies on **receiving** those events. When Quantower drops a Closed event (feed gap, contract roll without symbol-clear, edge-case mid-session subscription quirk), the level keeps `TotalSize > 0` indefinitely. Aggregated L2 normally hides this — every level is rewritten frequently — but stranded levels at prices the market has long since left receive no rewrites and are invisible to all the bid/ask delta logic.
+
+### Fix shipped this session
+
+Three-part fix in `BookState.cs` (mirrored across all three copies — `L2_Heatmap`, `LiquidityMeter`, `L2_Surface`):
+
+1. **`PriceLevel.LastUpdate` timestamp.** Stamped on every Apply that touches the level (add, modify, partial-decrement). The book now tracks per-level recency.
+2. **`PruneStale(nowUtc, ttlSec)` method.** Walks both sides; any level whose `LastUpdate` is older than `ttlSec` gets force-removed, along with any `_orders` entries that pointed at it (so a late Closed for a stranded ID can't resurrect the level).
+3. **Use `prior.IsBid` not current `q.PriceType` to pick the side during cleanup.** Defensive against any feed that recycles IDs across sides; previously the current-quote side was used, which would silently miss the cleanup if an ID flipped sides.
+
+`Apply` signature changed: `Apply(Level2Quote q)` → `Apply(Level2Quote q, DateTime nowUtc)`. All three indicator drain loops updated to pass `nowUtc` and call `PruneStale(now, BookStaleTtlSec)` once per sample (not once per drain — sample cadence is 1 Hz, prune cost is O(level_count) per side, ~100 entries × 2 sides = trivial).
+
+`BookStaleTtlSec` exposed as InputParameter on each indicator (default **60s**, configurable). Rationale: NQ aggregated L2 rewrites every level near mid many times per second — 60s is hugely conservative for the active book region. Stranded levels (the bug we're fixing) by definition aren't being touched, so a TTL anywhere in the seconds-to-minutes range catches them. `0` disables the prune.
+
+### What was lost / regained
+
+- **2026-05-08 captured parquet is permanently broken** for any analysis that depends on `ref_tick` being the real mid. The depth offsets stored relative to that bad ref_tick mean every "level X is at price P" claim from this dataset is wrong. The events stream from `liq_events.py` is similarly affected — the `price` column is `ref_tick * 0.25`, also bad. The *aggregate* metrics (`bid_inner`, `ask_inner`, asymmetry counts) are sums-across-the-book; those still mean "total resting size on bid side / ask side" and are usable as regime descriptors, just not as anything tied to a specific price level.
+- **LiquidityMeter cum/ROC math today is unaffected.** The meter sums z-scored event weights, doesn't care about `ref_tick`. Whatever it painted live during today is meaningful.
+- **L2_Heatmap cloud display would have been painted at the wrong y-coordinates** today (also affected by ref_tick). User had already deprioritized that display 5/7, so practical impact ~zero.
+- **Going forward, all three indicators have the prune in place.** Next live session should produce ref_tick that matches the trade tape within normal spread distance. Trivially testable: `surface_walk.py` will report Build Band / Inflection / Climax prices that match what the user sees on chart.
+
+### Effectiveness analysis: deferred
+
+The per-layer firing densities and engine-behavior observations from today are still meaningful (Flow Band correctly silent on no-flush regime, Inflection density, Build Band count, etc. — all instrument-agnostic). But binding them to specific structural levels requires correct prices, which requires the fix to be live. **Re-run on next session's clean capture.** Don't act on this session's price-tagged findings.
+
+### What's still meaningful from today's data
+
+Aggregate-metric findings that survive the ref_tick corruption:
+
+- **Events asymmetry: 319 bull-leaning / 348 bear-leaning / 458 VOD = -0.043 asymmetry** on a +190pt up day. Same squeeze-regime fingerprint as 5/6 (events bearish, price bullish). VOD = 41% of events confirms the user's "anemic auction / providers thrashing" read.
+- **VOD dominance carries fragility info.** With ref_tick corruption affecting price tagging, we can still say "lots of VOD spikes in the day's middle hours" — provider repositioning was heavy regardless of where exactly. The earlier 5/7 hypothesis (VOD-as-fragility correlates with regime-transition / level-fragility moments) is unaffected.
+- **Flow Band 0 fires** is a real observation — the trigger logic doesn't depend on ref_tick (event counts + RV + inner-thinning z, all aggregates).
+
+### Files added / changed this session
+
+| File | Change |
+|---|---|
+| `L2_Heatmap/BookState.cs` | + `PriceLevel.LastUpdate`, + `PruneStale`, side-aware cleanup via `prior.IsBid`. `Apply` signature now takes `nowUtc`. |
+| `LiquidityMeter/BookState.cs` | Same fix mirrored. |
+| `L2_Surface/BookState.cs` | Same fix mirrored. |
+| `L2_Heatmap/L2_Heatmap.cs` | Pass `nowUtc` to `Apply`; call `PruneStale` per captured snapshot. New `BookStaleTtlSec` InputParameter (sortIndex 724, default 60). |
+| `LiquidityMeter/LiquidityMeter.cs` | Same wiring; `BookStaleTtlSec` at sortIndex 906. |
+| `L2_Surface/L2_Surface.cs` | Same wiring; `BookStaleTtlSec` at sortIndex 804. |
+| `research/surface_walk.py` | New — per-session L2_Surface simulator. Output: per-layer firing report. |
+| `research/liq_events.py` | `SESSION` + `SYMBOL_DIR` env-var overrides (was hardcoded). |
+| `research/out/surface_walk_<DATE>.txt` | Per-session L2_Surface effectiveness artifact (stdout from `surface_walk.py`). |
+
+### Things flagged for next live session
+
+- **Sanity-check the fix works.** Run `surface_walk.py` after the next session and verify Build Band / Climax / Inflection prices match what was actually on chart (not 200pts below). If the prune didn't catch a leak path, `ref_tick` will still drift. Diagnostic: `bestBid > bestAsk` (book crossed) is the unambiguous bug signature.
+- **Re-do the L2_Surface effectiveness analysis** once we have a clean capture. The per-layer firing-density questions (Inflection over-firing on directional regimes? Build Band density as regime descriptor? Flow Band calibration?) all need clean price data to answer well.
+- **TTL=60s is conservative-but-not-validated.** If next session shows legitimate quiet far levels getting evicted on slow symbols, lower it. If we see persistent ref_tick drift, lower it (more aggressive prune). Tune from observation.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.
@@ -412,6 +506,8 @@ These are deliberately not resolved; they need real-session observations before 
 | `research/meter_walk.py` | ASCII-meter visualization of cum/ROC dynamics through trade arcs. Validation tool — what the live meter would have shown. |
 | `research/out/liq_events_<DATE>.csv` | Time-ordered events CSV — the primary research artifact. Trader-readable for context-reading. |
 | `LiquidityMeter/MeterEngine.cs` | C# port of `liq_events.py` event detection + cum/ROC. Same bias map, same z-threshold. |
+| `research/surface_walk.py` | Per-session L2_Surface simulator — replays captures through the same trigger logic as `SurfaceEngine.cs`, reports per-layer firing density + persistence. |
+| `research/out/surface_walk_<DATE>.txt` | Per-session L2_Surface effectiveness artifact (stdout from `surface_walk.py`). |
 
 When walking new session data, the workflow is:
 1. Run `liq_events.py` (events CSV) — primary product

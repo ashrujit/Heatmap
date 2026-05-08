@@ -38,7 +38,7 @@ namespace L2_Surface
             _asks.Clear();
         }
 
-        public void Apply(Level2Quote q)
+        public void Apply(Level2Quote q, DateTime nowUtc)
         {
             if (q == null || string.IsNullOrEmpty(q.Id)) return;
             if (double.IsNaN(q.Price) || double.IsNaN(q.Size)) return;
@@ -52,11 +52,13 @@ namespace L2_Surface
                 if (prior.Size > 0)
                 {
                     long priorTicks = PriceToTicks(prior.Price);
-                    if (side.TryGetValue(priorTicks, out var lvl))
+                    var priorSide = prior.IsBid ? _bids : _asks;
+                    if (priorSide.TryGetValue(priorTicks, out var lvl))
                     {
                         lvl.TotalSize -= prior.Size;
                         lvl.Ids.Remove(q.Id);
-                        if (lvl.TotalSize <= 0 || lvl.Ids.Count == 0) side.Remove(priorTicks);
+                        lvl.LastUpdate = nowUtc;
+                        if (lvl.TotalSize <= 0 || lvl.Ids.Count == 0) priorSide.Remove(priorTicks);
                     }
                 }
                 _orders.Remove(q.Id);
@@ -72,14 +74,17 @@ namespace L2_Surface
             if (prior.Size > 0)
             {
                 long priorTicks = PriceToTicks(prior.Price);
-                if (side.TryGetValue(priorTicks, out var priorLvl))
+                var priorSide = prior.IsBid ? _bids : _asks;
+                if (priorSide.TryGetValue(priorTicks, out var priorLvl))
                 {
                     priorLvl.TotalSize -= prior.Size;
-                    if (priorTicks != newTicks || q.Size <= 0)
+                    priorLvl.LastUpdate = nowUtc;
+                    bool sameSlot = priorSide == side && priorTicks == newTicks && q.Size > 0;
+                    if (!sameSlot)
                     {
                         priorLvl.Ids.Remove(q.Id);
                         if (priorLvl.TotalSize <= 0 || priorLvl.Ids.Count == 0)
-                            side.Remove(priorTicks);
+                            priorSide.Remove(priorTicks);
                     }
                     else if (priorLvl.TotalSize < 0)
                     {
@@ -97,6 +102,37 @@ namespace L2_Surface
                 }
                 newLvl.TotalSize += q.Size;
                 newLvl.Ids.Add(q.Id);
+                newLvl.LastUpdate = nowUtc;
+            }
+        }
+
+        public void PruneStale(DateTime nowUtc, double ttlSec)
+        {
+            if (ttlSec <= 0) return;
+            var cutoff = nowUtc.AddSeconds(-ttlSec);
+            PruneSide(_bids, cutoff);
+            PruneSide(_asks, cutoff);
+        }
+
+        private void PruneSide(SortedDictionary<long, PriceLevel> side, DateTime cutoff)
+        {
+            List<long> toRemove = null;
+            foreach (var kv in side)
+            {
+                if (kv.Value.LastUpdate < cutoff)
+                {
+                    toRemove ??= new List<long>();
+                    toRemove.Add(kv.Key);
+                }
+            }
+            if (toRemove == null) return;
+            foreach (var t in toRemove)
+            {
+                if (side.TryGetValue(t, out var lvl))
+                {
+                    foreach (var id in lvl.Ids) _orders.Remove(id);
+                    side.Remove(t);
+                }
             }
         }
 
@@ -105,6 +141,7 @@ namespace L2_Surface
             public double Price;
             public double TotalSize;
             public HashSet<string> Ids = new();
+            public DateTime LastUpdate;
         }
 
         public struct OrderEntry

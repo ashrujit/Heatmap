@@ -28,6 +28,14 @@ namespace LiquidityMeter
             minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
         public int SampleIntervalMs = 1000;
 
+        // Defense against orphaned book levels (the 2026-05-08 ref_tick bug —
+        // see RESEARCH_LOG). 60s is conservative for liquid futures aggregated
+        // L2; lower for less liquid symbols only if you see legitimate quiet
+        // levels evicted; 0 disables.
+        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 906,
+            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
+        public int BookStaleTtlSec = 60;
+
         [InputParameter("Anchor Mode", sortIndex: 904, variants: new object[]
         {
             "Rolling Window",  AnchorModeRolling,
@@ -207,9 +215,10 @@ namespace LiquidityMeter
             if (_l2Queue == null || _bookState == null || _engine == null) return;
 
             // Drain L2 deltas onto the live book.
+            var nowUtc = DateTime.UtcNow;
             while (_l2Queue.TryDequeue(out var q))
             {
-                try { _bookState.Apply(q); }
+                try { _bookState.Apply(q, nowUtc); }
                 catch { /* skip bad quote */ }
             }
 
@@ -219,6 +228,10 @@ namespace LiquidityMeter
             if ((now - _lastSampleUtc).TotalMilliseconds >= SampleIntervalMs)
             {
                 _lastSampleUtc = now;
+                // Prune stale book state once per sample. Defense against
+                // missed Closed events that pin best bid/ask to phantom prices
+                // (the 2026-05-08 ref_tick-corruption bug).
+                _bookState.PruneStale(now, BookStaleTtlSec);
                 try { _engine.OnSample(now, _bookState); }
                 catch (Exception ex)
                 {

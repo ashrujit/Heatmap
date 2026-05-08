@@ -26,6 +26,12 @@ namespace L2_Surface
             minimum: 0, maximum: 20, increment: 1, decimalPlaces: 0)]
         public int PriceThroughBufferTicks = 1;
 
+        // Defense against orphaned book levels — see RESEARCH_LOG 2026-05-08.
+        // 60s is conservative for liquid futures; 0 disables.
+        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 804,
+            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
+        public int BookStaleTtlSec = 60;
+
         // ── Events Layer (sortIndex 810-814) ────────────────────────────────
         [InputParameter("Events: Enabled", sortIndex: 810)]
         public bool EventsEnabled = true;
@@ -259,9 +265,10 @@ namespace L2_Surface
         {
             if (_l2Queue == null || _bookState == null || _engine == null) return;
 
+            var nowUtc = DateTime.UtcNow;
             while (_l2Queue.TryDequeue(out var q))
             {
-                try { _bookState.Apply(q); }
+                try { _bookState.Apply(q, nowUtc); }
                 catch { /* skip bad quote */ }
             }
 
@@ -271,6 +278,10 @@ namespace L2_Surface
                 _lastSampleUtc = now;
                 try
                 {
+                    // Prune stale book levels before each sample. Defense
+                    // against missed Closed events (the 2026-05-08 ref_tick
+                    // corruption — see RESEARCH_LOG).
+                    _bookState.PruneStale(now, BookStaleTtlSec);
                     ApplyEngineConfig();
                     _engine.OnSample(now, _bookState);
                     _engine.ApplyEventTtl(now, EventsAutoClearMin);

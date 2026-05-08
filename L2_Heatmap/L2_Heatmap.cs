@@ -65,6 +65,18 @@ namespace L2_Heatmap
         [InputParameter("Capture Root Path", sortIndex: 723)]
         public string CaptureRootPath = @"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures";
 
+        // ── Book Hygiene (sortIndex 724) ──────────────────────────────
+        // Defense against missed Closed events / contract-roll feed gaps that
+        // leave orphaned levels in BookState. Levels untouched for longer than
+        // this TTL get force-removed on every captured snapshot. 60s is hugely
+        // conservative for NQ aggregated L2 (every level near mid updates many
+        // times per second). Lower for less liquid symbols only if you see
+        // legitimate quiet levels getting evicted; raise if you don't trust
+        // the prune. 0 disables.
+        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 724,
+            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
+        public int BookStaleTtlSec = 60;
+
         private BookState _bookState;
         private LiquidityHeatmapBuffer _heatmap;
         private ChartPainter _painter;
@@ -99,7 +111,7 @@ namespace L2_Heatmap
                         if (item == null) continue;
                         if (item.SortIndex >= 700 && item.SortIndex <= 707)
                             item.SeparatorGroup = heatmapGroup;
-                        else if (item.SortIndex >= 720 && item.SortIndex <= 723)
+                        else if (item.SortIndex >= 720 && item.SortIndex <= 724)
                             item.SeparatorGroup = captureGroup;
                     }
                 }
@@ -185,8 +197,8 @@ namespace L2_Heatmap
             {
                 try
                 {
-                    _bookState.Apply(q);
                     var now = DateTime.UtcNow;
+                    _bookState.Apply(q, now);
                     _heatmap?.OnPostApply(_bookState, now);
 
                     // Capture snapshot at the configured cadence (default 1Hz).
@@ -196,6 +208,11 @@ namespace L2_Heatmap
                         && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs)
                     {
                         _lastCaptureUtc = now;
+                        // Prune stale book state right before each captured snapshot
+                        // so the captured ref_tick / depth never carry orphaned
+                        // levels (the 2026-05-08 bug — best ask pinned ~200pts
+                        // below tape because of asks that never got Closed).
+                        _bookState.PruneStale(now, BookStaleTtlSec);
                         _capture.EnqueueSnapshot(now, _bookState);
                     }
                 }
