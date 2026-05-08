@@ -21,7 +21,7 @@ No labels, no strength coding, no alerts — same posture as the rest of the sui
 
 1. **Bar history, not tape.** Walks `HistoricalData` via inherited `Time(offset)` / `High(offset)` / `Low(offset)`. Wick-counts-as-touched is the standard TPO definition — a 1-tick wick into a price during one bracket marks that price as touched. Simpler data path than tape, deterministic across reloads, no L2 dependency.
 2. **Bracket = 30 min default.** Independent of chart bar size as long as bars are ≤ bracket. On larger bars (1h, daily) the output collapses and is meaningless — recommend 1-5 min charts.
-3. **Active bracket excluded.** During the in-progress session, only bars from CLOSED brackets feed the computation. Single-print status of the current bracket is by definition undecided.
+3. **Active bracket excluded.** During the in-progress session, only bars from CLOSED brackets feed the computation. Single-print status of the current bracket is by definition undecided. Additionally, the active session is **skipped entirely until ≥2 brackets have closed** — with one bracket of data, every tick has count==1, so the whole range collapses to one degenerate "zone" that carries no information.
 4. **Coarse rebuild trigger.** Every BracketSizeMin minutes of wall-clock OR every ~30 bar-count delta. TPO is a bar-aggregate; tick-by-tick recompute is wasted work.
 5. **Single hue, alpha fade.** Newest session = full alpha; oldest in retention = ~30%. No directional or strength coloring — every zone is "the same kind of thing."
 6. **Carry-right-until-filled.** Zones extend from formation time to chart right edge until a later session fully crosses them or they age past the retention window.
@@ -32,7 +32,7 @@ No labels, no strength coding, no alerts — same posture as the rest of the sui
 - `Bracket Size (minutes)` — TPO bracket length. 30 standard.
 - `Minimum Zone Size (ticks)` — drop zones thinner than this. Default 2; 1-tick singles are mostly fast-wick noise.
 - `Sessions to Keep Visible` — retention window in trading days. Default 3.
-- `Exclude Session Extremes` — drop zones touching session high/low. Default ON. They represent "where the day stopped," not actionable unfinished business.
+- `Exclude Session Extremes` — drop zones touching session high/low. **Default OFF.** Buying / selling tails in classic TPO sit *at* session high/low by construction — they are the unretraced edge of an extension and are the most actionable single-print structure, not noise. Verified 2026-05-08 against the live tape: with this ON, both today's selling tail at the open low (28859.50, 856 ticks) and the live buying tail at the high (29248–29316.75, 276 ticks) were silently dropped. Toggle ON only if you specifically want interior singles.
 
 **Render** (sortIndex 910-913):
 - `Show Boundary Lines` — horizontal line at zone top + bottom. Default ON.

@@ -29,8 +29,12 @@ namespace SinglePrints
             minimum: 1, maximum: 20, increment: 1, decimalPlaces: 0)]
         public int RetentionSessions = 3;
 
+        // Default OFF: in classic TPO, single-print tails sit AT session high/low
+        // by construction (the unretraced edge of an extension). Excluding them
+        // hides the most actionable single-print structure. Kept as a toggle for
+        // users who want only "interior" singles.
         [InputParameter("Exclude Session Extremes", sortIndex: 903)]
-        public bool ExcludeExtremes = true;
+        public bool ExcludeExtremes = false;
 
         // ── Render (sortIndex 910-915) ──────────────────────────────────────
         [InputParameter("Show Boundary Lines", sortIndex: 910)]
@@ -230,6 +234,12 @@ namespace SinglePrints
                 if (sessionDateNy == activeDate)
                 {
                     int currentBracketIdx = (int)((DateTime.UtcNow - sessionStartUtc).TotalMinutes / BracketSizeMin);
+                    // Skip active session when fewer than 2 brackets have closed:
+                    // with only one bracket of data, every tick has count==1 and
+                    // the whole range collapses to one degenerate "zone" that
+                    // carries no information. Real single-print structure needs
+                    // at least one cross-bracket comparison.
+                    if (currentBracketIdx < 2) continue;
                     DateTime currentBracketStart = sessionStartUtc.AddMinutes(currentBracketIdx * BracketSizeMin);
                     var closed = new List<SessionBuilder.Bar>();
                     foreach (var b in bars)
