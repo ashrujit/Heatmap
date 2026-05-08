@@ -484,6 +484,93 @@ Aggregate-metric findings that survive the ref_tick corruption:
 
 ---
 
+## Session 2026-05-08 follow-up — defense-in-depth book hygiene (L1 reconcile + freshness gate + STALE badge)
+
+After shipping the TTL prune fix, we worked through whether it's actually sufficient. Two distinct staleness modes exist; TTL alone only handles one of them well:
+
+| Mode | What's happening | TTL alone? |
+|---|---|---|
+| **A** — orphan single level (today's bug) | One ID's Closed dropped; rest of book updates fine | Catches it eventually, but during the TTL window the corrupted level can pin best-bid/ask |
+| **B** — whole-feed slowdown ("delayed by X ms" QT message) | All updates pause; no levels stranded but everything reflects the past | Doesn't help — no level ages out, the entire snapshot is just old |
+| **C** — deep stranded (off best-of-book) | Stranded level far from current price, doesn't pin best bid/ask | TTL is the right fix — handles it as background sweep |
+
+Mode A is what corrupted ref_tick on 5/8. Mode B is the user's QT-delay scenario — the slowdown itself is harmless but apparently raises the probability of the Closed-message-dropped bug since the indicator hypothesis is "queued events get processed under pressure, one slips through." Mode C is the long-tail of TTL.
+
+User explicitly preferred a fail-safe stance for Mode B: *"if we detect stale then we stop printing anything by any indicator until data is known to be valid."* Honest "I don't know" beats confident wrong answer. This session implements that.
+
+### What shipped
+
+Three additions to `BookState.cs` (mirrored across all three copies — L2_Heatmap, LiquidityMeter, L2_Surface):
+
+1. **`LastApplyTime` + `IsFresh(nowUtc, freshnessSec)`** — every `Apply` stamps the time; `IsFresh` returns true only if a delta arrived within the freshness window. Default 5s. Detects Mode B (whole-feed pause).
+
+2. **`ReconcileWithL1(symbolBid, symbolAsk, toleranceTicks)`** — uses `Symbol.Bid` / `Symbol.Ask` (Level1) as an *independent reference stream* against the L2 book. Any L2 entry whose tick violates L1 by more than `toleranceTicks` is impossible in a healthy book → prune it immediately. After pruning, if L2 best-of-book still doesn't match L1 within tolerance, returns `false` (book is in an unreconcilable state, caller should pause). Default tolerance 4 ticks. Detects Mode A *immediately* — no TTL waiting window. Skipped (returns true) when L1 is NaN (early indicator init / pre-market).
+
+3. **TTL prune retained as background defense for Mode C.** Already shipped in the previous commit; keeps deep stranded levels from accumulating.
+
+L1 was confirmed accessible via `Symbol.Bid` / `Symbol.Ask` properties — verified at `api-recon/src/.../Symbol.cs:920-971`. These are L1-fed `double`s, populated by Quantower independently of the L2 stream the indicator subscribes to. That independence is what makes them a clean cross-check reference.
+
+### Indicator wiring
+
+Each of the three indicators now does, on every sample tick:
+
+```
+PruneStale(now, ttlSec)               // background TTL (defense for Mode C)
+sane = ReconcileWithL1(L1_bid, L1_ask, toleranceTicks)
+fresh = IsFresh(now, freshnessSec)
+stale = !sane || !fresh
+if stale:
+    skip sample / capture / heatmap snapshot
+    set painter.L2Stale = true
+else:
+    proceed normally
+    painter.L2Stale = false
+```
+
+When stale, the indicators **freeze**:
+- **L2_Heatmap** — no new heatmap snapshots enqueued; no capture parquet rows written. Existing on-screen cloud retains last known state until the feed recovers; existing cells fade out naturally with the retention window.
+- **LiquidityMeter** — `_engine.OnSample` skipped; cum/ROC freeze at last computed values.
+- **L2_Surface** — `_engine.OnSample` skipped; no new events / inflections / climax lines / build bands / flow bands generated.
+
+A small red **"L2 STALE"** badge paints in the top-right corner of each indicator's render area when the freeze is active. Visible from any chart configuration. Tells the user "what you're looking at is frozen, not normal."
+
+### New InputParameters per indicator
+
+Three knobs per indicator (defaults): `BookStaleTtlSec` (60), `BookL1ToleranceTicks` (4), `BookFreshnessSec` (5). All tunable from QT's settings dialog.
+
+### Why this combination
+
+- **Mode A handled by `ReconcileWithL1`** — instant, no waiting. L1 says where the market is; any L2 entry violating that is corrupt, drop it now.
+- **Mode B handled by `IsFresh`** — when no L2 deltas arrive, freeze. We can't paint with confidence on stale data even if the L2 we have is internally consistent.
+- **Mode C handled by `PruneStale`** — TTL background sweep keeps the long-tail clean.
+- **Visual feedback via STALE badge** — user always knows whether what's on screen is live or frozen.
+
+### Capture impact
+
+The L2_Heatmap parquet writer will not produce snapshot rows during stale periods. Tick capture (`Symbol.NewLast` driven, written from `Symbol_NewLast` event handler unchanged) continues — trades that print are real, not affected by L2 staleness. Result: future `surface_walk.py` analyses are cleaner — when surface_walk reconstructs L2_Surface state from snapshots, every snapshot it sees was reconciled-with-L1-at-write-time.
+
+### Things to watch for next session
+
+- **Does the STALE badge ever appear during normal trading?** If it pops on every brief quote-burst lull, lower `BookFreshnessSec` is wrong direction — actually need to *raise* it (current 5s might be tight for slow stretches). If it never appears even during known QT-delay messages, may need to lower it.
+- **Does `ReconcileWithL1` ever falsely reject a legitimate book?** Possible during fast moves where L1 and L2 are in different micro-states. If it triggers spuriously, raise `BookL1ToleranceTicks`. If the bug recurs because tolerance was too generous, lower it.
+- **STALE badge visibility** — the small top-right red rectangle is intended to be unobtrusive but unmissable. May need to tune position/size from feedback.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `L2_Heatmap/BookState.cs` | + `LastApplyTime`, `IsFresh`, `ReconcileWithL1`, helper `DropLevel` |
+| `LiquidityMeter/BookState.cs` | Mirror of above |
+| `L2_Surface/BookState.cs` | Mirror of above |
+| `L2_Heatmap/L2_Heatmap.cs` | Refactored DrainLevel2: hygiene pass + skip-when-stale; new InputParameters; sets painter.L2Stale |
+| `L2_Heatmap/ChartPainter.cs` | + `L2Stale` flag, + `DrawStaleBadge` |
+| `LiquidityMeter/LiquidityMeter.cs` | Hygiene pass in OnUpdate; skip sample when stale; new InputParameters; sets painter.L2Stale |
+| `LiquidityMeter/MeterPainter.cs` | + `L2Stale` flag, + `DrawStaleBadge` |
+| `L2_Surface/L2_Surface.cs` | Hygiene pass in OnUpdate; skip sample when stale; new InputParameters; sets painter.L2Stale |
+| `L2_Surface/SurfacePainter.cs` | + `L2Stale` flag, + `DrawStaleBadge` |
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.

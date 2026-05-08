@@ -41,6 +41,11 @@ namespace L2_Surface
         // Build bands
         public int BuildBandAlpha { get; set; } = 48;
 
+        // Set by the indicator when L2 book is in stale or unreconcilable state —
+        // when true, paint a small badge so the user can see the layers below
+        // are frozen (no new events, lines, or bands until the feed recovers).
+        public bool L2Stale { get; set; }
+
         // Bull / bear / neutral palette — shared across all layers.
         private static readonly Color BullColor = Color.FromArgb(60, 130, 220);   // blue
         private static readonly Color BearColor = Color.FromArgb(235, 110, 30);   // orange
@@ -67,8 +72,25 @@ namespace L2_Surface
             if (FlowEnabled) DrawClimaxLines(g, cv, rect, engine);
             if (InflectionEnabled) DrawInflections(g, cv, rect, engine);
             if (EventsEnabled) DrawEventDots(g, cv, rect, engine, tLeft, tRight);
+            if (L2Stale) DrawStaleBadge(g, rect);
 
             g.SmoothingMode = prevSmoothing;
+        }
+
+        private static void DrawStaleBadge(Graphics g, Rectangle rect)
+        {
+            const string text = "L2 STALE";
+            using var font = new Font("Segoe UI", 9, FontStyle.Bold);
+            var size = g.MeasureString(text, font);
+            int pad = 4;
+            int w = (int)Math.Ceiling(size.Width) + pad * 2;
+            int h = (int)Math.Ceiling(size.Height) + pad;
+            int x = rect.Right - w - 8;
+            int y = rect.Top + 8;
+            using var bg = new SolidBrush(Color.FromArgb(190, 200, 30, 30));
+            using var fg = new SolidBrush(Color.White);
+            g.FillRectangle(bg, x, y, w, h);
+            g.DrawString(text, font, fg, x + pad, y + pad / 2);
         }
 
         private void DrawFlowBands(Graphics g, IChartWindowCoordinatesConverter cv,

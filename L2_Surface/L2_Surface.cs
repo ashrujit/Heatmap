@@ -27,10 +27,20 @@ namespace L2_Surface
         public int PriceThroughBufferTicks = 1;
 
         // Defense against orphaned book levels — see RESEARCH_LOG 2026-05-08.
-        // 60s is conservative for liquid futures; 0 disables.
+        // Three layers: TTL prune (background), L1 reconcile (vs Symbol.Bid/
+        // Symbol.Ask), feed-freshness (no-update detector). When unreconcilable
+        // or feed paused, sampling pauses and the painter shows a STALE badge.
         [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 804,
             minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
         public int BookStaleTtlSec = 60;
+
+        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 805,
+            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
+        public int BookL1ToleranceTicks = 4;
+
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 806,
+            minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int BookFreshnessSec = 5;
 
         // ── Events Layer (sortIndex 810-814) ────────────────────────────────
         [InputParameter("Events: Enabled", sortIndex: 810)]
@@ -148,6 +158,7 @@ namespace L2_Surface
         private ConcurrentQueue<Level2Quote> _l2Queue;
         private bool _l2Subscribed;
         private DateTime _lastSampleUtc = DateTime.MinValue;
+        private bool _l2Stale;
 
         public L2_Surface() : base()
         {
@@ -265,10 +276,9 @@ namespace L2_Surface
         {
             if (_l2Queue == null || _bookState == null || _engine == null) return;
 
-            var nowUtc = DateTime.UtcNow;
             while (_l2Queue.TryDequeue(out var q))
             {
-                try { _bookState.Apply(q, nowUtc); }
+                try { _bookState.Apply(q, DateTime.UtcNow); }
                 catch { /* skip bad quote */ }
             }
 
@@ -278,10 +288,19 @@ namespace L2_Surface
                 _lastSampleUtc = now;
                 try
                 {
-                    // Prune stale book levels before each sample. Defense
-                    // against missed Closed events (the 2026-05-08 ref_tick
-                    // corruption — see RESEARCH_LOG).
+                    // Book hygiene before sampling — three layers against the
+                    // 2026-05-08 ref_tick bug:
+                    //   PruneStale (TTL), ReconcileWithL1 (vs Symbol.Bid/Ask),
+                    //   IsFresh (feed-paused detector). When stale, freeze:
+                    //   skip the sample so no new events / inflections /
+                    //   climax / build-bands / flow get added on bad data.
+                    //   Painter shows a STALE badge.
                     _bookState.PruneStale(now, BookStaleTtlSec);
+                    bool sane = _bookState.ReconcileWithL1(
+                        this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
+                    bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
+                    _l2Stale = !sane || !fresh;
+                    if (_l2Stale) return;
                     ApplyEngineConfig();
                     _engine.OnSample(now, _bookState);
                     _engine.ApplyEventTtl(now, EventsAutoClearMin);
@@ -304,6 +323,7 @@ namespace L2_Surface
                 var chart = this.CurrentChart;
                 if (chart == null) return;
                 ApplyPainterConfig();
+                _painter.L2Stale = _l2Stale;
                 _painter.Paint(args, chart, _engine);
             }
             catch (Exception ex)

@@ -65,17 +65,28 @@ namespace L2_Heatmap
         [InputParameter("Capture Root Path", sortIndex: 723)]
         public string CaptureRootPath = @"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures";
 
-        // ── Book Hygiene (sortIndex 724) ──────────────────────────────
-        // Defense against missed Closed events / contract-roll feed gaps that
-        // leave orphaned levels in BookState. Levels untouched for longer than
-        // this TTL get force-removed on every captured snapshot. 60s is hugely
-        // conservative for NQ aggregated L2 (every level near mid updates many
-        // times per second). Lower for less liquid symbols only if you see
-        // legitimate quiet levels getting evicted; raise if you don't trust
-        // the prune. 0 disables.
+        // ── Book Hygiene (sortIndex 724-726) ──────────────────────────────
+        // Defense against orphaned levels in BookState (missed Closed events,
+        // contract-roll feed gaps). See RESEARCH_LOG 2026-05-08 for the
+        // failure mode this guards against. Three layers:
+        //   - StaleTtl: levels untouched for longer than TTL get force-pruned.
+        //   - L1ReconcileTolerance: any L2 entry that violates Symbol.Bid /
+        //     Symbol.Ask (Level1) by more than this many ticks gets pruned;
+        //     L1 is an independent stream from L2, so it's a clean reference.
+        //   - FreshnessSec: if no L2 deltas have arrived for this long, the
+        //     feed is paused — pause the heatmap snapshot writer / capture
+        //     writer until updates resume. Paint a STALE badge.
         [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 724,
             minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
         public int BookStaleTtlSec = 60;
+
+        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 725,
+            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
+        public int BookL1ToleranceTicks = 4;
+
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 726,
+            minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int BookFreshnessSec = 5;
 
         private BookState _bookState;
         private LiquidityHeatmapBuffer _heatmap;
@@ -111,7 +122,7 @@ namespace L2_Heatmap
                         if (item == null) continue;
                         if (item.SortIndex >= 700 && item.SortIndex <= 707)
                             item.SeparatorGroup = heatmapGroup;
-                        else if (item.SortIndex >= 720 && item.SortIndex <= 724)
+                        else if (item.SortIndex >= 720 && item.SortIndex <= 726)
                             item.SeparatorGroup = captureGroup;
                     }
                 }
@@ -193,33 +204,40 @@ namespace L2_Heatmap
         private void DrainLevel2()
         {
             if (_l2Queue == null || _bookState == null) return;
+
+            // 1) Apply all queued L2 deltas.
             while (_l2Queue.TryDequeue(out var q))
             {
-                try
-                {
-                    var now = DateTime.UtcNow;
-                    _bookState.Apply(q, now);
-                    _heatmap?.OnPostApply(_bookState, now);
+                try { _bookState.Apply(q, DateTime.UtcNow); }
+                catch { /* single bad quote shouldn't kill the drain */ }
+            }
 
-                    // Capture snapshot at the configured cadence (default 1Hz).
-                    // Independent of the heatmap's display snapshot interval —
-                    // we want stable research-cadence rows, not display rate.
-                    if (_capture != null
-                        && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs)
-                    {
-                        _lastCaptureUtc = now;
-                        // Prune stale book state right before each captured snapshot
-                        // so the captured ref_tick / depth never carry orphaned
-                        // levels (the 2026-05-08 bug — best ask pinned ~200pts
-                        // below tape because of asks that never got Closed).
-                        _bookState.PruneStale(now, BookStaleTtlSec);
-                        _capture.EnqueueSnapshot(now, _bookState);
-                    }
-                }
-                catch
-                {
-                    // Single bad quote shouldn't kill the drain. Skip and continue.
-                }
+            var now = DateTime.UtcNow;
+
+            // 2) Book hygiene — three layers of defense against the 2026-05-08
+            //    ref_tick corruption (orphaned levels pinning best bid/ask):
+            //      • PruneStale (TTL): background sweep of deep stranded levels.
+            //      • ReconcileWithL1: top-of-book sanity vs Symbol.Bid/Ask.
+            //      • IsFresh: feed-paused detector (no L2 deltas in N sec).
+            _bookState.PruneStale(now, BookStaleTtlSec);
+            bool sane = _bookState.ReconcileWithL1(
+                this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
+            bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
+            bool stale = !sane || !fresh;
+
+            if (_painter != null) _painter.L2Stale = stale;
+
+            // 3) When stale, freeze: don't enqueue new heatmap snapshots and
+            //    don't capture parquet rows. Existing on-screen state remains;
+            //    the badge tells the user the cloud is frozen.
+            if (stale) return;
+
+            _heatmap?.OnPostApply(_bookState, now);
+            if (_capture != null
+                && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs)
+            {
+                _lastCaptureUtc = now;
+                _capture.EnqueueSnapshot(now, _bookState);
             }
         }
 

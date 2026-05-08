@@ -39,6 +39,11 @@ namespace L2_Heatmap
 
         public LiquidityHeatmapBuffer Heatmap { get; set; }
 
+        // Set by the indicator when L2 book is in stale or unreconcilable
+        // state — paint a small badge so the user can see the cloud below
+        // is frozen, not normal.
+        public bool L2Stale { get; set; }
+
         public void Dispose()
         {
             if (_disposed) return;
@@ -55,6 +60,23 @@ namespace L2_Heatmap
             var rect = args.Rectangle;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             DrawLiquidityHeatmapCached(g, converter, rect, Heatmap);
+            if (L2Stale) DrawStaleBadge(g, rect);
+        }
+
+        private static void DrawStaleBadge(Graphics g, Rectangle rect)
+        {
+            const string text = "L2 STALE";
+            using var font = new Font("Segoe UI", 9, FontStyle.Bold);
+            var size = g.MeasureString(text, font);
+            int pad = 4;
+            int w = (int)Math.Ceiling(size.Width) + pad * 2;
+            int h = (int)Math.Ceiling(size.Height) + pad;
+            int x = rect.Right - w - 8;
+            int y = rect.Top + 8;
+            using var bg = new SolidBrush(Color.FromArgb(190, 200, 30, 30));
+            using var fg = new SolidBrush(Color.White);
+            g.FillRectangle(bg, x, y, w, h);
+            g.DrawString(text, font, fg, x + pad, y + pad / 2);
         }
 
         // Bookmap-inspired liquidity heatmap. Painted as the chart backdrop.

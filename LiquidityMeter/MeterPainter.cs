@@ -45,6 +45,11 @@ namespace LiquidityMeter
         public DateTime? ManualAnchorUtc;
         public Rectangle LastHitRect;           // written each Paint; read by hit-test on click
 
+        // Set by the indicator when L2 book is in stale or unreconcilable state —
+        // when true, paint a small badge so the user can see the meter is frozen
+        // (cum/ROC stop updating until the feed recovers and L2 reconciles).
+        public bool L2Stale;
+
         private static readonly Color BullColor   = Color.FromArgb(80, 200, 110);
         private static readonly Color BearColor   = Color.FromArgb(225, 75, 75);
         private static readonly Color CenterColor = Color.FromArgb(180, 160, 160, 160);
@@ -59,6 +64,7 @@ namespace LiquidityMeter
             var g = args.Graphics;
             var rect = args.Rectangle;
             if (rect.Width <= 0 || rect.Height <= 0) return;
+            if (L2Stale) DrawStaleBadge(g, rect);
 
             double cum = engine.Cumulative;
             double roc = engine.RateOfChange;
@@ -274,6 +280,22 @@ namespace LiquidityMeter
             {
                 g.SmoothingMode = prev;
             }
+        }
+
+        private static void DrawStaleBadge(Graphics g, Rectangle rect)
+        {
+            const string text = "L2 STALE";
+            using var font = new Font("Segoe UI", 9, FontStyle.Bold);
+            var size = g.MeasureString(text, font);
+            int pad = 4;
+            int w = (int)Math.Ceiling(size.Width) + pad * 2;
+            int h = (int)Math.Ceiling(size.Height) + pad;
+            int x = rect.Right - w - 8;
+            int y = rect.Top + 8;
+            using var bg = new SolidBrush(Color.FromArgb(190, 200, 30, 30));
+            using var fg = new SolidBrush(Color.White);
+            g.FillRectangle(bg, x, y, w, h);
+            g.DrawString(text, font, fg, x + pad, y + pad / 2);
         }
     }
 }

@@ -36,6 +36,19 @@ namespace LiquidityMeter
             minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
         public int BookStaleTtlSec = 60;
 
+        // L1 reconciliation: any L2 entry whose tick violates Symbol.Bid /
+        // Symbol.Ask by more than this many ticks gets pruned. L1 is its own
+        // stream — independent reference vs the L2 book.
+        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 907,
+            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
+        public int BookL1ToleranceTicks = 4;
+
+        // Feed-paused detector: if no L2 deltas have arrived for this long,
+        // pause sampling and paint a STALE badge.
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 908,
+            minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int BookFreshnessSec = 5;
+
         [InputParameter("Anchor Mode", sortIndex: 904, variants: new object[]
         {
             "Rolling Window",  AnchorModeRolling,
@@ -96,6 +109,7 @@ namespace LiquidityMeter
         private ConcurrentQueue<Level2Quote> _l2Queue;
         private bool _l2Subscribed;
         private DateTime _lastSampleUtc = DateTime.MinValue;
+        private bool _l2Stale;
 
         // Manual-click anchor override: set by left-click on the meter strip,
         // cleared by right-click. Wins over the configured Anchor Mode while
@@ -215,10 +229,9 @@ namespace LiquidityMeter
             if (_l2Queue == null || _bookState == null || _engine == null) return;
 
             // Drain L2 deltas onto the live book.
-            var nowUtc = DateTime.UtcNow;
             while (_l2Queue.TryDequeue(out var q))
             {
-                try { _bookState.Apply(q, nowUtc); }
+                try { _bookState.Apply(q, DateTime.UtcNow); }
                 catch { /* skip bad quote */ }
             }
 
@@ -228,10 +241,18 @@ namespace LiquidityMeter
             if ((now - _lastSampleUtc).TotalMilliseconds >= SampleIntervalMs)
             {
                 _lastSampleUtc = now;
-                // Prune stale book state once per sample. Defense against
-                // missed Closed events that pin best bid/ask to phantom prices
-                // (the 2026-05-08 ref_tick-corruption bug).
+                // Book hygiene before sampling — three layers against the
+                // 2026-05-08 ref_tick bug:
+                //   PruneStale (TTL), ReconcileWithL1 (vs Symbol.Bid/Ask),
+                //   IsFresh (feed-paused detector). When stale, freeze: skip
+                //   the sample so cum/ROC don't update on bad data; the
+                //   painter shows a STALE badge.
                 _bookState.PruneStale(now, BookStaleTtlSec);
+                bool sane = _bookState.ReconcileWithL1(
+                    this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
+                bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
+                _l2Stale = !sane || !fresh;
+                if (_l2Stale) return;
                 try { _engine.OnSample(now, _bookState); }
                 catch (Exception ex)
                 {
@@ -261,6 +282,7 @@ namespace LiquidityMeter
                 if (_painter != null && _engine != null)
                 {
                     _painter.ManualAnchorUtc = _manualAnchorUtc;
+                    _painter.L2Stale = _l2Stale;
                     _painter.Paint(args, _engine);
                 }
             }

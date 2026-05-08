@@ -6,6 +6,7 @@
 // align is the cleaner trade-off here.
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Integration;
 
@@ -28,14 +29,23 @@ namespace L2_Surface
         public IReadOnlyDictionary<long, PriceLevel> BidsByTick => _bids;
         public IReadOnlyDictionary<long, PriceLevel> AsksByTick => _asks;
 
+        public DateTime LastApplyTime { get; private set; }
+
         public long PriceToTicks(double price) => (long)Math.Round(price / _tickSize);
         public double TicksToPrice(long ticks) => ticks * _tickSize;
+
+        public bool IsFresh(DateTime nowUtc, double freshnessSec)
+        {
+            if (LastApplyTime == default) return false;
+            return (nowUtc - LastApplyTime).TotalSeconds <= freshnessSec;
+        }
 
         public void Clear()
         {
             _orders.Clear();
             _bids.Clear();
             _asks.Clear();
+            LastApplyTime = default;
         }
 
         public void Apply(Level2Quote q, DateTime nowUtc)
@@ -62,6 +72,7 @@ namespace L2_Surface
                     }
                 }
                 _orders.Remove(q.Id);
+                LastApplyTime = nowUtc;
                 return;
             }
 
@@ -104,6 +115,54 @@ namespace L2_Surface
                 newLvl.Ids.Add(q.Id);
                 newLvl.LastUpdate = nowUtc;
             }
+
+            LastApplyTime = nowUtc;
+        }
+
+        public bool ReconcileWithL1(double symbolBid, double symbolAsk, int toleranceTicks)
+        {
+            if (double.IsNaN(symbolBid) || double.IsNaN(symbolAsk)) return true;
+            if (toleranceTicks < 0) toleranceTicks = 0;
+
+            long l1Bid = PriceToTicks(symbolBid);
+            long l1Ask = PriceToTicks(symbolAsk);
+            long bidCutoff = l1Ask + toleranceTicks;
+            long askCutoff = l1Bid - toleranceTicks;
+
+            List<long> toRemove = null;
+            foreach (var kv in _bids)
+            {
+                if (kv.Key > bidCutoff)
+                {
+                    toRemove ??= new List<long>();
+                    toRemove.Add(kv.Key);
+                }
+            }
+            if (toRemove != null) { foreach (var t in toRemove) DropLevel(_bids, t); toRemove.Clear(); }
+
+            foreach (var kv in _asks)
+            {
+                if (kv.Key < askCutoff)
+                {
+                    toRemove ??= new List<long>();
+                    toRemove.Add(kv.Key);
+                }
+            }
+            if (toRemove != null) { foreach (var t in toRemove) DropLevel(_asks, t); }
+
+            if (_bids.Count == 0 || _asks.Count == 0) return false;
+            long bestBid = _bids.First().Key;
+            long bestAsk = _asks.First().Key;
+            if (Math.Abs(bestBid - l1Bid) > toleranceTicks) return false;
+            if (Math.Abs(bestAsk - l1Ask) > toleranceTicks) return false;
+            return true;
+        }
+
+        private void DropLevel(SortedDictionary<long, PriceLevel> side, long tick)
+        {
+            if (!side.TryGetValue(tick, out var lvl)) return;
+            foreach (var id in lvl.Ids) _orders.Remove(id);
+            side.Remove(tick);
         }
 
         public void PruneStale(DateTime nowUtc, double ttlSec)
@@ -126,14 +185,7 @@ namespace L2_Surface
                 }
             }
             if (toRemove == null) return;
-            foreach (var t in toRemove)
-            {
-                if (side.TryGetValue(t, out var lvl))
-                {
-                    foreach (var id in lvl.Ids) _orders.Remove(id);
-                    side.Remove(t);
-                }
-            }
+            foreach (var t in toRemove) DropLevel(side, t);
         }
 
         public sealed class PriceLevel
