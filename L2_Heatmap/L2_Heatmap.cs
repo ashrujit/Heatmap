@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TradingPlatform.BusinessLayer;
 
@@ -65,37 +64,29 @@ namespace L2_Heatmap
         [InputParameter("Capture Root Path", sortIndex: 723)]
         public string CaptureRootPath = @"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures";
 
-        // ── Book Hygiene (sortIndex 724-726) ──────────────────────────────
-        // Defense against orphaned levels in BookState (missed Closed events,
-        // contract-roll feed gaps). See RESEARCH_LOG 2026-05-08 for the
-        // failure mode this guards against. Three layers:
-        //   - StaleTtl: levels untouched for longer than TTL get force-pruned.
-        //   - L1ReconcileTolerance: any L2 entry that violates Symbol.Bid /
-        //     Symbol.Ask (Level1) by more than this many ticks gets pruned;
-        //     L1 is an independent stream from L2, so it's a clean reference.
-        //   - FreshnessSec: if no L2 deltas have arrived for this long, the
-        //     feed is paused — pause the heatmap snapshot writer / capture
-        //     writer until updates resume. Paint a STALE badge.
-        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 724,
-            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
-        public int BookStaleTtlSec = 60;
-
-        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 725,
-            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
-        public int BookL1ToleranceTicks = 4;
-
-        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 726,
+        // ── Book Hygiene (sortIndex 724) ──────────────────────────────
+        // Feed-paused detector. We read the canonical book each sample from
+        // Symbol.DepthOfMarket — orphan-level corruption (the 2026-05-08
+        // ref_tick bug) is structurally impossible because every L2 vendor
+        // refresh replaces QT's internal book wholesale. The only remaining
+        // stale mode is "feed paused": no L2 events arriving. Above this
+        // threshold, the heatmap snapshot writer + capture writer pause, and
+        // the painter shows a STALE badge.
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 724,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
-        private BookState _bookState;
         private LiquidityHeatmapBuffer _heatmap;
         private ChartPainter _painter;
-        private ConcurrentQueue<Level2Quote> _l2Queue;
+        private GetDepthOfMarketParameters _domParams;
+        private double _tickSize = 0.25;
         private bool _l2Subscribed;
         private L2Capture _capture;
         private bool _lastSubscribed;
+        private DateTime _lastL2EventUtc = DateTime.MinValue;
+        private DateTime _lastSampleUtc = DateTime.MinValue;
         private DateTime _lastCaptureUtc = DateTime.MinValue;
+        private bool _l2Stale;
 
         public L2_Heatmap() : base()
         {
@@ -122,7 +113,7 @@ namespace L2_Heatmap
                         if (item == null) continue;
                         if (item.SortIndex >= 700 && item.SortIndex <= 707)
                             item.SeparatorGroup = heatmapGroup;
-                        else if (item.SortIndex >= 720 && item.SortIndex <= 726)
+                        else if (item.SortIndex >= 720 && item.SortIndex <= 724)
                             item.SeparatorGroup = captureGroup;
                     }
                 }
@@ -136,14 +127,12 @@ namespace L2_Heatmap
             try
             {
                 if (this.Symbol == null) return;
-                double tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
-
-                _bookState = new BookState(tickSize);
+                _tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
 
                 if (LiquidityHeatmapEnabled)
                 {
                     _heatmap = new LiquidityHeatmapBuffer(
-                        tickSize,
+                        _tickSize,
                         LiquidityHeatmapRetentionSec,
                         LiquidityHeatmapSnapshotIntervalMs,
                         LiquidityHeatmapAlphaMax,
@@ -154,7 +143,16 @@ namespace L2_Heatmap
                 }
 
                 _painter = new ChartPainter { Heatmap = _heatmap };
-                _l2Queue = new ConcurrentQueue<Level2Quote>();
+
+                // 50 levels each side covers the parquet capture schema.
+                _domParams = new GetDepthOfMarketParameters
+                {
+                    GetLevel2ItemsParameters = new GetLevel2ItemsParameters
+                    {
+                        LevelsCount = L2Capture.LevelsPerSide,
+                        CalculateCumulative = false,
+                    },
+                };
 
                 if (CaptureEnabled)
                 {
@@ -171,7 +169,12 @@ namespace L2_Heatmap
                     _lastSubscribed = true;
                 }
 
-                this.Symbol.NewLevel2 += Symbol_NewLevel2;
+                // We don't process L2 events ourselves anymore — QT's
+                // DepthOfMarket maintains the canonical book; we read it on
+                // each sample. Subscription stays as the freshness heartbeat
+                // (and to mark this indicator as an L2 consumer so QT keeps
+                // delivering the stream). See RESEARCH_LOG 2026-05-08.
+                this.Symbol.NewLevel2 += Symbol_NewLevel2Heartbeat;
                 _l2Subscribed = true;
             }
             catch (Exception ex)
@@ -182,10 +185,13 @@ namespace L2_Heatmap
             }
         }
 
-        private void Symbol_NewLevel2(Symbol symbol, Level2Quote l2, DOMQuote dom)
+        // Heartbeat-only handler. We don't apply L2 deltas — QT's DepthOfMarket
+        // maintains the canonical book and we sample it directly each tick.
+        // This subscription stays so QT delivers the L2 stream and we have a
+        // freshness heartbeat for the STALE-badge logic.
+        private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
-            if (l2 == null) return;
-            _l2Queue?.Enqueue(l2);
+            _lastL2EventUtc = DateTime.UtcNow;
         }
 
         private void Symbol_NewLast(Symbol symbol, Last last)
@@ -198,46 +204,41 @@ namespace L2_Heatmap
 
         protected override void OnUpdate(UpdateArgs args)
         {
-            DrainLevel2();
-        }
+            if (this.Symbol == null) return;
 
-        private void DrainLevel2()
-        {
-            if (_l2Queue == null || _bookState == null) return;
+            // Sample at heatmap snapshot interval (default 500ms) — same
+            // cadence as before. Capture writer has its own (slower) cadence
+            // gate inside.
+            var now = DateTime.UtcNow;
+            if ((now - _lastSampleUtc).TotalMilliseconds < LiquidityHeatmapSnapshotIntervalMs) return;
+            _lastSampleUtc = now;
 
-            // 1) Apply all queued L2 deltas.
-            while (_l2Queue.TryDequeue(out var q))
+            // Freshness gate. Orphan-level corruption is structurally
+            // impossible now (we read QT's canonical book each sample). Only
+            // remaining stale mode is "feed paused": no L2 events arriving.
+            bool fresh = _lastL2EventUtc != DateTime.MinValue
+                      && (now - _lastL2EventUtc).TotalSeconds <= BookFreshnessSec;
+            _l2Stale = !fresh;
+            if (_painter != null) _painter.L2Stale = _l2Stale;
+            if (_l2Stale) return;
+
+            var dom = this.Symbol.DepthOfMarket?
+                          .GetDepthOfMarketAggregatedCollections(_domParams);
+            if (dom == null
+                || (dom.Bids == null || dom.Bids.Length == 0)
+                && (dom.Asks == null || dom.Asks.Length == 0))
             {
-                try { _bookState.Apply(q, DateTime.UtcNow); }
-                catch { /* single bad quote shouldn't kill the drain */ }
+                _l2Stale = true;
+                if (_painter != null) _painter.L2Stale = true;
+                return;
             }
 
-            var now = DateTime.UtcNow;
-
-            // 2) Book hygiene — three layers of defense against the 2026-05-08
-            //    ref_tick corruption (orphaned levels pinning best bid/ask):
-            //      • PruneStale (TTL): background sweep of deep stranded levels.
-            //      • ReconcileWithL1: top-of-book sanity vs Symbol.Bid/Ask.
-            //      • IsFresh: feed-paused detector (no L2 deltas in N sec).
-            _bookState.PruneStale(now, BookStaleTtlSec);
-            bool sane = _bookState.ReconcileWithL1(
-                this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
-            bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
-            bool stale = !sane || !fresh;
-
-            if (_painter != null) _painter.L2Stale = stale;
-
-            // 3) When stale, freeze: don't enqueue new heatmap snapshots and
-            //    don't capture parquet rows. Existing on-screen state remains;
-            //    the badge tells the user the cloud is frozen.
-            if (stale) return;
-
-            _heatmap?.OnPostApply(_bookState, now);
+            _heatmap?.OnSample(dom, now);
             if (_capture != null
                 && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs)
             {
                 _lastCaptureUtc = now;
-                _capture.EnqueueSnapshot(now, _bookState);
+                _capture.EnqueueSnapshot(now, dom, _tickSize);
             }
         }
 
@@ -266,7 +267,7 @@ namespace L2_Heatmap
             {
                 if (_l2Subscribed && this.Symbol != null)
                 {
-                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
+                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2Heartbeat; } catch { }
                     _l2Subscribed = false;
                 }
                 if (_lastSubscribed && this.Symbol != null)
@@ -282,9 +283,7 @@ namespace L2_Heatmap
                 _painter = null;
                 _heatmap?.Clear();
                 _heatmap = null;
-                _bookState?.Clear();
-                _bookState = null;
-                _l2Queue = null;
+                _domParams = null;
             }
             catch { }
         }

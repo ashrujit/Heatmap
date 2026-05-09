@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TradingPlatform.BusinessLayer;
 
 namespace L2_Heatmap
 {
@@ -70,29 +71,38 @@ namespace L2_Heatmap
         // NQ/ES (tick 0.25) at 50 points → 200 ticks each side.
         public int LevelsWindowTicks => (int)Math.Round(_levelsWindowPoints / _tickSize);
 
-        // Throttled book-snapshot capture. Called from the L2 drain right after BookState.Apply.
-        public void OnPostApply(BookState book, DateTime nowUtc)
+        // Throttled book-snapshot capture. Called once per sample with QT's
+        // canonical DepthOfMarket — orphan-level corruption is structurally
+        // impossible because every L2 vendor refresh replaces QT's internal
+        // book wholesale. See RESEARCH_LOG 2026-05-08 for migration rationale.
+        public void OnSample(DepthOfMarketAggregatedCollections dom, DateTime nowUtc)
         {
-            if (book == null) return;
+            if (dom == null) return;
             if (_lastSnapshotUtc != DateTime.MinValue
                 && (nowUtc - _lastSnapshotUtc).TotalMilliseconds < _snapshotIntervalMs) return;
+
+            var bidsArr = dom.Bids ?? Array.Empty<Level2Item>();
+            var asksArr = dom.Asks ?? Array.Empty<Level2Item>();
+            if (bidsArr.Length == 0 && asksArr.Length == 0) return;
+
             _lastSnapshotUtc = nowUtc;
 
-            // Mid-of-book reference tick (or whichever side exists).
-            long bestBid = long.MinValue, bestAsk = long.MaxValue;
-            foreach (var kv in book.BidsByTick) { bestBid = kv.Key; break; }
-            foreach (var kv in book.AsksByTick) { bestAsk = kv.Key; break; }
+            // Mid-of-book reference tick (or whichever side exists). Best is
+            // index 0 by QT convention.
+            long bestBid = bidsArr.Length > 0 ? PriceToTicks(bidsArr[0].Price) : long.MinValue;
+            long bestAsk = asksArr.Length > 0 ? PriceToTicks(asksArr[0].Price) : long.MaxValue;
             long refTick;
             if (bestBid != long.MinValue && bestAsk != long.MaxValue) refTick = (bestBid + bestAsk) / 2;
             else if (bestBid != long.MinValue) refTick = bestBid;
             else if (bestAsk != long.MaxValue) refTick = bestAsk;
             else return;
 
-            // Clone size-by-tick views so the snapshot is independent of further BookState mutation.
-            var bids = new Dictionary<long, double>(book.BidsByTick.Count);
-            foreach (var kv in book.BidsByTick) bids[kv.Key] = kv.Value.TotalSize;
-            var asks = new Dictionary<long, double>(book.AsksByTick.Count);
-            foreach (var kv in book.AsksByTick) asks[kv.Key] = kv.Value.TotalSize;
+            // Clone the size-by-tick view so the snapshot is independent of
+            // any further DepthOfMarket mutation between paints.
+            var bids = new Dictionary<long, double>(bidsArr.Length);
+            foreach (var item in bidsArr) bids[PriceToTicks(item.Price)] = item.Size;
+            var asks = new Dictionary<long, double>(asksArr.Length);
+            foreach (var item in asksArr) asks[PriceToTicks(item.Price)] = item.Size;
 
             _snapshots.Enqueue(new BookSnapshot(nowUtc, refTick, bids, asks));
 
@@ -161,5 +171,7 @@ namespace L2_Heatmap
             if (idx >= sizes.Count) idx = sizes.Count - 1;
             _effectiveSaturation = Math.Max(MinAdaptiveSaturation, sizes[idx]);
         }
+
+        private long PriceToTicks(double price) => (long)Math.Round(price / _tickSize);
     }
 }

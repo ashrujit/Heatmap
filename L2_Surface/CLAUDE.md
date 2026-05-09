@@ -1,8 +1,8 @@
 # L2_Surface
 
-Single Quantower indicator that paints four toggleable structural layers on top of the live L2 book. Sister to `LiquidityMeter` (aggregate cum/ROC) and reads L2 captures from `L2_Heatmap`'s parquet writer for retrospective validation. All four layers share one `BookState`, one sample loop, one event vocabulary, one z-scoring baseline — they're different views of the same underlying microstructure stream, not independent indicators.
+Single Quantower indicator that paints four toggleable structural layers on top of the live L2 book. Sister to `LiquidityMeter` (aggregate cum/ROC) and reads L2 captures from `L2_Heatmap`'s parquet writer for retrospective validation. All four layers share one sample loop, one event vocabulary, one z-scoring baseline — they're different views of the same underlying microstructure stream, not independent indicators.
 
-Shipped 2026-05-08, consolidating what was originally planned as four separate indicators (L2_Events, L2_Inflection, L2_Flow, L2_Supply_Layer). The shared math + thesis was substantial — four BookState copies, four sample loops, four event-detection passes — and the layers compose more cleanly visually when they're all on the same z-stack with one toggle per layer than as four chart instances.
+Shipped 2026-05-08, consolidating what was originally planned as four separate indicators (L2_Events, L2_Inflection, L2_Flow, L2_Supply_Layer). Refactored 2026-05-09 (Option-A) to read the canonical book directly from `Symbol.DepthOfMarket` instead of maintaining a delta-merged `BookState` — eliminates the orphaned-level corruption class entirely (see RESEARCH_LOG 2026-05-08 follow-up).
 
 ## What it shows — four layers, z-ordered back to front
 
@@ -88,7 +88,7 @@ Validation:
 
 We considered four separate indicators (one per layer) and discarded that. Reasoning:
 
-1. **Shared state.** Every layer reads the same `BookState`, same z-scored sample stream, same event vocabulary, same RV/inner-depth metrics. Four separate indicators meant four `BookState` copies, four L2 subscriptions, four sample loops — substantial duplication of compute and memory for no functional gain.
+1. **Shared state.** Every layer reads the same DOM sample, same z-scored sample stream, same event vocabulary, same RV/inner-depth metrics. Four separate indicators meant four DOM polls, four sample loops — substantial duplication of compute for no functional gain.
 
 2. **Composition.** Layers compose visually: Flow band gives context, Build Bands give level structure, Climax/Inflection lines mark moments, Events dots add fine-grained texture. Toggling layers via one indicator's settings dialog is more ergonomic than juggling four chart instances.
 
@@ -101,8 +101,7 @@ The cost: this single project is larger (~1500 lines vs ~700 each) and the engin
 ## File map
 
 - `L2_Surface.csproj` — net8-windows, AnyCPU, no nuget deps, no unsafe code.
-- `L2_Surface.cs` — entry point, ~50 InputParameters across six groups (Common 800, Events 810, Inflection 820, Flow 830, Build Bands 840, Render 850), L2 subscription, drain + sample + paint dispatch. Pushes config into engine + painter on each sample so settings-dialog changes take effect without restart.
-- `BookState.cs` — third copy across the suite (L2_Heatmap, LiquidityMeter, L2_Surface). Header note flags the keep-in-sync requirement. ~120 lines, stable semantics.
+- `L2_Surface.cs` — entry point, ~50 InputParameters across six groups (Common 800, Events 810, Inflection 820, Flow 830, Build Bands 840, Render 850), DOM polling + sample + paint dispatch. Pushes config into engine + painter on each sample so settings-dialog changes take effect without restart. Subscribes to `NewLevel2` only as a freshness heartbeat (not for delta processing).
 - `SurfaceEngine.cs` — single engine, ~600 lines. Shared sample/baseline/z-score infrastructure, plus per-layer detection and state:
   - Events: `_events` linked list (every emitted event with bias/z/price/type)
   - Inflection: `_pending` + `_inflections` + cum/ROC running totals
@@ -113,9 +112,9 @@ The cost: this single project is larger (~1500 lines vs ~700 each) and the engin
 
 ## Architectural invariants (do not break without thinking hard)
 
-1. **No blocking on UI thread.** `Symbol.NewLevel2` callback only enqueues. Drain + sample + paint all run on UI thread.
-2. **Tick-keyed book.** All `BookState` ops key by `long` ticks.
-3. **Filter pseudo-L2.** `BookState.Apply` skips `id="generated_from_level1"` (NaN price/size).
+1. **No blocking on UI thread.** `Symbol.NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
+2. **Read DOM, don't maintain state.** `OnSample` calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` to get `Level2Item[]` for each side. QT maintains the canonical book; orphan-level corruption is structurally impossible (see RESEARCH_LOG 2026-05-08).
+3. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently computed prices breaks `Dictionary` lookup.
 4. **Forward-only.** No history; engine warms up over the configured lookback (default 30s) before z-scores stabilize. After ~5 samples the baselines have enough data to fire.
 5. **Engine computes all layers regardless of enabled flags.** Toggle gates rendering only. Flipping a layer on mid-session shows accumulated state immediately, not an empty warmup.
 6. **One sample loop.** Don't add a second sample timer for any layer's "extra" computation. Cost of the unified loop is O(events_in_5min) ≈ few µs/sample.

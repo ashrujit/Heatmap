@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TradingPlatform.BusinessLayer;
 
 namespace LiquidityMeter
 {
@@ -63,10 +64,11 @@ namespace LiquidityMeter
 
         // Sample current book at this time. Updates rolling baseline, detects
         // events, recomputes cum and ROC. Caller (LiquidityMeter.OnUpdate)
-        // invokes this on a 1-sec timer.
-        public void OnSample(DateTime nowUtc, BookState book)
+        // invokes this on a 1-sec timer with the canonical book state pulled
+        // from Symbol.DepthOfMarket — see RESEARCH_LOG 2026-05-08 migration.
+        public void OnSample(DateTime nowUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
-            var sample = ComputeSample(nowUtc, book);
+            var sample = ComputeSample(nowUtc, dom, tickSize);
             _samples.AddLast(sample);
             // Keep ~2x lookback in samples buffer for safety.
             EvictOlderThan(_samples, nowUtc, _lookbackSec * 2);
@@ -208,59 +210,55 @@ namespace LiquidityMeter
             return (mean, std);
         }
 
-        private Sample ComputeSample(DateTime time, BookState book)
+        // Read aggregate metrics from QT's canonical DepthOfMarket. Best-first
+        // ordered Level2Item arrays. Same math as before: sum top-N sizes for
+        // inner_depth, size-weighted centroid distances over broad-N. Mid-tick
+        // = (best_bid + best_ask) / 2 in tick units. See RESEARCH_LOG
+        // 2026-05-08 for why we read DOM directly instead of maintaining a
+        // delta-merged BookState.
+        private Sample ComputeSample(DateTime time, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
             var s = new Sample { Time = time };
+            var bids = dom?.Bids ?? Array.Empty<Level2Item>();
+            var asks = dom?.Asks ?? Array.Empty<Level2Item>();
 
-            // Top-10 each side: sum sizes (inner depth)
-            int i = 0;
-            foreach (var kv in book.BidsByTick)
-            {
-                if (i >= InnerLevels) break;
-                s.BidInner += kv.Value.TotalSize;
-                i++;
-            }
-            i = 0;
-            foreach (var kv in book.AsksByTick)
-            {
-                if (i >= InnerLevels) break;
-                s.AskInner += kv.Value.TotalSize;
-                i++;
-            }
+            int n = Math.Min(InnerLevels, bids.Length);
+            for (int i = 0; i < n; i++) s.BidInner += bids[i].Size;
+            n = Math.Min(InnerLevels, asks.Length);
+            for (int i = 0; i < n; i++) s.AskInner += asks[i].Size;
 
-            // Top-30 centroid: weighted mean |offset| in ticks. ref_tick =
-            // mid-tick from best bid + best ask. If only one side present,
-            // use that side's best as ref (corner case for thin opens).
-            long bestBid = 0, bestAsk = 0; bool haveBid = false, haveAsk = false;
-            foreach (var kv in book.BidsByTick) { bestBid = kv.Key; haveBid = true; break; }
-            foreach (var kv in book.AsksByTick) { bestAsk = kv.Key; haveAsk = true; break; }
+            bool haveBid = bids.Length > 0;
+            bool haveAsk = asks.Length > 0;
+            long bestBid = haveBid ? PriceToTicks(bids[0].Price, tickSize) : 0;
+            long bestAsk = haveAsk ? PriceToTicks(asks[0].Price, tickSize) : 0;
             long refTick = (haveBid && haveAsk) ? (bestBid + bestAsk) / 2 :
                            (haveBid ? bestBid : (haveAsk ? bestAsk : 0));
 
             double bWsum = 0, bSize = 0;
-            i = 0;
-            foreach (var kv in book.BidsByTick)
+            n = Math.Min(BroadLevels, bids.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (i >= BroadLevels) break;
-                double sz = kv.Value.TotalSize;
-                bWsum += Math.Abs(kv.Key - refTick) * sz;
+                long t = PriceToTicks(bids[i].Price, tickSize);
+                double sz = bids[i].Size;
+                bWsum += Math.Abs(t - refTick) * sz;
                 bSize += sz;
-                i++;
             }
             double aWsum = 0, aSize = 0;
-            i = 0;
-            foreach (var kv in book.AsksByTick)
+            n = Math.Min(BroadLevels, asks.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (i >= BroadLevels) break;
-                double sz = kv.Value.TotalSize;
-                aWsum += Math.Abs(kv.Key - refTick) * sz;
+                long t = PriceToTicks(asks[i].Price, tickSize);
+                double sz = asks[i].Size;
+                aWsum += Math.Abs(t - refTick) * sz;
                 aSize += sz;
-                i++;
             }
             s.BidCentroid = bSize > 0 ? bWsum / bSize : 0;
             s.AskCentroid = aSize > 0 ? aWsum / aSize : 0;
             return s;
         }
+
+        private static long PriceToTicks(double price, double tickSize)
+            => (long)Math.Round(price / tickSize);
 
         private static void EvictOlderThan<T>(LinkedList<T> list, DateTime nowUtc, int seconds)
             where T : ITimestamped

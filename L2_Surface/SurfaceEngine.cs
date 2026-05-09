@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TradingPlatform.BusinessLayer;
 
 namespace L2_Surface
 {
@@ -110,17 +111,17 @@ namespace L2_Surface
         public double CurrentTickSize { get; private set; }
 
         // ── Main entry: invoke once per sample ──────────────────────────────
-        public void OnSample(DateTime nowUtc, BookState book)
+        public void OnSample(DateTime nowUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
-            CurrentTickSize = book.TickSize;
+            CurrentTickSize = tickSize;
 
-            var sample = ComputeSample(nowUtc, book);
+            var sample = ComputeSample(nowUtc, dom, tickSize);
             CurrentMidTick = sample.MidTick;
             _samples.AddLast(sample);
             EvictOlderThan(_samples, nowUtc, LookbackSec * 2);
 
             // Track mid log-return^2 for RV. Skip first sample (no prior).
-            double midPrice = sample.MidTick * book.TickSize;
+            double midPrice = sample.MidTick * tickSize;
             if (_prevMidPrice.HasValue && _prevMidPrice.Value > 0 && midPrice > 0)
             {
                 double r = Math.Log(midPrice / _prevMidPrice.Value);
@@ -153,10 +154,10 @@ namespace L2_Surface
             //   z_ai > 0 → ASK_BUILD (-1)   z_ai < 0 → ASK_PULL (+1)
             //   z_bc > 0 → BID_OUT   (-1)   z_bc < 0 → BID_IN   (+1)
             //   z_ac > 0 → ASK_OUT   (+1)   z_ac < 0 → ASK_IN   (-1)
-            TryFire(nowUtc, zBi, +1, "BID_BUILD", "BID_PULL", sample.MidTick, book.TickSize);
-            TryFire(nowUtc, zAi, -1, "ASK_BUILD", "ASK_PULL", sample.MidTick, book.TickSize);
-            TryFire(nowUtc, zBc, -1, "BID_OUT",   "BID_IN",   sample.MidTick, book.TickSize);
-            TryFire(nowUtc, zAc, +1, "ASK_OUT",   "ASK_IN",   sample.MidTick, book.TickSize);
+            TryFire(nowUtc, zBi, +1, "BID_BUILD", "BID_PULL", sample.MidTick, tickSize);
+            TryFire(nowUtc, zAi, -1, "ASK_BUILD", "ASK_PULL", sample.MidTick, tickSize);
+            TryFire(nowUtc, zBc, -1, "BID_OUT",   "BID_IN",   sample.MidTick, tickSize);
+            TryFire(nowUtc, zAc, +1, "ASK_OUT",   "ASK_IN",   sample.MidTick, tickSize);
 
             // VOD detection (same math as MeterEngine).
             double currInner = sample.BidInner + sample.AskInner;
@@ -179,7 +180,7 @@ namespace L2_Surface
                         zVod = (vod - mVod) / Math.Max(0.1, sVod);
                         if (Math.Abs(zVod) > EventZThreshold)
                         {
-                            EmitEvent(nowUtc, 0, Math.Abs(zVod), "VOD", sample.MidTick, book.TickSize);
+                            EmitEvent(nowUtc, 0, Math.Abs(zVod), "VOD", sample.MidTick, tickSize);
                         }
                     }
                 }
@@ -201,7 +202,7 @@ namespace L2_Surface
                     {
                         Time = nowUtc,
                         PriceTicks = sample.MidTick,
-                        TickSize = book.TickSize,
+                        TickSize = tickSize,
                         Bias = ev.Bias,
                         // Cum baseline excludes this BUILD's own contribution so
                         // the threshold check measures additional commitment.
@@ -270,7 +271,7 @@ namespace L2_Surface
                         {
                             Time = nowUtc,
                             PriceTicks = sample.MidTick,
-                            TickSize = book.TickSize,
+                            TickSize = tickSize,
                             VodAbsZ = vodAbsZ,
                             BuildAbsZ = buildAbsZ,
                         });
@@ -288,7 +289,7 @@ namespace L2_Surface
                 foreach (var ev in _thisSampleEvents)
                 {
                     if (ev.Type != "BID_BUILD" && ev.Type != "ASK_BUILD") continue;
-                    UpdateBuildBands(ev, book.TickSize);
+                    UpdateBuildBands(ev, tickSize);
                 }
             }
         }
@@ -588,56 +589,62 @@ namespace L2_Surface
             return sum;
         }
 
-        private Sample ComputeSample(DateTime time, BookState book)
+        // Read aggregate metrics from QT's canonical DepthOfMarket. dom.Bids /
+        // dom.Asks are best-first ordered Level2Item arrays. We sum top-N sizes
+        // for inner_depth and compute size-weighted centroid distances over the
+        // broad-N. Mid-tick = (best_bid + best_ask) / 2 in tick units.
+        //
+        // Why we read from DepthOfMarket instead of maintaining a delta-merged
+        // book: every L2 vendor refresh (DOMQuote) replaces QT's internal book
+        // wholesale, so orphaned levels (the 2026-05-08 ref_tick bug class)
+        // cannot accumulate. See RESEARCH_LOG 2026-05-08 migration narrative.
+        private Sample ComputeSample(DateTime time, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
             var s = new Sample { Time = time };
+            var bids = dom?.Bids ?? Array.Empty<Level2Item>();
+            var asks = dom?.Asks ?? Array.Empty<Level2Item>();
 
-            int i = 0;
-            foreach (var kv in book.BidsByTick)
-            {
-                if (i >= InnerLevels) break;
-                s.BidInner += kv.Value.TotalSize;
-                i++;
-            }
-            i = 0;
-            foreach (var kv in book.AsksByTick)
-            {
-                if (i >= InnerLevels) break;
-                s.AskInner += kv.Value.TotalSize;
-                i++;
-            }
+            // Inner depth — top-N sizes each side.
+            int n = Math.Min(InnerLevels, bids.Length);
+            for (int i = 0; i < n; i++) s.BidInner += bids[i].Size;
+            n = Math.Min(InnerLevels, asks.Length);
+            for (int i = 0; i < n; i++) s.AskInner += asks[i].Size;
 
-            long bestBid = 0, bestAsk = 0; bool haveBid = false, haveAsk = false;
-            foreach (var kv in book.BidsByTick) { bestBid = kv.Key; haveBid = true; break; }
-            foreach (var kv in book.AsksByTick) { bestAsk = kv.Key; haveAsk = true; break; }
+            // Mid-tick: (best_bid + best_ask) / 2. Best is index 0 by QT convention.
+            bool haveBid = bids.Length > 0;
+            bool haveAsk = asks.Length > 0;
+            long bestBid = haveBid ? PriceToTicks(bids[0].Price, tickSize) : 0;
+            long bestAsk = haveAsk ? PriceToTicks(asks[0].Price, tickSize) : 0;
             long refTick = (haveBid && haveAsk) ? (bestBid + bestAsk) / 2 :
                            (haveBid ? bestBid : (haveAsk ? bestAsk : 0));
             s.MidTick = refTick;
 
+            // Centroid — size-weighted mean |tick offset from refTick| over broad-N.
             double bWsum = 0, bSize = 0;
-            i = 0;
-            foreach (var kv in book.BidsByTick)
+            n = Math.Min(BroadLevels, bids.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (i >= BroadLevels) break;
-                double sz = kv.Value.TotalSize;
-                bWsum += Math.Abs(kv.Key - refTick) * sz;
+                long t = PriceToTicks(bids[i].Price, tickSize);
+                double sz = bids[i].Size;
+                bWsum += Math.Abs(t - refTick) * sz;
                 bSize += sz;
-                i++;
             }
             double aWsum = 0, aSize = 0;
-            i = 0;
-            foreach (var kv in book.AsksByTick)
+            n = Math.Min(BroadLevels, asks.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (i >= BroadLevels) break;
-                double sz = kv.Value.TotalSize;
-                aWsum += Math.Abs(kv.Key - refTick) * sz;
+                long t = PriceToTicks(asks[i].Price, tickSize);
+                double sz = asks[i].Size;
+                aWsum += Math.Abs(t - refTick) * sz;
                 aSize += sz;
-                i++;
             }
             s.BidCentroid = bSize > 0 ? bWsum / bSize : 0;
             s.AskCentroid = aSize > 0 ? aWsum / aSize : 0;
             return s;
         }
+
+        private static long PriceToTicks(double price, double tickSize)
+            => (long)Math.Round(price / tickSize);
 
         private static void EvictOlderThan<T>(LinkedList<T> list, DateTime nowUtc, int seconds)
             where T : ITimestamped

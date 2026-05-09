@@ -4,23 +4,24 @@ Quantower indicator that paints a Bookmap-style L2 liquidity heatmap as a chart 
 
 ## What it does
 
-Live `NewLevel2` deltas feed a mutable in-memory book (`BookState`). Rolling N-minute snapshots of that book are sampled at ~2 Hz (`LiquidityHeatmapBuffer`). Each snapshot becomes one column on the chart; each `(price, size)` entry is one cell whose alpha scales with size. Bid cells are blue, ask cells orange. A two-regime alpha curve lifts cells past the saturation point with a brighter "ignition" tone so the top tail of the size distribution unfolds into a visible gradient instead of clamping flat.
+Each sample tick (~2 Hz), the indicator reads QT's canonical book via `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` — top-50 levels each side, returned as `Level2Item[]`. That snapshot becomes one column on the chart; each `(price, size)` entry is one cell whose alpha scales with size. Bid cells are blue, ask cells orange. A two-regime alpha curve lifts cells past the saturation point with a brighter "ignition" tone so the top tail of the size distribution unfolds into a visible gradient instead of clamping flat.
+
+The indicator also writes captured snapshot rows + tick rows to parquet (independent cadence, see Capture below) — this is the data foundation the rest of the suite reads from for retro analysis.
 
 ## File map
 
 - `L2_Heatmap.csproj` — net8-windows, AnyCPU, `AllowUnsafeBlocks=true`, `OutputPath` deploys directly to `C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\`. References `TradingPlatform.BusinessLayer.dll` from the resolved Quantower install.
-- `BookState.cs` — mutable book maintained by `NewLevel2` deltas. Tick-keyed `SortedDictionary<long, PriceLevel>` (bids descending, asks ascending). Aggregated and MBO feeds use the same code path because `lvl.Ids` is a `HashSet<string>`.
-- `LiquidityHeatmapBuffer.cs` — rolling snapshot queue. Adaptive saturation recomputes every 60 s from the buffer's own size distribution at the configured percentile (default p99). Single-threaded; called right after `BookState.Apply` on the drain thread.
+- `LiquidityHeatmapBuffer.cs` — rolling snapshot queue. `OnSample(dom, nowUtc)` accepts QT's `DepthOfMarketAggregatedCollections` directly. Adaptive saturation recomputes every 60 s from the buffer's own size distribution at the configured percentile (default p99).
 - `Palette.cs` — bid base (blue), ask base (orange), and the two ignition tones used by the above-saturation regime.
 - `ChartPainter.cs` — the render pass. Persistent off-screen `Bitmap` cached across frames. Cache rebuild uses `LockBits` + raw `int*` writes; this is the *only* `unsafe` scope in the project.
-- `L2_Heatmap.cs` — indicator entry point. Subscribes to `Symbol.NewLevel2` in `OnInit`, drains in `OnUpdate`, paints in `OnPaintChart`, unsubscribes in `OnClear`. `[InputParameter]` fields surface in Quantower's settings dialog grouped via `SettingItemSeparatorGroup` — sortIndex 700-707 under "Liquidity Heatmap" and 720-722 under "Capture (L2 + Ticks → parquet)".
+- `L2_Heatmap.cs` — indicator entry point. Polls `Symbol.DepthOfMarket` each `OnUpdate` tick, feeds the buffer + capture writer. Subscribes to `Symbol.NewLevel2` only as a freshness heartbeat; subscribes to `Symbol.NewLast` for trade-tick capture. `[InputParameter]` fields surface in Quantower's settings dialog grouped via `SettingItemSeparatorGroup` — sortIndex 700-707 under "Liquidity Heatmap" and 720-724 under "Capture (L2 + Ticks → parquet)".
 - `L2Capture.cs` — opt-in writer for L2 snapshots (top-50 each side, 1 Hz) and trade ticks. Both feed background flush task (10 s cadence) writing snappy-compressed parquet under `<OutputPath>/captures/<SYMBOL>/`. Decoupled from heatmap display path: separate snapshot cadence, no shared buffer. See [Capture](#capture-l2--ticks--parquet) below.
 
 ## Architectural invariants (do not break without thinking hard)
 
-1. **No blocking on UI thread.** `Symbol_NewLevel2` callback only enqueues. Drain runs on the UI thread inside `OnUpdate`. `OnPaintChart` is UI-thread too.
-2. **Tick-keyed book.** All `BookState` dicts key by `long` ticks (`PriceToTicks` / `TicksToPrice`). Float-equality across independently-computed prices breaks dictionary lookup otherwise.
-3. **Skip Quantower's pseudo-L2 events.** `Level2Quote` synthesized from L1 best-bid/ask changes have `id="generated_from_level1"` and NaN price/size. `BookState.Apply` filters these.
+1. **No blocking on UI thread.** `Symbol_NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
+2. **Read DOM, don't maintain state.** `Symbol.DepthOfMarket` is the canonical book — eats every L2 delta and every `DOMQuote` full-snapshot itself. Reading from it makes orphan-level corruption (the 2026-05-08 ref_tick bug class) structurally impossible. See RESEARCH_LOG 2026-05-08 follow-up for the migration narrative.
+3. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently-computed prices breaks dictionary lookup otherwise.
 4. **Forward-only.** No historical L2 — heatmap warms up over ~10 s as live data accumulates.
 5. **Unsafe scope is exactly one method:** `ChartPainter.RebuildHeatmapBitmap`. LockBits + raw `int*` pixel writes give ~10× speedup vs per-cell `FillRectangle` (~30 ns/pixel vs ~300 ns/call). Don't extend unsafe further.
 6. **Per-frame bitmap cache.** Cache invalidates on snapshot count change (every 500 ms in steady state), pan/zoom (firstX/lastX drift > 1 px), or rect resize. Cache hits are a single `g.DrawImage` blit (~1 ms); misses do the LockBits rebuild (~8 ms for ~200k cells).
@@ -69,7 +70,7 @@ In the previous frame, the OLD last snap painted from its X (call it `L_old`) to
 
 ## Memory budget
 
-Default 600 s × 2 Hz = 1200 snapshots × ~200 entries/side × 2 sides × ~16 bytes ≈ **7.7 MB peak** for the snapshot buffer. Each snapshot is a `BookSnapshot` struct holding `(DateTime, refTick, Dictionary<long, double> bids, Dictionary<long, double> asks)`. Snapshots are immutable clones — they don't share state with `BookState` after capture.
+Default 600 s × 2 Hz = 1200 snapshots × ~50 entries/side × 2 sides × ~16 bytes ≈ **~2 MB peak** for the snapshot buffer. Each snapshot is a `BookSnapshot` struct holding `(DateTime, refTick, Dictionary<long, double> bids, Dictionary<long, double> asks)`. Snapshots are independent dict clones — they don't share state with QT's DOM after capture.
 
 ## Settings dialog grouping
 
@@ -77,7 +78,7 @@ The `Settings` override on the indicator class wraps the eight `[InputParameter]
 
 ## Display vs capture decoupling (post-2026-05-07)
 
-The `Show Heatmap Painting` toggle (sortIndex 700, `LiquidityHeatmapEnabled` field) controls only the cloud overlay. **Capture is fully independent**: it consumes `BookState` directly, not the snapshot buffer. So the standard deployment is:
+The `Show Heatmap Painting` toggle (sortIndex 700, `LiquidityHeatmapEnabled` field) controls only the cloud overlay. **Capture is fully independent**: it consumes the `DepthOfMarket` snapshot directly each sample, not the heatmap buffer. So the standard deployment is:
 
 - **Main trading chart**: `Show Heatmap Painting = false`. No clouds. Capture writes silently.
 - **Spare chart** (optional, separate chart instance): `Show Heatmap Painting = true`. Visual study only.
@@ -138,7 +139,7 @@ NQ during RTH: ~3000 L2 events/sec ceiling, drain processes them on UI thread; c
 
 ### Why decoupled from display snapshot path
 
-The heatmap's `LiquidityHeatmapBuffer` snapshots at 2 Hz tied to display retention (default 600 s) — sampling rate optimized for visual smoothness, not analytical stability. Research wants stable wall-clock-aligned cadence regardless of display config. Two snapshot timers, same `BookState` source.
+The heatmap's `LiquidityHeatmapBuffer` snapshots at 2 Hz tied to display retention (default 600 s) — sampling rate optimized for visual smoothness, not analytical stability. Research wants stable wall-clock-aligned cadence regardless of display config. Two snapshot rate gates, both reading the same `DepthOfMarket` source.
 
 ### Deployed package DLLs
 
@@ -154,7 +155,7 @@ DLL drops at `C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\L2_Heatmap.dll
 
 ### Known build gotcha
 
-`BookState.cs` needs `using TradingPlatform.BusinessLayer.Integration;` because `QuotePriceType` lives there, not in the root `TradingPlatform.BusinessLayer` namespace. See root `CLAUDE.md` → Known Quantower API quirks for context.
+Since the 2026-05-09 Option-A refactor we no longer touch `Level2Quote.PriceType` directly — QT's `DepthOfMarket` handles that internally. The `using TradingPlatform.BusinessLayer.Integration;` quirk noted in root CLAUDE.md is no longer needed in this project's source files.
 
 ## Verification
 

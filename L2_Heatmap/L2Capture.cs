@@ -61,9 +61,9 @@ namespace L2_Heatmap
             _writerTask = Task.Run(() => WriterLoop(_cts.Token));
         }
 
-        public void EnqueueSnapshot(DateTime nowUtc, BookState book)
+        public void EnqueueSnapshot(DateTime nowUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
-            var row = BuildSnapshotRow(nowUtc, book);
+            var row = BuildSnapshotRow(nowUtc, dom, tickSize);
             if (row != null) _snapQueue.Enqueue(row);
         }
 
@@ -171,21 +171,23 @@ namespace L2_Heatmap
 
         // ---- snapshot row ------------------------------------------------
 
-        private SnapshotRow BuildSnapshotRow(DateTime nowUtc, BookState book)
+        private SnapshotRow BuildSnapshotRow(DateTime nowUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
-            var bids = book.BidsByTick;
-            var asks = book.AsksByTick;
-            if (bids.Count == 0 && asks.Count == 0) return null;
+            if (dom == null) return null;
+            var bids = dom.Bids ?? Array.Empty<Level2Item>();
+            var asks = dom.Asks ?? Array.Empty<Level2Item>();
+            if (bids.Length == 0 && asks.Length == 0) return null;
 
+            long PriceToTicks(double p) => (long)Math.Round(p / tickSize);
             long refTick;
-            if (bids.Count > 0 && asks.Count > 0)
+            if (bids.Length > 0 && asks.Length > 0)
             {
-                long bb = bids.Keys.First(); // descending sort → first is best bid
-                long ba = asks.Keys.First(); // ascending sort  → first is best ask
+                long bb = PriceToTicks(bids[0].Price);  // best bid = index 0 by QT convention
+                long ba = PriceToTicks(asks[0].Price);  // best ask = index 0
                 refTick = (bb + ba) / 2;
             }
-            else if (bids.Count > 0) refTick = bids.Keys.First();
-            else                      refTick = asks.Keys.First();
+            else if (bids.Length > 0) refTick = PriceToTicks(bids[0].Price);
+            else                       refTick = PriceToTicks(asks[0].Price);
 
             var row = new SnapshotRow
             {
@@ -197,21 +199,17 @@ namespace L2_Heatmap
                 AskSizes   = new double[LevelsPerSide],
             };
 
-            int i = 0;
-            foreach (var kv in bids)
+            int n = Math.Min(LevelsPerSide, bids.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (i >= LevelsPerSide) break;
-                row.BidOffsets[i] = (int)(kv.Key - refTick); // negative
-                row.BidSizes[i]   = kv.Value.TotalSize;
-                i++;
+                row.BidOffsets[i] = (int)(PriceToTicks(bids[i].Price) - refTick); // negative
+                row.BidSizes[i]   = bids[i].Size;
             }
-            int j = 0;
-            foreach (var kv in asks)
+            n = Math.Min(LevelsPerSide, asks.Length);
+            for (int i = 0; i < n; i++)
             {
-                if (j >= LevelsPerSide) break;
-                row.AskOffsets[j] = (int)(kv.Key - refTick); // positive
-                row.AskSizes[j]   = kv.Value.TotalSize;
-                j++;
+                row.AskOffsets[i] = (int)(PriceToTicks(asks[i].Price) - refTick); // positive
+                row.AskSizes[i]   = asks[i].Size;
             }
             return row;
         }

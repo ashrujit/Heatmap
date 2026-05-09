@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TradingPlatform.BusinessLayer;
 
@@ -26,19 +25,12 @@ namespace L2_Surface
             minimum: 0, maximum: 20, increment: 1, decimalPlaces: 0)]
         public int PriceThroughBufferTicks = 1;
 
-        // Defense against orphaned book levels — see RESEARCH_LOG 2026-05-08.
-        // Three layers: TTL prune (background), L1 reconcile (vs Symbol.Bid/
-        // Symbol.Ask), feed-freshness (no-update detector). When unreconcilable
-        // or feed paused, sampling pauses and the painter shows a STALE badge.
-        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 804,
-            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
-        public int BookStaleTtlSec = 60;
-
-        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 805,
-            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
-        public int BookL1ToleranceTicks = 4;
-
-        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 806,
+        // Feed-paused detector. We read the canonical book each sample from
+        // Symbol.DepthOfMarket (QT maintains it; orphan-level corruption is
+        // structurally impossible). The remaining stale mode is "feed paused"
+        // — no L2 events arriving — handled here. If no L2 event in this
+        // window, sampling pauses and the painter shows a STALE badge.
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 804,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
@@ -152,11 +144,12 @@ namespace L2_Surface
         public int LineAlpha = 220;
 
         // ── Internal state ──────────────────────────────────────────────────
-        private BookState _bookState;
         private SurfaceEngine _engine;
         private SurfacePainter _painter;
-        private ConcurrentQueue<Level2Quote> _l2Queue;
+        private GetDepthOfMarketParameters _domParams;
+        private double _tickSize = 0.25;
         private bool _l2Subscribed;
+        private DateTime _lastL2EventUtc = DateTime.MinValue;
         private DateTime _lastSampleUtc = DateTime.MinValue;
         private bool _l2Stale;
 
@@ -201,17 +194,33 @@ namespace L2_Surface
             try
             {
                 if (this.Symbol == null) return;
-                double tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
+                _tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
 
-                _bookState = new BookState(tickSize);
                 _engine = new SurfaceEngine();
                 ApplyEngineConfig();
 
                 _painter = new SurfacePainter();
                 ApplyPainterConfig();
 
-                _l2Queue = new ConcurrentQueue<Level2Quote>();
-                this.Symbol.NewLevel2 += Symbol_NewLevel2;
+                // We read the canonical book from Symbol.DepthOfMarket each
+                // sample (best-first aggregated Level2Item arrays). 50 levels
+                // each side covers our broadest consumer (parquet capture in
+                // L2_Heatmap is 50; this engine uses ≤30). Cumulative is on
+                // for downstream Level2Item.Cumulative readouts when needed.
+                _domParams = new GetDepthOfMarketParameters
+                {
+                    GetLevel2ItemsParameters = new GetLevel2ItemsParameters
+                    {
+                        LevelsCount = 50,
+                        CalculateCumulative = true,
+                    },
+                };
+
+                // We don't process the L2 events ourselves anymore — QT's
+                // DepthOfMarket eats them and maintains the canonical book.
+                // We subscribe only to track liveness: any L2 event = the
+                // feed is alive. Drives the IsFresh / STALE-badge logic.
+                this.Symbol.NewLevel2 += Symbol_NewLevel2Heartbeat;
                 _l2Subscribed = true;
             }
             catch (Exception ex)
@@ -266,52 +275,59 @@ namespace L2_Surface
             _painter.BuildBandAlpha = BuildBandAlpha;
         }
 
-        private void Symbol_NewLevel2(Symbol symbol, Level2Quote l2, DOMQuote dom)
+        // Heartbeat-only handler. We don't apply L2 deltas ourselves anymore;
+        // QT's DepthOfMarket maintains the canonical book and we read from it
+        // each sample. This subscription exists to (a) mark the indicator as
+        // an L2 consumer so QT keeps the L2 stream live, and (b) timestamp
+        // the most recent L2 event for the IsFresh feed-paused detector.
+        private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
-            if (l2 == null) return;
-            _l2Queue?.Enqueue(l2);
+            _lastL2EventUtc = DateTime.UtcNow;
         }
 
         protected override void OnUpdate(UpdateArgs args)
         {
-            if (_l2Queue == null || _bookState == null || _engine == null) return;
-
-            while (_l2Queue.TryDequeue(out var q))
-            {
-                try { _bookState.Apply(q, DateTime.UtcNow); }
-                catch { /* skip bad quote */ }
-            }
+            if (_engine == null || this.Symbol == null) return;
 
             var now = DateTime.UtcNow;
-            if ((now - _lastSampleUtc).TotalMilliseconds >= SampleIntervalMs)
+            if ((now - _lastSampleUtc).TotalMilliseconds < SampleIntervalMs) return;
+            _lastSampleUtc = now;
+
+            try
             {
-                _lastSampleUtc = now;
-                try
+                // Freshness gate: if no L2 event has arrived in the freshness
+                // window, the feed is paused (e.g., between sessions, QT's
+                // "delayed by X ms" state). Freeze: skip the sample so no
+                // events / inflections / lines get added on stale state.
+                bool fresh = _lastL2EventUtc != DateTime.MinValue
+                          && (now - _lastL2EventUtc).TotalSeconds <= BookFreshnessSec;
+                _l2Stale = !fresh;
+                if (_l2Stale) return;
+
+                // Read QT's canonical book directly. DepthOfMarket eats every
+                // L2 delta and DOMQuote refresh; orphan-level corruption (the
+                // 2026-05-08 ref_tick bug) is structurally impossible because
+                // any vendor full-snapshot replaces QT's internal book.
+                var dom = this.Symbol.DepthOfMarket?
+                              .GetDepthOfMarketAggregatedCollections(_domParams);
+                if (dom == null
+                    || (dom.Bids == null || dom.Bids.Length == 0)
+                    && (dom.Asks == null || dom.Asks.Length == 0))
                 {
-                    // Book hygiene before sampling — three layers against the
-                    // 2026-05-08 ref_tick bug:
-                    //   PruneStale (TTL), ReconcileWithL1 (vs Symbol.Bid/Ask),
-                    //   IsFresh (feed-paused detector). When stale, freeze:
-                    //   skip the sample so no new events / inflections /
-                    //   climax / build-bands / flow get added on bad data.
-                    //   Painter shows a STALE badge.
-                    _bookState.PruneStale(now, BookStaleTtlSec);
-                    bool sane = _bookState.ReconcileWithL1(
-                        this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
-                    bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
-                    _l2Stale = !sane || !fresh;
-                    if (_l2Stale) return;
-                    ApplyEngineConfig();
-                    _engine.OnSample(now, _bookState);
-                    _engine.ApplyEventTtl(now, EventsAutoClearMin);
-                    _engine.ApplyPriceThrough(PriceThroughBufferTicks);
+                    _l2Stale = true;
+                    return;
                 }
-                catch (Exception ex)
-                {
-                    Core.Instance.Loggers.Log(
-                        $"[{nameof(L2_Surface)}] sample failed: {ex.Message}",
-                        LoggingLevel.Error);
-                }
+
+                ApplyEngineConfig();
+                _engine.OnSample(now, dom, _tickSize);
+                _engine.ApplyEventTtl(now, EventsAutoClearMin);
+                _engine.ApplyPriceThrough(PriceThroughBufferTicks);
+            }
+            catch (Exception ex)
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(L2_Surface)}] sample failed: {ex.Message}",
+                    LoggingLevel.Error);
             }
         }
 
@@ -344,14 +360,12 @@ namespace L2_Surface
             {
                 if (_l2Subscribed && this.Symbol != null)
                 {
-                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
+                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2Heartbeat; } catch { }
                     _l2Subscribed = false;
                 }
                 _painter = null;
                 _engine = null;
-                _bookState?.Clear();
-                _bookState = null;
-                _l2Queue = null;
+                _domParams = null;
             }
             catch { }
         }

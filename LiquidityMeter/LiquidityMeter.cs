@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Chart;
@@ -28,24 +27,11 @@ namespace LiquidityMeter
             minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
         public int SampleIntervalMs = 1000;
 
-        // Defense against orphaned book levels (the 2026-05-08 ref_tick bug —
-        // see RESEARCH_LOG). 60s is conservative for liquid futures aggregated
-        // L2; lower for less liquid symbols only if you see legitimate quiet
-        // levels evicted; 0 disables.
-        [InputParameter("Book Stale-Level TTL (sec, 0 = off)", sortIndex: 906,
-            minimum: 0, maximum: 600, increment: 5, decimalPlaces: 0)]
-        public int BookStaleTtlSec = 60;
-
-        // L1 reconciliation: any L2 entry whose tick violates Symbol.Bid /
-        // Symbol.Ask by more than this many ticks gets pruned. L1 is its own
-        // stream — independent reference vs the L2 book.
-        [InputParameter("Book L1 Reconcile Tolerance (ticks)", sortIndex: 907,
-            minimum: 0, maximum: 50, increment: 1, decimalPlaces: 0)]
-        public int BookL1ToleranceTicks = 4;
-
-        // Feed-paused detector: if no L2 deltas have arrived for this long,
-        // pause sampling and paint a STALE badge.
-        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 908,
+        // Feed-paused detector. Book is read from QT's DepthOfMarket each
+        // sample, so orphan-level corruption can't accumulate. The only
+        // remaining stale mode is feed-paused: no L2 events arriving. Above
+        // this threshold, sampling pauses and the painter shows a STALE badge.
+        [InputParameter("Book Freshness (sec, no-L2-update threshold)", sortIndex: 906,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
@@ -103,11 +89,12 @@ namespace LiquidityMeter
         public const int AnchorModeSession = 2;
 
         // ── Internal state ──────────────────────────────────────────────────
-        private BookState _bookState;
         private MeterEngine _engine;
         private MeterPainter _painter;
-        private ConcurrentQueue<Level2Quote> _l2Queue;
+        private GetDepthOfMarketParameters _domParams;
+        private double _tickSize = 0.25;
         private bool _l2Subscribed;
+        private DateTime _lastL2EventUtc = DateTime.MinValue;
         private DateTime _lastSampleUtc = DateTime.MinValue;
         private bool _l2Stale;
 
@@ -151,9 +138,8 @@ namespace LiquidityMeter
             try
             {
                 if (this.Symbol == null) return;
-                double tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
+                _tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
 
-                _bookState = new BookState(tickSize);
                 _engine = new MeterEngine(LookbackSeconds, EventZThreshold, ROCWindowSeconds);
                 ApplyAnchor(_engine, DateTime.UtcNow);
 
@@ -169,9 +155,21 @@ namespace LiquidityMeter
                     CumScale = CumScale,
                     ROCScale = ROCScale,
                 };
-                _l2Queue = new ConcurrentQueue<Level2Quote>();
 
-                this.Symbol.NewLevel2 += Symbol_NewLevel2;
+                _domParams = new GetDepthOfMarketParameters
+                {
+                    GetLevel2ItemsParameters = new GetLevel2ItemsParameters
+                    {
+                        LevelsCount = 30,           // engine uses ≤30 each side
+                        CalculateCumulative = false,
+                    },
+                };
+
+                // We don't process L2 events ourselves anymore — QT's
+                // DepthOfMarket eats them and we read the canonical book each
+                // sample. NewLevel2 subscription stays only as a heartbeat for
+                // IsFresh / STALE-badge logic. See RESEARCH_LOG 2026-05-08.
+                this.Symbol.NewLevel2 += Symbol_NewLevel2Heartbeat;
                 _l2Subscribed = true;
             }
             catch (Exception ex)
@@ -218,42 +216,48 @@ namespace LiquidityMeter
             }
         }
 
-        private void Symbol_NewLevel2(Symbol symbol, Level2Quote l2, DOMQuote dom)
+        // Heartbeat-only handler. We don't apply L2 deltas ourselves anymore;
+        // QT's DepthOfMarket maintains the canonical book and we read from it
+        // each sample. This subscription exists to (a) mark the indicator as
+        // an L2 consumer so QT keeps the L2 stream live, and (b) timestamp
+        // the most recent L2 event for the IsFresh feed-paused detector.
+        private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
-            if (l2 == null) return;
-            _l2Queue?.Enqueue(l2);
+            _lastL2EventUtc = DateTime.UtcNow;
         }
 
         protected override void OnUpdate(UpdateArgs args)
         {
-            if (_l2Queue == null || _bookState == null || _engine == null) return;
+            if (_engine == null || this.Symbol == null) return;
 
-            // Drain L2 deltas onto the live book.
-            while (_l2Queue.TryDequeue(out var q))
-            {
-                try { _bookState.Apply(q, DateTime.UtcNow); }
-                catch { /* skip bad quote */ }
-            }
-
-            // Fixed-cadence book sample — independent of L2 burst rate. The
-            // research data is at 1 Hz; we match that by default.
             var now = DateTime.UtcNow;
             if ((now - _lastSampleUtc).TotalMilliseconds >= SampleIntervalMs)
             {
                 _lastSampleUtc = now;
-                // Book hygiene before sampling — three layers against the
-                // 2026-05-08 ref_tick bug:
-                //   PruneStale (TTL), ReconcileWithL1 (vs Symbol.Bid/Ask),
-                //   IsFresh (feed-paused detector). When stale, freeze: skip
-                //   the sample so cum/ROC don't update on bad data; the
-                //   painter shows a STALE badge.
-                _bookState.PruneStale(now, BookStaleTtlSec);
-                bool sane = _bookState.ReconcileWithL1(
-                    this.Symbol.Bid, this.Symbol.Ask, BookL1ToleranceTicks);
-                bool fresh = _bookState.IsFresh(now, BookFreshnessSec);
-                _l2Stale = !sane || !fresh;
-                if (_l2Stale) return;
-                try { _engine.OnSample(now, _bookState); }
+                try
+                {
+                    // Freshness gate. With BookState replaced by DepthOfMarket
+                    // reads, orphan-level corruption is structurally impossible
+                    // — the only remaining stale mode is "feed paused" (no L2
+                    // events arriving). When stale, freeze: skip OnSample so
+                    // cum/ROC stop updating; painter shows STALE badge.
+                    bool fresh = _lastL2EventUtc != DateTime.MinValue
+                              && (now - _lastL2EventUtc).TotalSeconds <= BookFreshnessSec;
+                    _l2Stale = !fresh;
+                    if (_l2Stale) return;
+
+                    var dom = this.Symbol.DepthOfMarket?
+                                  .GetDepthOfMarketAggregatedCollections(_domParams);
+                    if (dom == null
+                        || (dom.Bids == null || dom.Bids.Length == 0)
+                        && (dom.Asks == null || dom.Asks.Length == 0))
+                    {
+                        _l2Stale = true;
+                        return;
+                    }
+
+                    _engine.OnSample(now, dom, _tickSize);
+                }
                 catch (Exception ex)
                 {
                     Core.Instance.Loggers.Log(
@@ -333,7 +337,7 @@ namespace LiquidityMeter
             {
                 if (_l2Subscribed && this.Symbol != null)
                 {
-                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
+                    try { this.Symbol.NewLevel2 -= Symbol_NewLevel2Heartbeat; } catch { }
                     _l2Subscribed = false;
                 }
                 if (_subscribedChart != null)
@@ -343,9 +347,7 @@ namespace LiquidityMeter
                 }
                 _painter = null;
                 _engine = null;
-                _bookState?.Clear();
-                _bookState = null;
-                _l2Queue = null;
+                _domParams = null;
                 _manualAnchorUtc = null;
             }
             catch { }

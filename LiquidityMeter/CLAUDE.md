@@ -16,8 +16,8 @@ The 12:47:00 inflection on 2026-05-05 (loss-trade narrative): cumulative had bee
 
 ## Architecture
 
-- **Live source**: `Symbol.NewLevel2` deltas feed an in-process `BookState` (mirror of L2_Heatmap's, kept in sync). Drains in `OnUpdate`.
-- **Sample cadence**: a 1-second timer (driven from `OnUpdate` elapsed-time check) samples `BookState` → derives `bid_inner`, `ask_inner`, `bid_centroid`, `ask_centroid` (top-10 sums + size-weighted |offset| over top-30).
+- **Live source**: `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` — QT's canonical book, polled once per sample. We don't maintain a delta-merged BookState (refactored 2026-05-09 — see RESEARCH_LOG 2026-05-08 follow-up: orphan-level corruption is structurally impossible reading from QT's book). `Symbol.NewLevel2` is subscribed only as a freshness heartbeat for the STALE-badge logic.
+- **Sample cadence**: a 1-second timer (driven from `OnUpdate` elapsed-time check) reads top-30 levels each side from DOM → derives `bid_inner`, `ask_inner`, `bid_centroid`, `ask_centroid` (top-10 sums + size-weighted |offset| over top-30).
 - **Rolling baseline**: 30-second mean/std per metric, recomputed each sample. Z-scores derived. |z| > 2.5 fires a directionally-tagged event.
 - **Event vocabulary** (matches `research/liq_events.py` exactly):
 
@@ -40,8 +40,7 @@ The 12:47:00 inflection on 2026-05-05 (loss-trade narrative): cumulative had bee
 ## File map
 
 - `LiquidityMeter.csproj` — net8-windows, AnyCPU. **No nuget deps**, no unsafe code.
-- `LiquidityMeter.cs` — entry point, settings (sortIndex 900-915 in two groups), L2 subscription, drain + sample loop, paint dispatch.
-- `BookState.cs` — mirror of L2_Heatmap/BookState.cs. Same NaN-filter, tick-keying, closed-quote handling.
+- `LiquidityMeter.cs` — entry point, settings (sortIndex 900-915 in two groups), DOM polling at sample cadence, paint dispatch. Subscribes to `NewLevel2` only as a freshness heartbeat.
 - `MeterEngine.cs` — sample buffer, rolling stats, side-aware event detection, cum/ROC math. Internal classes `Sample` + `MeterEvent` use a private `ITimestamped` interface for shared eviction logic.
 - `MeterPainter.cs` — left-center vertical strip rendering. Anti-aliased `FillRectangle` for the cum bar + `FillPolygon` for the needle. Tick marks at quarter scale points. Numeric `cum` and `roc` labels below the strip; event count above.
 
@@ -65,9 +64,9 @@ The anchor is set at the click instant, not at a clicked-bar timestamp. Backdati
 
 ## Architectural invariants
 
-1. **No blocking on UI thread.** `Symbol.NewLevel2` callback only enqueues. Drain + sample + paint all run on UI thread.
-2. **Tick-keyed book.** `(long)Math.Round(price / tickSize)` everywhere.
-3. **Filter pseudo-L2.** `BookState.Apply` skips `id="generated_from_level1"` (NaN price/size).
+1. **No blocking on UI thread.** `Symbol.NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
+2. **Read DOM, don't maintain state.** Each sample calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)`. QT maintains the canonical book; we don't. See RESEARCH_LOG 2026-05-08.
+3. **Tick-keyed math.** `(long)Math.Round(price / tickSize)` for any price-keyed dictionary.
 4. **Forward-only.** No history; meter warms up over the configured lookback (default 30s) before z-scores stabilize.
 5. **VOD events deliberately omitted.** Neutral-bias events would just inflate event count without affecting cum/ROC.
 

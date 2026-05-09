@@ -571,6 +571,85 @@ The L2_Heatmap parquet writer will not produce snapshot rows during stale period
 
 ---
 
+## Session 2026-05-09 — Option-A migration: replace BookState with `Symbol.DepthOfMarket`
+
+User found `Symbol.DepthOfMarket` while reading `api-recon`'s decompiled BL source. It's a public property on every Symbol that returns QT's *canonical* book — the one the QT DOM panel and chart depth display use, maintained internally by QT itself. Inspecting `DepthOfMarket.cs` in the recon revealed the critical detail: alongside per-event `Level2Quote` updates, QT eats *full-book* `DOMQuote` snapshots from the vendor and **replaces** the internal Asks/Bids arrays wholesale. That means orphan-level corruption — the entire bug class we spent two days defending against on 5/8 — is structurally impossible if you read from QT's book instead of maintaining your own delta-merged one.
+
+This session migrates all three indicators from a delta-merged `BookState` to direct `Symbol.DepthOfMarket` polling. The previous commit's defenses (TTL prune, L1 reconcile, freshness gate, STALE badge) become partly redundant: PruneStale and ReconcileWithL1 are now dead code (kept the freshness gate + STALE badge — those address feed-pause, which is independent of book-source).
+
+### Why now instead of after Sunday
+
+Sunday's session would tell us only whether the previous commit's TTL+reconcile defenses *coped* with the bug. It can't tell us this is a worse architecture than reading the canonical book directly. Either Sunday "works" (in which case Option A is still cleaner) or it doesn't (in which case Option A is the obvious answer). Migrating now removes 200+ lines of subtle bookkeeping code, eliminates the bug class permanently, and lets Sunday be a normal validation session instead of a defense check.
+
+### What replaced what
+
+For each of L2_Heatmap / LiquidityMeter / L2_Surface, on each sample tick:
+
+```cs
+var dom = this.Symbol.DepthOfMarket?.GetDepthOfMarketAggregatedCollections(_domParams);
+// dom.Bids and dom.Asks are best-first ordered Level2Item[] (Price, Size, ...)
+ComputeSampleFromDom(dom, tickSize);
+```
+
+`_domParams` is configured once in `OnInit`:
+```cs
+_domParams = new GetDepthOfMarketParameters {
+    GetLevel2ItemsParameters = new GetLevel2ItemsParameters {
+        LevelsCount = N,                  // 50 for L2_Heatmap, 30 for the others
+        CalculateCumulative = false,      // we sum sizes ourselves
+    },
+};
+```
+
+`Symbol.NewLevel2` subscription stays — but only as a freshness heartbeat (handler does `_lastL2EventUtc = DateTime.UtcNow;` and nothing else). This keeps QT delivering the L2 stream to its DOM and gives us "feed alive?" detection independent of DOM contents.
+
+### Code deltas
+
+- **Deleted**: `L2_Heatmap/BookState.cs`, `LiquidityMeter/BookState.cs`, `L2_Surface/BookState.cs` (~150 lines × 3 = 450 lines gone). All the order-bookkeeping code (`_orders` dict, `Apply` delta-merge logic, `Closed` cleanup, `PruneStale`, `ReconcileWithL1`, `OrderEntry` struct, `PriceLevel` class).
+- **Refactored engines** to consume `DepthOfMarketAggregatedCollections` instead of `BookState`. Sample math is unchanged — same top-N inner depth sums, same size-weighted centroid, same mid-tick computation. Only the data source differs. `(SurfaceEngine.OnSample, MeterEngine.OnSample)`.
+- **Refactored capture writer** (`L2Capture.BuildSnapshotRow`) to take `(DepthOfMarketAggregatedCollections, double tickSize)`. Parquet schema unchanged — same `ref_tick + bid_offset/size × 50 + ask_offset/size × 50` layout. Captured files from before and after this commit are interchangeable for research.
+- **Refactored heatmap buffer** (`LiquidityHeatmapBuffer.OnSample`, renamed from `OnPostApply`) to take a `DepthOfMarketAggregatedCollections` directly.
+- **Indicator entry points** simplified: no L2 queue, no drain loop. `OnUpdate` does freshness check → DOM poll → engine sample. ~30 lines each, much cleaner control flow.
+- **Removed InputParameters**: `BookStaleTtlSec`, `BookL1ToleranceTicks` (the leftovers don't apply to QT's DOM-maintained book). `BookFreshnessSec` retained (feed-pause detector).
+
+### What's preserved
+
+- **STALE badge UX** — unchanged. `bool L2Stale` flag on each painter, drawn as small red top-right label when `IsFresh` returns false.
+- **Capture parquet schema** — backward-compatible. Old captures from before the refactor remain readable; new captures land with the same column layout.
+- **Engine math** — identical. Same z-score formulas, same event vocabulary, same bias map, same defaults. Same `surface_walk.py` simulator works against new captures unchanged.
+- **STALE-when-feed-paused behavior** — same as previous commit. When no L2 events arrive within `BookFreshnessSec`, indicators freeze and paint badge.
+
+### Tradeoffs accepted
+
+- **Polling instead of event-driven for book state.** We sample DOM at 1 Hz instead of reacting per-quote. Our engines were already 1 Hz samplers, so no functional regression — but if a future indicator wanted event-rate granularity, it'd need a different approach.
+- **Lost: order-ID tracking.** The aggregated `Level2Item[]` is by-price-level, not by-order. Our engines never used IDs (aggregate sums of sizes), so no functional loss. If we ever need MBO granularity, `GetLevel2ItemsParameters.GetMBOItems = true` returns the raw orders instead.
+- **Trust in QT.** We rely on QT's DOM being maintained correctly. If QT itself has a book-maintenance bug, we'd inherit it. Acceptable trade — QT's DOM is the same store its DOM panel uses; if it were broken, every QT user would notice.
+
+### Files changed this session
+
+| File | Change |
+|---|---|
+| `L2_Heatmap/BookState.cs` | **deleted** |
+| `LiquidityMeter/BookState.cs` | **deleted** |
+| `L2_Surface/BookState.cs` | **deleted** |
+| `L2_Heatmap/L2_Heatmap.cs` | DOM polling; freshness heartbeat; removed BookStaleTtlSec / BookL1ToleranceTicks InputParameters |
+| `L2_Heatmap/LiquidityHeatmapBuffer.cs` | `OnPostApply(BookState)` → `OnSample(DepthOfMarketAggregatedCollections)` |
+| `L2_Heatmap/L2Capture.cs` | `BuildSnapshotRow(BookState)` → `BuildSnapshotRow(DepthOfMarketAggregatedCollections, double tickSize)` |
+| `LiquidityMeter/LiquidityMeter.cs` | DOM polling; freshness heartbeat; removed obsolete InputParameters |
+| `LiquidityMeter/MeterEngine.cs` | `OnSample(BookState)` → `OnSample(DepthOfMarketAggregatedCollections, double tickSize)` |
+| `L2_Surface/L2_Surface.cs` | DOM polling; freshness heartbeat; removed obsolete InputParameters |
+| `L2_Surface/SurfaceEngine.cs` | `OnSample(BookState)` → `OnSample(DepthOfMarketAggregatedCollections, double tickSize)` |
+| `CLAUDE.md` (root + 3 subprojects) | Docs updated to reflect Option-A architecture |
+
+### Sunday validation
+
+Same plan as before, but with cleaner expectations:
+- **STALE badge clears within seconds of feed reopening.** Same as previous commit's freshness behavior.
+- **`surface_walk.py` after the session shows ref_tick that matches tape exactly** (no offset, no drift). If there's still drift, the bug is in QT's own DOM maintenance — different problem entirely. (Confidence: very low it's there.)
+- **No degraded behavior on signal generation.** Same engine math, just reading from a more reliable source.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.
