@@ -1,10 +1,10 @@
 # L2_Heatmap
 
-Quantower indicator that paints a Bookmap-style L2 liquidity heatmap as a chart backdrop. Display-first; an opt-in capture path writes top-50 L2 snapshots and trade ticks to parquet for offline research (depth-σ / liquidity-pull work). Capture is off by default and decoupled from the display path. Ported from the heatmap layer of a larger parent indicator (Skurry_Scribe).
+Quantower indicator that paints a Bookmap-style L2 liquidity heatmap as a chart backdrop. Display-first; an opt-in capture path writes top-200 L2 snapshots (50 NQ price points each side at tickSize 0.25) and trade ticks to parquet for offline research (depth-σ / liquidity-pull work). Capture is off by default and decoupled from the display path. Ported from the heatmap layer of a larger parent indicator (Skurry_Scribe).
 
 ## What it does
 
-Each sample tick (~2 Hz), the indicator reads QT's canonical book via `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` — top-50 levels each side, returned as `Level2Item[]`. That snapshot becomes one column on the chart; each `(price, size)` entry is one cell whose alpha scales with size. Bid cells are blue, ask cells orange. A two-regime alpha curve lifts cells past the saturation point with a brighter "ignition" tone so the top tail of the size distribution unfolds into a visible gradient instead of clamping flat.
+Each sample tick (~2 Hz), the indicator reads QT's canonical book via `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` — top-200 levels each side, returned as `Level2Item[]`. That snapshot becomes one column on the chart; each `(price, size)` entry is one cell whose alpha scales with size. Bid cells are blue, ask cells orange. A two-regime alpha curve lifts cells past the saturation point with a brighter "ignition" tone so the top tail of the size distribution unfolds into a visible gradient instead of clamping flat.
 
 The indicator also writes captured snapshot rows + tick rows to parquet (independent cadence, see Capture below) — this is the data foundation the rest of the suite reads from for retro analysis.
 
@@ -15,7 +15,7 @@ The indicator also writes captured snapshot rows + tick rows to parquet (indepen
 - `Palette.cs` — bid base (blue), ask base (orange), and the two ignition tones used by the above-saturation regime.
 - `ChartPainter.cs` — the render pass. Persistent off-screen `Bitmap` cached across frames. Cache rebuild uses `LockBits` + raw `int*` writes; this is the *only* `unsafe` scope in the project.
 - `L2_Heatmap.cs` — indicator entry point. Polls `Symbol.DepthOfMarket` each `OnUpdate` tick, feeds the buffer + capture writer. Subscribes to `Symbol.NewLevel2` only as a freshness heartbeat; subscribes to `Symbol.NewLast` for trade-tick capture. `[InputParameter]` fields surface in Quantower's settings dialog grouped via `SettingItemSeparatorGroup` — sortIndex 700-707 under "Liquidity Heatmap" and 720-724 under "Capture (L2 + Ticks → parquet)".
-- `L2Capture.cs` — opt-in writer for L2 snapshots (top-50 each side, 1 Hz) and trade ticks. Both feed background flush task (10 s cadence) writing snappy-compressed parquet under `<OutputPath>/captures/<SYMBOL>/`. Decoupled from heatmap display path: separate snapshot cadence, no shared buffer. See [Capture](#capture-l2--ticks--parquet) below.
+- `L2Capture.cs` — opt-in writer for L2 snapshots (top-200 each side, 1 Hz) and trade ticks. Both feed background flush task (10 s cadence) writing snappy-compressed parquet under `<OutputPath>/captures/<SYMBOL>/`. Decoupled from heatmap display path: separate snapshot cadence, no shared buffer. See [Capture](#capture-l2--ticks--parquet) below.
 
 ## Architectural invariants (do not break without thinking hard)
 
@@ -103,18 +103,20 @@ Opt-in via `Capture Enabled`. When on, every `NewLevel2` drain pass also evaluat
 
 ### Schemas
 
-**Snapshots** — flat columns, 200 cols + ts + ref_tick = 202 cols total.
+**Snapshots** — flat columns, 800 cols + ts + ref_tick = 802 cols total.
 
 | Column | Type | Notes |
 |---|---|---|
 | `timestamp_us` | int64 | Microseconds since Unix epoch (UTC) |
 | `ref_tick` | int64 | Mid-tick: `(best_bid_tick + best_ask_tick) / 2` |
-| `bid_offset_0..49` | int32 | Signed tick offset from `ref_tick` (negative for bids) |
-| `bid_size_0..49` | double | Resting size at that level |
-| `ask_offset_0..49` | int32 | Signed tick offset from `ref_tick` (positive for asks) |
-| `ask_size_0..49` | double | Resting size at that level |
+| `bid_offset_0..199` | int32 | Signed tick offset from `ref_tick` (negative for bids) |
+| `bid_size_0..199` | double | Resting size at that level |
+| `ask_offset_0..199` | int32 | Signed tick offset from `ref_tick` (positive for asks) |
+| `ask_size_0..199` | double | Resting size at that level |
 
 Empty levels store `offset=0, size=0`. Filter `size > 0` on read to recover real levels.
+
+Schema bumped 2026-05-09 from 50→200 levels each side (50 NQ price points). Captures from 2026-05-04 → 2026-05-08 use the prior 50-level schema; per-file readable but not concat-able with new files. Those days are early experimental data and intentionally not preserved under the new schema.
 
 **Ticks** — 4 columns.
 
@@ -127,7 +129,7 @@ Empty levels store `offset=0, size=0`. Filter `size > 0` on read to recover real
 
 ### Why flat over list-typed columns
 
-200-column flat schema is fatter on schema definition but trivially ergonomic on read in Polars/pandas — direct column access for distance-distribution analysis (e.g. distance-weighted depth aggregates), no list-API gymnastics. Snappy compression flattens the cost difference at rest.
+800-column flat schema is fatter on schema definition but trivially ergonomic on read in Polars/pandas — direct column access for distance-distribution analysis (e.g. distance-weighted depth aggregates), no list-API gymnastics. Snappy compression flattens the cost difference at rest (most far-from-mid columns will be empty most of the time and compress near-trivially).
 
 ### Retention
 

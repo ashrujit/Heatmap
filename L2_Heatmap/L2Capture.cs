@@ -20,16 +20,20 @@ namespace L2_Heatmap
     //   captures/<SYMBOL>/snapshots-YYYY-MM-DD.parquet
     //   captures/<SYMBOL>/ticks-YYYY-MM-DD.parquet
     //
-    // Snapshots are top-50 levels each side, flat-column schema (200 cols
-    // total + ts + ref_tick). Offsets are signed ticks from ref_tick: bids
-    // negative, asks positive. Empty levels store offset=0, size=0 (decoder
-    // skips zero-size). Compressed Snappy, ~150–300 KB/hour/symbol typical.
+    // Snapshots are top-200 levels each side, flat-column schema (800 cols
+    // total + ts + ref_tick). On NQ (tick=0.25), 200 levels = 50 price points
+    // each side — sized for the depth-σ research surface, not just the
+    // visible book. Bumped from 50→200 on 2026-05-09; captures from
+    // 2026-05-04 → 2026-05-08 are early experimental data and not preserved
+    // for combined reads under the new schema. Offsets are signed ticks from
+    // ref_tick: bids negative, asks positive. Empty levels store offset=0,
+    // size=0 (decoder skips zero-size). Compressed Snappy.
     //
     // Writer task batches every ~10s on a background thread to keep IO out of
     // the L2 drain loop on the UI thread.
     internal sealed class L2Capture : IDisposable
     {
-        public const int LevelsPerSide = 50;
+        public const int LevelsPerSide = 200;
         private const int FlushPeriodSec = 10;
 
         private readonly string _captureRoot;

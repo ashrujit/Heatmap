@@ -151,7 +151,8 @@ namespace L2_Heatmap
 
                 _painter = new ChartPainter { Heatmap = _heatmap };
 
-                // 50 levels each side covers the parquet capture schema.
+                // LevelsPerSide drives both the parquet capture schema and
+                // the DOM read width. 200 ticks each side ≈ 50 NQ points.
                 _domParams = new GetDepthOfMarketParameters
                 {
                     GetLevel2ItemsParameters = new GetLevel2ItemsParameters
