@@ -55,7 +55,10 @@ namespace SinglePrints
         private Painter _painter;
         private TimeZoneInfo _ny;
         private List<Zone> _zones = new();
-        private DateTime _lastRebuildUtc = DateTime.MinValue;
+        // Stable key identifying which TPO bracket of which session we last
+        // rebuilt for. Advances at each NY bracket boundary (09:30, 10:00,
+        // ...). Sentinel value triggers first rebuild after OnInit.
+        private long _lastRebuildBracketKey = long.MinValue;
         private int _lastSeenCount = 0;
 
         public SinglePrints() : base()
@@ -104,6 +107,8 @@ namespace SinglePrints
                 };
 
                 RebuildZones();
+                _lastRebuildBracketKey = ComputeBracketKey(DateTime.UtcNow);
+                _lastSeenCount = this.Count;
             }
             catch (Exception ex)
             {
@@ -115,19 +120,41 @@ namespace SinglePrints
 
         protected override void OnUpdate(UpdateArgs args)
         {
-            // Rebuild on bracket boundary crossings only — TPO is bar-aggregate,
-            // tick-by-tick recomputation is wasted work. Coarse trigger: rebuild
-            // every BracketSizeMin minutes of wall-clock since the last rebuild.
-            // Also rebuild whenever bar count changes by more than ~bracket worth.
-            var now = DateTime.UtcNow;
-            bool dueByTime = (now - _lastRebuildUtc).TotalMinutes >= BracketSizeMin;
+            // Rebuild on TPO bracket boundary crossings (NY 10:00, 10:30, ...),
+            // not on a free-running wall-clock interval. The previous gate
+            // (BracketSizeMin minutes since last rebuild) drifted from TPO
+            // boundaries depending on indicator load time — a 10:10 load
+            // rebuilt at 10:40, missing the 10:30 boundary by 10 minutes.
+            // Bar-count delta still triggers rebuilds for historical-data
+            // loads (e.g., chart symbol change, deep history fill).
+            long currentBracketKey = ComputeBracketKey(DateTime.UtcNow);
+            bool dueByBoundary = currentBracketKey != _lastRebuildBracketKey;
             bool dueByCount = Math.Abs(this.Count - _lastSeenCount) >= 30;
-            if (dueByTime || dueByCount)
+            if (dueByBoundary || dueByCount)
             {
-                _lastRebuildUtc = now;
+                _lastRebuildBracketKey = currentBracketKey;
                 _lastSeenCount = this.Count;
                 RebuildZones();
             }
+        }
+
+        // Stable key that increments at each TPO bracket boundary anchored on
+        // each NY session's 09:30 open. Outside RTH (incl. weekends), returns
+        // a per-day stable key so we don't trigger rapid rebuilds when the
+        // market is closed; the bar-count delta gate handles historical loads.
+        private long ComputeBracketKey(DateTime nowUtc)
+        {
+            var nowNy = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, _ny);
+            long dayKey = nowNy.Date.Ticks / TimeSpan.TicksPerDay;
+            var t = nowNy.TimeOfDay;
+            if (nowNy.DayOfWeek == DayOfWeek.Saturday || nowNy.DayOfWeek == DayOfWeek.Sunday
+                || t < TimeSpan.FromHours(9.5) || t >= TimeSpan.FromHours(16))
+            {
+                return dayKey * 1000; // pre/post-RTH: one stable key per day
+            }
+            int minutesSinceOpen = (int)(t - TimeSpan.FromHours(9.5)).TotalMinutes;
+            int bracketIdx = minutesSinceOpen / Math.Max(1, BracketSizeMin);
+            return dayKey * 1000 + bracketIdx;
         }
 
         public override void OnPaintChart(PaintChartEventArgs args)
