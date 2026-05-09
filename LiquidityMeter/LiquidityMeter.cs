@@ -88,6 +88,12 @@ namespace LiquidityMeter
         public const int AnchorModeLoad    = 1;
         public const int AnchorModeSession = 2;
 
+        // L1 sanity gate. DOM should already agree with Symbol.Bid/Ask, but
+        // paranoia: if best-of-side from DOM diverges by more than this many
+        // ticks, treat as stale. 2 ticks tolerates the natural in-flight
+        // skew between QT's L1 cache and DOM aggregation.
+        private const int L1ToleranceTicks = 2;
+
         // ── Internal state ──────────────────────────────────────────────────
         private MeterEngine _engine;
         private MeterPainter _painter;
@@ -256,6 +262,14 @@ namespace LiquidityMeter
                         return;
                     }
 
+                    // L1 sanity gate. DOM is canonical, but pause if its best
+                    // diverges from Symbol.Bid/Ask by more than tolerance.
+                    if (!L1Agrees(dom, _tickSize))
+                    {
+                        _l2Stale = true;
+                        return;
+                    }
+
                     _engine.OnSample(now, dom, _tickSize);
                 }
                 catch (Exception ex)
@@ -351,6 +365,39 @@ namespace LiquidityMeter
                 _manualAnchorUtc = null;
             }
             catch { }
+        }
+
+        private static double FirstValidPrice(Level2Item[] arr)
+        {
+            if (arr == null) return double.NaN;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                double p = arr[i].Price;
+                double s = arr[i].Size;
+                if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
+            }
+            return double.NaN;
+        }
+
+        private bool L1Agrees(DepthOfMarketAggregatedCollections dom, double tickSize)
+        {
+            double symBid = this.Symbol.Bid;
+            double symAsk = this.Symbol.Ask;
+            if (!double.IsFinite(symBid) || !double.IsFinite(symAsk) || symBid <= 0 || symAsk <= 0)
+                return true;
+            double domBid = FirstValidPrice(dom.Bids);
+            double domAsk = FirstValidPrice(dom.Asks);
+            if (double.IsFinite(domBid))
+            {
+                long d = Math.Abs((long)Math.Round(domBid / tickSize) - (long)Math.Round(symBid / tickSize));
+                if (d > L1ToleranceTicks) return false;
+            }
+            if (double.IsFinite(domAsk))
+            {
+                long d = Math.Abs((long)Math.Round(domAsk / tickSize) - (long)Math.Round(symAsk / tickSize));
+                if (d > L1ToleranceTicks) return false;
+            }
+            return true;
         }
     }
 }

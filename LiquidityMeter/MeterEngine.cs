@@ -222,35 +222,62 @@ namespace LiquidityMeter
             var bids = dom?.Bids ?? Array.Empty<Level2Item>();
             var asks = dom?.Asks ?? Array.Empty<Level2Item>();
 
-            int n = Math.Min(InnerLevels, bids.Length);
-            for (int i = 0; i < n; i++) s.BidInner += bids[i].Size;
-            n = Math.Min(InnerLevels, asks.Length);
-            for (int i = 0; i < n; i++) s.AskInner += asks[i].Size;
+            // Top-N inner depth, skipping non-finite / zero entries so leaks
+            // can't poison sums (and the resulting z-scores).
+            int taken = 0;
+            for (int i = 0; i < bids.Length && taken < InnerLevels; i++)
+            {
+                double p = bids[i].Price;
+                double sz = bids[i].Size;
+                if (!double.IsFinite(p) || p <= 0) continue;
+                if (!double.IsFinite(sz) || sz <= 0) continue;
+                s.BidInner += sz; taken++;
+            }
+            taken = 0;
+            for (int i = 0; i < asks.Length && taken < InnerLevels; i++)
+            {
+                double p = asks[i].Price;
+                double sz = asks[i].Size;
+                if (!double.IsFinite(p) || p <= 0) continue;
+                if (!double.IsFinite(sz) || sz <= 0) continue;
+                s.AskInner += sz; taken++;
+            }
 
-            bool haveBid = bids.Length > 0;
-            bool haveAsk = asks.Length > 0;
-            long bestBid = haveBid ? PriceToTicks(bids[0].Price, tickSize) : 0;
-            long bestAsk = haveAsk ? PriceToTicks(asks[0].Price, tickSize) : 0;
+            // Best-of-side from first finite-price, size>0 level.
+            double bbPrice = FirstValidPrice(bids);
+            double baPrice = FirstValidPrice(asks);
+            bool haveBid = !double.IsNaN(bbPrice);
+            bool haveAsk = !double.IsNaN(baPrice);
+            long bestBid = haveBid ? PriceToTicks(bbPrice, tickSize) : 0;
+            long bestAsk = haveAsk ? PriceToTicks(baPrice, tickSize) : 0;
             long refTick = (haveBid && haveAsk) ? (bestBid + bestAsk) / 2 :
                            (haveBid ? bestBid : (haveAsk ? bestAsk : 0));
 
             double bWsum = 0, bSize = 0;
-            n = Math.Min(BroadLevels, bids.Length);
-            for (int i = 0; i < n; i++)
+            taken = 0;
+            for (int i = 0; i < bids.Length && taken < BroadLevels; i++)
             {
-                long t = PriceToTicks(bids[i].Price, tickSize);
+                double p = bids[i].Price;
                 double sz = bids[i].Size;
+                if (!double.IsFinite(p) || p <= 0) continue;
+                if (!double.IsFinite(sz) || sz <= 0) continue;
+                long t = PriceToTicks(p, tickSize);
                 bWsum += Math.Abs(t - refTick) * sz;
                 bSize += sz;
+                taken++;
             }
             double aWsum = 0, aSize = 0;
-            n = Math.Min(BroadLevels, asks.Length);
-            for (int i = 0; i < n; i++)
+            taken = 0;
+            for (int i = 0; i < asks.Length && taken < BroadLevels; i++)
             {
-                long t = PriceToTicks(asks[i].Price, tickSize);
+                double p = asks[i].Price;
                 double sz = asks[i].Size;
+                if (!double.IsFinite(p) || p <= 0) continue;
+                if (!double.IsFinite(sz) || sz <= 0) continue;
+                long t = PriceToTicks(p, tickSize);
                 aWsum += Math.Abs(t - refTick) * sz;
                 aSize += sz;
+                taken++;
             }
             s.BidCentroid = bSize > 0 ? bWsum / bSize : 0;
             s.AskCentroid = aSize > 0 ? aWsum / aSize : 0;
@@ -259,6 +286,18 @@ namespace LiquidityMeter
 
         private static long PriceToTicks(double price, double tickSize)
             => (long)Math.Round(price / tickSize);
+
+        private static double FirstValidPrice(Level2Item[] arr)
+        {
+            if (arr == null) return double.NaN;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                double p = arr[i].Price;
+                double s = arr[i].Size;
+                if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
+            }
+            return double.NaN;
+        }
 
         private static void EvictOlderThan<T>(LinkedList<T> list, DateTime nowUtc, int seconds)
             where T : ITimestamped

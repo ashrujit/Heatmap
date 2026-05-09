@@ -76,6 +76,13 @@ namespace L2_Heatmap
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
+        // L1 sanity gate. DOM should already agree with Symbol.Bid/Ask, but
+        // paranoia: if best-of-side from DOM diverges by more than this many
+        // ticks, treat as stale. Catches a class of bug we can't otherwise
+        // see. 2 ticks tolerates the natural in-flight skew between QT's L1
+        // cache and DOM aggregation.
+        private const int L1ToleranceTicks = 2;
+
         private LiquidityHeatmapBuffer _heatmap;
         private ChartPainter _painter;
         private GetDepthOfMarketParameters _domParams;
@@ -84,7 +91,7 @@ namespace L2_Heatmap
         private L2Capture _capture;
         private bool _lastSubscribed;
         private DateTime _lastL2EventUtc = DateTime.MinValue;
-        private DateTime _lastSampleUtc = DateTime.MinValue;
+        private DateTime _lastDisplayUtc = DateTime.MinValue;
         private DateTime _lastCaptureUtc = DateTime.MinValue;
         private bool _l2Stale;
 
@@ -206,12 +213,16 @@ namespace L2_Heatmap
         {
             if (this.Symbol == null) return;
 
-            // Sample at heatmap snapshot interval (default 500ms) — same
-            // cadence as before. Capture writer has its own (slower) cadence
-            // gate inside.
+            // Two independent cadence gates. Previously a single master gate
+            // tied capture to the display interval — if display=5000ms and
+            // capture=1000ms, capture silently fired every 5s. Each consumer
+            // runs on its own clock.
             var now = DateTime.UtcNow;
-            if ((now - _lastSampleUtc).TotalMilliseconds < LiquidityHeatmapSnapshotIntervalMs) return;
-            _lastSampleUtc = now;
+            bool displayDue = _heatmap != null
+                && (now - _lastDisplayUtc).TotalMilliseconds >= LiquidityHeatmapSnapshotIntervalMs;
+            bool captureDue = _capture != null
+                && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs;
+            if (!displayDue && !captureDue) return;
 
             // Freshness gate. Orphan-level corruption is structurally
             // impossible now (we read QT's canonical book each sample). Only
@@ -233,13 +244,64 @@ namespace L2_Heatmap
                 return;
             }
 
-            _heatmap?.OnSample(dom, now);
-            if (_capture != null
-                && (now - _lastCaptureUtc).TotalMilliseconds >= CaptureSnapshotIntervalMs)
+            // L1 sanity gate. Compare DOM-derived best vs Symbol.Bid/Ask
+            // within tolerance. DOM is canonical, but a divergence > Tol
+            // ticks signals something we can't otherwise see (vendor lag,
+            // inconsistent caches) — pause rather than paint suspect data.
+            if (!L1Agrees(dom, _tickSize))
+            {
+                _l2Stale = true;
+                if (_painter != null) _painter.L2Stale = true;
+                return;
+            }
+
+            if (displayDue)
+            {
+                _lastDisplayUtc = now;
+                _heatmap?.OnSample(dom, now);
+            }
+            if (captureDue)
             {
                 _lastCaptureUtc = now;
-                _capture.EnqueueSnapshot(now, dom, _tickSize);
+                _capture?.EnqueueSnapshot(now, dom, _tickSize);
             }
+        }
+
+        // First level with finite price > 0 and finite size > 0. QT's DOM
+        // should already be clean, but defensive against any vendor leak of
+        // NaN/zero levels (e.g. the synthesized L1-as-L2 events).
+        private static double FirstValidPrice(Level2Item[] arr)
+        {
+            if (arr == null) return double.NaN;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                double p = arr[i].Price;
+                double s = arr[i].Size;
+                if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
+            }
+            return double.NaN;
+        }
+
+        private bool L1Agrees(DepthOfMarketAggregatedCollections dom, double tickSize)
+        {
+            double symBid = this.Symbol.Bid;
+            double symAsk = this.Symbol.Ask;
+            // No L1 yet (e.g. very early after subscribe) → nothing to check.
+            if (!double.IsFinite(symBid) || !double.IsFinite(symAsk) || symBid <= 0 || symAsk <= 0)
+                return true;
+            double domBid = FirstValidPrice(dom.Bids);
+            double domAsk = FirstValidPrice(dom.Asks);
+            if (double.IsFinite(domBid))
+            {
+                long d = Math.Abs((long)Math.Round(domBid / tickSize) - (long)Math.Round(symBid / tickSize));
+                if (d > L1ToleranceTicks) return false;
+            }
+            if (double.IsFinite(domAsk))
+            {
+                long d = Math.Abs((long)Math.Round(domAsk / tickSize) - (long)Math.Round(symAsk / tickSize));
+                if (d > L1ToleranceTicks) return false;
+            }
+            return true;
         }
 
         public override void OnPaintChart(PaintChartEventArgs args)

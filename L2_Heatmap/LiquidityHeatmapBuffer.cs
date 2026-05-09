@@ -87,22 +87,34 @@ namespace L2_Heatmap
 
             _lastSnapshotUtc = nowUtc;
 
-            // Mid-of-book reference tick (or whichever side exists). Best is
-            // index 0 by QT convention.
-            long bestBid = bidsArr.Length > 0 ? PriceToTicks(bidsArr[0].Price) : long.MinValue;
-            long bestAsk = asksArr.Length > 0 ? PriceToTicks(asksArr[0].Price) : long.MaxValue;
+            // Best-of-side from the first finite-price, size>0 level. Defensive
+            // against any NaN/zero leaks (e.g. synthesized L1-as-L2 events).
+            double bbPrice = FirstValidPrice(bidsArr);
+            double baPrice = FirstValidPrice(asksArr);
             long refTick;
-            if (bestBid != long.MinValue && bestAsk != long.MaxValue) refTick = (bestBid + bestAsk) / 2;
-            else if (bestBid != long.MinValue) refTick = bestBid;
-            else if (bestAsk != long.MaxValue) refTick = bestAsk;
+            if (!double.IsNaN(bbPrice) && !double.IsNaN(baPrice))
+                refTick = (PriceToTicks(bbPrice) + PriceToTicks(baPrice)) / 2;
+            else if (!double.IsNaN(bbPrice)) refTick = PriceToTicks(bbPrice);
+            else if (!double.IsNaN(baPrice)) refTick = PriceToTicks(baPrice);
             else return;
 
             // Clone the size-by-tick view so the snapshot is independent of
-            // any further DepthOfMarket mutation between paints.
+            // any further DepthOfMarket mutation between paints. Skip invalid
+            // entries so non-finite prices can't poison the dict.
             var bids = new Dictionary<long, double>(bidsArr.Length);
-            foreach (var item in bidsArr) bids[PriceToTicks(item.Price)] = item.Size;
+            foreach (var item in bidsArr)
+            {
+                if (!double.IsFinite(item.Price) || item.Price <= 0) continue;
+                if (!double.IsFinite(item.Size) || item.Size <= 0) continue;
+                bids[PriceToTicks(item.Price)] = item.Size;
+            }
             var asks = new Dictionary<long, double>(asksArr.Length);
-            foreach (var item in asksArr) asks[PriceToTicks(item.Price)] = item.Size;
+            foreach (var item in asksArr)
+            {
+                if (!double.IsFinite(item.Price) || item.Price <= 0) continue;
+                if (!double.IsFinite(item.Size) || item.Size <= 0) continue;
+                asks[PriceToTicks(item.Price)] = item.Size;
+            }
 
             _snapshots.Enqueue(new BookSnapshot(nowUtc, refTick, bids, asks));
 
@@ -173,5 +185,17 @@ namespace L2_Heatmap
         }
 
         private long PriceToTicks(double price) => (long)Math.Round(price / _tickSize);
+
+        private static double FirstValidPrice(Level2Item[] arr)
+        {
+            if (arr == null) return double.NaN;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                double p = arr[i].Price;
+                double s = arr[i].Size;
+                if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
+            }
+            return double.NaN;
+        }
     }
 }

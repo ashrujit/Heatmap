@@ -179,15 +179,19 @@ namespace L2_Heatmap
             if (bids.Length == 0 && asks.Length == 0) return null;
 
             long PriceToTicks(double p) => (long)Math.Round(p / tickSize);
+
+            // Pick best-of-side from the first finite-price, size>0 level.
+            // QT's DOM is normally clean, but this guards ref_tick against
+            // any leak of NaN/zero levels (the synthesized L1-as-L2 class).
+            double bbPrice = FirstValidPrice(bids);
+            double baPrice = FirstValidPrice(asks);
+            if (double.IsNaN(bbPrice) && double.IsNaN(baPrice)) return null;
+
             long refTick;
-            if (bids.Length > 0 && asks.Length > 0)
-            {
-                long bb = PriceToTicks(bids[0].Price);  // best bid = index 0 by QT convention
-                long ba = PriceToTicks(asks[0].Price);  // best ask = index 0
-                refTick = (bb + ba) / 2;
-            }
-            else if (bids.Length > 0) refTick = PriceToTicks(bids[0].Price);
-            else                       refTick = PriceToTicks(asks[0].Price);
+            if (!double.IsNaN(bbPrice) && !double.IsNaN(baPrice))
+                refTick = (PriceToTicks(bbPrice) + PriceToTicks(baPrice)) / 2;
+            else if (!double.IsNaN(bbPrice)) refTick = PriceToTicks(bbPrice);
+            else refTick = PriceToTicks(baPrice);
 
             var row = new SnapshotRow
             {
@@ -199,19 +203,41 @@ namespace L2_Heatmap
                 AskSizes   = new double[LevelsPerSide],
             };
 
-            int n = Math.Min(LevelsPerSide, bids.Length);
-            for (int i = 0; i < n; i++)
+            // Pack valid levels front-to-back; invalid entries are skipped so
+            // index 0 in the parquet output is always the real best.
+            int outIdx = 0;
+            for (int i = 0; i < bids.Length && outIdx < LevelsPerSide; i++)
             {
-                row.BidOffsets[i] = (int)(PriceToTicks(bids[i].Price) - refTick); // negative
-                row.BidSizes[i]   = bids[i].Size;
+                double p = bids[i].Price;
+                double s = bids[i].Size;
+                if (!double.IsFinite(p) || p <= 0 || !double.IsFinite(s) || s <= 0) continue;
+                row.BidOffsets[outIdx] = (int)(PriceToTicks(p) - refTick); // negative
+                row.BidSizes[outIdx]   = s;
+                outIdx++;
             }
-            n = Math.Min(LevelsPerSide, asks.Length);
-            for (int i = 0; i < n; i++)
+            outIdx = 0;
+            for (int i = 0; i < asks.Length && outIdx < LevelsPerSide; i++)
             {
-                row.AskOffsets[i] = (int)(PriceToTicks(asks[i].Price) - refTick); // positive
-                row.AskSizes[i]   = asks[i].Size;
+                double p = asks[i].Price;
+                double s = asks[i].Size;
+                if (!double.IsFinite(p) || p <= 0 || !double.IsFinite(s) || s <= 0) continue;
+                row.AskOffsets[outIdx] = (int)(PriceToTicks(p) - refTick); // positive
+                row.AskSizes[outIdx]   = s;
+                outIdx++;
             }
             return row;
+        }
+
+        private static double FirstValidPrice(Level2Item[] arr)
+        {
+            if (arr == null) return double.NaN;
+            for (int i = 0; i < arr.Length; i++)
+            {
+                double p = arr[i].Price;
+                double s = arr[i].Size;
+                if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
+            }
+            return double.NaN;
         }
 
         // ---- schema definitions ------------------------------------------
