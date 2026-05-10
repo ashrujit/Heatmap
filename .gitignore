@@ -7,6 +7,7 @@
 .vs/
 .vscode/
 .idea/
+.claude/
 *.user
 *.suo
 *.userprefs
