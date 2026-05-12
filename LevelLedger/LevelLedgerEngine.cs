@@ -19,6 +19,8 @@ namespace LevelLedger
         private const int DominanceHalfLifeSec = 8 * 60;
         private const int DominanceKernelTicks = 12;
         private const int DominanceZoneMergeTicks = 24;
+        private const int DominanceCurrentRelevanceTicks = DominanceKernelTicks * 3;
+        private const int DominanceFreshCauseSec = 90;
         private const int DominanceEvalCooldownSec = 20;
         private const int DominanceMaxZonesPerEval = 2;
         private const double DominanceMinDensity = 12.0;
@@ -142,7 +144,7 @@ namespace LevelLedger
             TryFire(nowUtc, sample.MidTick, zAc, +1, "ASK_OUT", "ASK_IN");
 
             UpdateVod(nowUtc, sample);
-            EvaluateSpatialDominance(nowUtc);
+            EvaluateSpatialDominance(nowUtc, sample.MidTick);
             Prune(nowUtc);
         }
 
@@ -314,7 +316,7 @@ namespace LevelLedger
             _prevInnerDepth = curr;
         }
 
-        private void EvaluateSpatialDominance(DateTime nowUtc)
+        private void EvaluateSpatialDominance(DateTime nowUtc, long currentMidTick)
         {
             if ((nowUtc - _lastDominanceEvalUtc).TotalSeconds < DominanceEvalCooldownSec)
                 return;
@@ -325,7 +327,9 @@ namespace LevelLedger
             foreach (var ev in _bookEvents)
             {
                 if (ev.TimeUtc < cutoff) continue;
-                centers.Add(RoundToGrid(ev.PriceTick, 4));
+                long center = RoundToGrid(ev.PriceTick, 4);
+                if (Math.Abs(center - currentMidTick) > DominanceCurrentRelevanceTicks) continue;
+                centers.Add(center);
             }
 
             if (centers.Count == 0) return;
@@ -337,6 +341,7 @@ namespace LevelLedger
                 if (candidate == null) continue;
                 if (candidate.DominantDensity < DominanceMinDensity) continue;
                 if (candidate.Ratio < _dominanceRatioThreshold) continue;
+                if ((nowUtc - candidate.LatestDominantUtc).TotalSeconds > DominanceFreshCauseSec) continue;
                 candidates.Add(candidate);
             }
 
@@ -365,6 +370,8 @@ namespace LevelLedger
             double demand = 0;
             double supply = 0;
             int count = 0;
+            DateTime latestDemandUtc = DateTime.MinValue;
+            DateTime latestSupplyUtc = DateTime.MinValue;
             var cutoff = nowUtc.AddSeconds(-DominanceWindowSec);
 
             foreach (var ev in _bookEvents)
@@ -379,8 +386,16 @@ namespace LevelLedger
                 double priceWeight = Math.Exp(-0.5 * x * x);
                 double contribution = ev.AbsZ * timeWeight * priceWeight;
 
-                if (ev.Bias > 0) demand += contribution;
-                else supply += contribution;
+                if (ev.Bias > 0)
+                {
+                    demand += contribution;
+                    if (ev.TimeUtc > latestDemandUtc) latestDemandUtc = ev.TimeUtc;
+                }
+                else
+                {
+                    supply += contribution;
+                    if (ev.TimeUtc > latestSupplyUtc) latestSupplyUtc = ev.TimeUtc;
+                }
                 count++;
             }
 
@@ -399,6 +414,7 @@ namespace LevelLedger
                 EventCount = count,
                 Ratio = ratio,
                 DominantDensity = dominant,
+                LatestDominantUtc = direction > 0 ? latestDemandUtc : latestSupplyUtc,
             };
         }
 
@@ -406,6 +422,7 @@ namespace LevelLedger
         {
             int mergeTicks = kind == RowKind.SpatialDominance ? DominanceZoneMergeTicks : RowMergeTicks;
             int mergeSeconds = kind == RowKind.SpatialDominance ? DominanceWindowSec : RowMergeSeconds;
+            int supersedeSeconds = kind == RowKind.SpatialDominance ? DominanceWindowSec : SupersededKeepSeconds;
 
             for (int i = _rows.Count - 1; i >= 0; i--)
             {
@@ -431,7 +448,7 @@ namespace LevelLedger
                 if (r.Direction == 0 || direction == 0) continue;
                 if (r.Direction == direction) continue;
                 if (Math.Abs(r.PriceTick - priceTick) <= mergeTicks
-                    && (timeUtc - r.TimeUtc).TotalSeconds <= SupersededKeepSeconds)
+                    && (timeUtc - r.TimeUtc).TotalSeconds <= supersedeSeconds)
                 {
                     r.Superseded = true;
                     r.SupersededUtc = timeUtc;
@@ -683,6 +700,7 @@ namespace LevelLedger
             public int EventCount;
             public double Ratio;
             public double DominantDensity;
+            public DateTime LatestDominantUtc;
         }
     }
 

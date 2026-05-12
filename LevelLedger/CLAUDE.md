@@ -46,6 +46,8 @@ Rows are intentionally terse:
 
 Price is abbreviated to the last three integer digits plus fractional tick when needed.
 
+Paint priority is by row kind: spatial dominance uses the strongest side colors, trade impulses use separate quieter side colors, VOD uses amber, and node rows stay muted.
+
 ## Current Math
 
 Trade side:
@@ -63,9 +65,10 @@ L2 side:
 - Applies the established side-aware bias map:
   - `BID_BUILD`, `BID_IN`, `ASK_OUT`, `ASK_PULL` are demand-positive.
   - `ASK_BUILD`, `ASK_IN`, `BID_OUT`, `BID_PULL` are supply-positive.
-- Every 20 seconds, computes spatial dominance zones over the last 20 minutes.
+- Every 20 seconds, computes spatial dominance zones over the last 20 minutes, but visible rows are gated to the current auction.
 - Dominance uses an 8-minute half-life and a 12-tick price kernel.
 - Nearby candidates are merged inside 24 ticks, and at most two spatial rows are considered per evaluation.
+- A visible spatial row requires the candidate zone to be within 36 ticks of the current mid and to have same-side dominant evidence within the last 90 seconds. This prevents stale rolling-window decay from printing as fresh demand/supply.
 
 ## Research Harness
 
@@ -74,6 +77,7 @@ Run from repo root:
 ```powershell
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-07
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-05
+uv run --with polars --with tzdata python LevelLedger\research\replay_levelledger.py --date 2026-05-11 --symbol-dir NQM6 --window 14:45-15:05 --warmup-min 330
 ```
 
 Current fixture reads:

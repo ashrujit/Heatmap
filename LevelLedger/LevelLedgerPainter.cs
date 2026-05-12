@@ -22,9 +22,12 @@ namespace LevelLedger
         private static readonly Color HeaderBg = Color.FromArgb(92, 35, 38, 45);
         private static readonly Color HeaderFg = Color.FromArgb(235, 225, 225, 225);
         private static readonly Color Muted = Color.FromArgb(165, 175, 175, 175);
-        private static readonly Color Bull = Color.FromArgb(90, 210, 130);
-        private static readonly Color Bear = Color.FromArgb(230, 95, 80);
-        private static readonly Color Neutral = Color.FromArgb(215, 195, 145);
+        private static readonly Color BullDominance = Color.FromArgb(90, 225, 135);
+        private static readonly Color BearDominance = Color.FromArgb(245, 90, 75);
+        private static readonly Color BuyImpulse = Color.FromArgb(115, 190, 235);
+        private static readonly Color SellImpulse = Color.FromArgb(235, 135, 95);
+        private static readonly Color Neutral = Color.FromArgb(190, 185, 175);
+        private static readonly Color Chaos = Color.FromArgb(245, 190, 70);
 
         public LevelLedgerPainter(double tickSize)
         {
@@ -99,8 +102,8 @@ namespace LevelLedger
             string updates = row.Updates > 1 && row.Kind != RowKind.SpatialDominance ? $" x{row.Updates}" : "";
             string text = $"{t} {price,7} {arrow} {row.Text}{updates}";
 
-            Color baseColor = row.Direction > 0 ? Bull : row.Direction < 0 ? Bear : Neutral;
-            int alpha = row.Superseded ? 95 : 230;
+            Color baseColor = RowColor(row);
+            int alpha = row.Superseded ? 95 : RowAlpha(row);
             using var brush = new SolidBrush(Color.FromArgb(alpha, baseColor));
 
             if (row.Superseded)
@@ -110,6 +113,48 @@ namespace LevelLedger
             }
 
             g.DrawString(text, font, brush, x, y);
+        }
+
+        private static Color RowColor(LedgerRow row)
+        {
+            switch (row.Kind)
+            {
+                case RowKind.SpatialDominance:
+                    return row.Direction > 0 ? BullDominance
+                         : row.Direction < 0 ? BearDominance
+                         : Neutral;
+                case RowKind.TradeImpulse:
+                    return row.Direction > 0 ? BuyImpulse
+                         : row.Direction < 0 ? SellImpulse
+                         : Neutral;
+                case RowKind.Chaos:
+                    return Chaos;
+                case RowKind.NodeMigration:
+                    return row.Direction > 0 ? Color.FromArgb(125, 205, 165)
+                         : row.Direction < 0 ? Color.FromArgb(220, 125, 110)
+                         : Neutral;
+                case RowKind.NodeBuild:
+                default:
+                    return Neutral;
+            }
+        }
+
+        private static int RowAlpha(LedgerRow row)
+        {
+            switch (row.Kind)
+            {
+                case RowKind.SpatialDominance:
+                    return 240;
+                case RowKind.Chaos:
+                    return 235;
+                case RowKind.TradeImpulse:
+                    return 210;
+                case RowKind.NodeMigration:
+                    return 200;
+                case RowKind.NodeBuild:
+                default:
+                    return 185;
+            }
         }
 
         private string Abbrev(long tick)

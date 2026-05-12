@@ -650,6 +650,64 @@ Same plan as before, but with cleaner expectations:
 
 ---
 
+## 2026-05-11 - LevelLedger Live Validation + Current-Auction Gate
+
+### Trigger
+
+User observed a live `15:00 444 ↑ 2.2x demand dom` row while price was already far lower. Screenshot was added to `LevelLedger/` for review. The concern was whether LevelLedger meant "new demand appeared at 444" or whether a stale zone was surfacing as a fresh row.
+
+### Diagnosis
+
+The raw L2 event detection was not the problem. `BID_BUILD`, `ASK_OUT`, etc. were correctly pinned to the mid price where they happened. The bug was in the promotion layer from rolling spatial field to visible ledger row.
+
+The prior implementation evaluated all zones from the last 20 minutes and allowed a new visible dominance row when a zone crossed threshold due only to decay/windowing. Replaying 2026-05-11 captures reproduced the issue: around 15:02 the 444 field was demand-dominant (`D=12.25`, `S=5.11`, ratio `2.40`) while current price was around 388. The top demand contributors near 444 were real, but mostly 5-15 minutes old; the row appeared because older opposing supply aged out, not because fresh demand appeared.
+
+### Fix
+
+Visible spatial dominance rows are now gated:
+
+- Candidate zone must be within 36 ticks of current mid.
+- Dominant side must have same-zone evidence within 90 seconds.
+- Rolling spatial memory can still retain older zones, but passive decay/window crossings no longer create new ledger rows.
+- Opposite spatial evidence can supersede older spatial rows across the full spatial window, preserving the level-flip narrative.
+
+Added `LevelLedger/research/replay_levelledger.py` as the closer live-engine replay harness. It reads captured L2 parquet snapshots and mirrors the C# sample loop, event detection, VOD chaos, current-auction gate, and freshness gate. Added `LevelLedger/research/vacuum_probe.py` as a research-only probe for fast/thin auction windows.
+
+### Validation Reads
+
+New LevelLedger spatial rows aligned with the user's chart read:
+
+- `10:15-10:25`, above 400: `407-409 ↓ supply dom`. Fresh `ASK_BUILD` / `ASK_IN` around 406.75-409.50. This matched the first supply test.
+- `10:25-10:40`, below 315: `306-308 ↑ demand dom`. Fresh `ASK_PULL` / `ASK_OUT` at 307.25 plus `BID_BUILD` at 308.50. This matched the response/auction-done read.
+- `10:28-10:32`, below 300: no spatial row. Strong events existed, but they were mixed or isolated. Good example of fast/thin auction not being a stable dominance zone.
+- `10:35-11:30`: coherent ladder from 306/308 demand to 366/368 demand, contested 380/390 zone, first 408/410 supply, later 408/412 demand and 422 demand.
+- `13:25-14:30`, above 465: persistent demand/acceptance. `467-471 ↑ demand dom` was strong; at 13:44 the 467 field was `D=26.61`, `S=4.82`, ratio `5.52`.
+- After 15:20 below 375: no clean demand-dominance exhaustion. Ledger showed demand higher (`388-396`), `VOD chaos` near 376, then `374-375 ↓ supply dom`. The user's later conclusion that 375 was exhaustion came from failure to continue lower, not from a clean demand row at the low.
+
+### Visual Priority
+
+Changed LevelLedger paint only, not detection:
+
+- Spatial dominance rows use strongest side colors.
+- Trade impulses (`buyers lift` / `sellers hit`) use quieter separate side colors.
+- `VOD chaos` is amber and neutral.
+- Node rows stay muted.
+
+### Vacuum / Flush Research Note
+
+Do not build vacuum detection yet. The examples suggest the useful discretionary concept is "thin/fast auction into an important level," not a standalone signal. Potential ingredients:
+
+- range/velocity expands;
+- range per volume rises or price moves too easily;
+- delta may be weak/mixed before the break and only expand once participants chase;
+- L2 shows thinning in travel direction (`BID_PULL` / `BID_OUT` for downside);
+- no nearby opposing dominance has formed;
+- `VOD chaos` is an amplifier, not a requirement.
+
+The indicator cannot know whether a level is important. The trader supplies the context; LevelLedger should surface the evidence at/after contact.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.

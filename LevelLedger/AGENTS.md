@@ -50,13 +50,26 @@ Trade tape rows still exist, but they are secondary:
 - `accepts higher` / `accepts lower`: the rolling traded POC migrates materially.
 - `VOD chaos`: inner-depth volatility spikes, useful as a regime/fragility marker, neutral by itself.
 
+## Visual Priority
+
+Color/saturation carries row class:
+
+- Spatial dominance rows are highest-priority and use the strongest side colors.
+- Trade impulse rows (`buyers lift` / `sellers hit`) use separate, quieter side colors so tape bursts do not visually masquerade as zone control.
+- `VOD chaos` is amber/neutral and intentionally not side-colored. It is a warning/fragility marker, not a directional claim.
+- Node rows are muted because they are contextual structure rather than an immediate warning.
+
 ## Current Spatial Defaults
 
 - Book events retained for 20 minutes.
 - Dominance half-life is 8 minutes.
 - Price kernel width is 12 ticks, with candidates merged inside 24 ticks.
+- Visible dominance rows are current-auction gated: the candidate zone must be within 36 ticks of the current mid.
+- Visible dominance rows are freshness gated: the dominant side must have a same-zone event within 90 seconds. The rolling field may remember older zones, but stale decay/window crossings do not create new ledger rows.
 - The visible setting `Spatial Dominance Ratio` defaults to 2.2x.
 - The internal minimum dominant density is intentionally fixed for now. It should be tuned from replay/live notes before becoming another user-facing knob.
+
+The 2026-05-11 live review exposed why both gates matter. A 444 demand-dominance row printed near 15:00 while price was already near 388 because older opposing supply aged out of the rolling window. The demand evidence near 444 was real, but the visible row was not caused by fresh/current-auction demand. Dominance memory can be rolling; row emission cannot be driven by passive decay alone.
 
 These are research defaults, not final truths.
 
@@ -64,11 +77,14 @@ These are research defaults, not final truths.
 
 `research/spatial_dominance_replay.py` replays existing `research/out/liq_events_YYYY-MM-DD.csv` files and prints the same style of zone dominance rows for known fixture windows.
 
+`research/replay_levelledger.py` is the closer live-engine replay. It reads captured L2 parquet snapshots and mirrors the C# sample loop, event detection, current-auction gate, and freshness gate. Use it when debugging whether a live row should or should not have printed.
+
 Useful commands from repo root:
 
 ```powershell
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-07
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-05
+uv run --with polars --with tzdata python LevelLedger\research\replay_levelledger.py --date 2026-05-11 --symbol-dir NQM6 --window 14:45-15:05 --warmup-min 330
 ```
 
 Early sanity checks:
