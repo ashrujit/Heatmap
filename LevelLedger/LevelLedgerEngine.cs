@@ -219,7 +219,8 @@ namespace LevelLedger
             int direction = bar.Delta > 0 ? +1 : -1;
             string text = direction > 0 ? "buyers lift" : "sellers hit";
             AddOrUpdateRow(bar.EndUtc, bar.LastTick, direction, text, RowKind.TradeImpulse,
-                volZ + ratio * 4.0);
+                volZ + ratio * 4.0,
+                volZ);
         }
 
         private void EvaluateNode(DateTime nowUtc)
@@ -309,7 +310,7 @@ namespace LevelLedger
                         var (m, s) = MeanStdOf(_vodValues, nowUtc, _bookLookbackSec * 4);
                         double z = (vod - m) / Math.Max(0.1, s);
                         if (Math.Abs(z) >= Math.Max(4.0, _eventZThreshold + 1.0))
-                            AddOrUpdateRow(nowUtc, sample.MidTick, 0, "VOD chaos", RowKind.Chaos, Math.Abs(z));
+                            AddOrUpdateRow(nowUtc, sample.MidTick, 0, "VOD chaos", RowKind.Chaos, Math.Abs(z), Math.Abs(z));
                     }
                 }
             }
@@ -418,7 +419,7 @@ namespace LevelLedger
             };
         }
 
-        private void AddOrUpdateRow(DateTime timeUtc, long priceTick, int direction, string text, RowKind kind, double strength)
+        private void AddOrUpdateRow(DateTime timeUtc, long priceTick, int direction, string text, RowKind kind, double strength, double displayZ = 0.0)
         {
             int mergeTicks = kind == RowKind.SpatialDominance ? DominanceZoneMergeTicks : RowMergeTicks;
             int mergeSeconds = kind == RowKind.SpatialDominance ? DominanceWindowSec : RowMergeSeconds;
@@ -438,6 +439,7 @@ namespace LevelLedger
                 r.PriceTick = priceTick;
                 r.Text = text;
                 r.Strength = Math.Max(r.Strength, strength);
+                r.DisplayZ = Math.Max(r.DisplayZ, displayZ);
                 r.Updates++;
                 return;
             }
@@ -464,6 +466,7 @@ namespace LevelLedger
                 Text = text,
                 Kind = kind,
                 Strength = strength,
+                DisplayZ = displayZ,
                 Updates = 1,
             });
         }
@@ -722,6 +725,7 @@ namespace LevelLedger
         public string Text;
         public RowKind Kind;
         public double Strength;
+        public double DisplayZ;
         public bool Superseded;
         public DateTime SupersededUtc;
         public int Updates;

@@ -50,6 +50,8 @@ Trade tape rows still exist, but they are secondary:
 - `accepts higher` / `accepts lower`: the rolling traded POC migrates materially.
 - `VOD chaos`: inner-depth volatility spikes, useful as a regime/fragility marker, neutral by itself.
 
+Trade impulse and VOD rows show a compact `zN` badge from the already-computed absolute z-score. This is intentionally a measurement hint, not a new event type or interpretation: the trader can notice abnormality, then decide from chart/profile/tape context whether it was exhaustion, absorption, continuation fuel, or failed aggression.
+
 ## Visual Priority
 
 Color/saturation carries row class:

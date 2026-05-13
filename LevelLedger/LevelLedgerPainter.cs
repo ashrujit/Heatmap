@@ -99,8 +99,9 @@ namespace LevelLedger
             string t = ToNy(row.TimeUtc).ToString("HH:mm");
             string price = Abbrev(row.PriceTick);
             string arrow = row.Direction > 0 ? "\u2191" : row.Direction < 0 ? "\u2193" : "\u00B7";
+            string zBadge = ZBadge(row);
             string updates = row.Updates > 1 && row.Kind != RowKind.SpatialDominance ? $" x{row.Updates}" : "";
-            string text = $"{t} {price,7} {arrow} {row.Text}{updates}";
+            string text = $"{t} {price,7} {arrow} {row.Text}{zBadge}{updates}";
 
             Color baseColor = RowColor(row);
             int alpha = row.Superseded ? 95 : RowAlpha(row);
@@ -113,6 +114,17 @@ namespace LevelLedger
             }
 
             g.DrawString(text, font, brush, x, y);
+        }
+
+        private static string ZBadge(LedgerRow row)
+        {
+            if (row.Kind != RowKind.TradeImpulse && row.Kind != RowKind.Chaos)
+                return "";
+            if (!double.IsFinite(row.DisplayZ) || row.DisplayZ <= 0)
+                return "";
+
+            int bucket = Math.Max(1, (int)Math.Round(row.DisplayZ, MidpointRounding.AwayFromZero));
+            return $" z{bucket}";
         }
 
         private static Color RowColor(LedgerRow row)

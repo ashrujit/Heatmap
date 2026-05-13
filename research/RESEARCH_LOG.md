@@ -708,6 +708,235 @@ The indicator cannot know whether a level is important. The trader supplies the 
 
 ---
 
+## 2026-05-12 - Probe-Above Prior Supply Hypothesis
+
+After running the 2026-05-12 NQM6 capture through `research/liq_events.py`
+and `LevelLedger/research/replay_levelledger.py`, user observed a repeating
+live-trading problem: a prior supply row is tempting as an immediate retrace
+short, but price often first probes above it, tests whether the old supply
+has flipped, and only then prints the fresh overhead evidence that makes the
+short actionable.
+
+This is a hypothesis to test against more scenarios, not a mechanical rule.
+
+### Case 1 - 09:43 area, prior/upper supply at 264-275
+
+Ledger sequence:
+
+```text
+09:43:05  29264 DOWN 3.5x supply dom
+09:46:11  29275 DOWN 3.5x supply dom
+09:46:52  29275 DOWN 2.6x supply dom
+```
+
+User was long, saw the 264-275 supply, wanted to short, and later gave up the
+long on the move back down. The later review showed the upper area was not a
+clean "short the first touch" cue. Price first probed above/through the area;
+the supply became useful after the probe failed and the area behaved like a
+ceiling.
+
+### Case 2 - 10:10-10:23 area, old 190 supply flips then 196 caps
+
+Earlier supply:
+
+```text
+09:56:10  29190 DOWN 4.6x supply dom
+```
+
+At the later retest, the old 190 area did not simply reappear as supply. It
+flipped contested-to-demand first:
+
+```text
+10:17:24  29189 UP   6.9x demand dom
+10:17:24  29196 DOWN 3.6x supply dom
+10:21:32  29198 DOWN 2.4x supply dom
+```
+
+Replay breakdown at 10:17:24:
+
+```text
+29190 field: D=13.89 S=3.12, demand ratio 4.45x
+29196 field: D=4.06  S=14.43, supply ratio 3.55x
+```
+
+User tried to short around the remembered 190 supply, then abandoned the idea
+when 190 demand appeared and price lifted through it. The actual dump came
+after fresh supply formed above at 196/198, then price broke hard back through
+the contested 190 zone. The ladder moved too quickly to get filled.
+
+### Working takeaway
+
+When looking to enter on a retracement into a previous supply zone, do not
+treat the old supply row as sufficient by itself. Let price finish the probe
+above/through the old zone, then read the new evidence:
+
+- Does the old supply flip to demand/acceptance?
+- Does fresh supply appear above it and cap the probe?
+- Does price then fail back through the old zone with the new overhead supply
+  still active?
+
+If yes, the actionable information may be the new cap above the old level, not
+the old supply row itself. Continue testing this against later examples before
+turning it into a durable workflow heuristic.
+
+### Case 3 - 10:35-12:00 short sequence, same mistake repeated at 090
+
+User then described the same pattern in the next leg. They were watching 090
+as the contested zone and initiation area. Short was entered before the probe
+above 090 had resolved, then abandoned at 101. Price later failed above the
+zone and broke back through 090 too quickly to re-enter comfortably.
+
+The replay supports that the 090 area was not clean on first retest:
+
+```text
+10:39:09  29097.75  ASK_BUILD  supply
+10:40:09  29087.25  BID_BUILD  demand
+10:40:44  29093.00  BID_BUILD  demand
+10:40:48  29085.50  ASK_BUILD  supply
+10:44:28  29093     demand dom row
+```
+
+That is a contested/probe zone, not a clean continuation short. The later
+entries made more structural sense because they came after zones resolved:
+
+```text
+10:45-10:47  081/070 breaks after the 090 probe fails
+10:52        039 supply appears after the lower retest
+10:54-10:55  062/061 supply appears; user noted this was likely the cleaner add
+11:02-11:14  990/994/988 supply cluster was available but skipped
+11:23        908 supply appears before the final push lower
+```
+
+Exit review:
+
+```text
+11:29:58  878 demand row appeared after price bounced from the 856-867 area
+11:57:45  857 supply row appeared with price at 851.50
+11:57:47  853 VOD chaos
+11:57:48  850.25 VOD chaos
+11:57:59  850.00 ASK_BUILD
+```
+
+So the 867 exit had nearby raw book evidence but no clean visible spatial row
+yet; the visible 878 demand row printed after price had already lifted. The
+850 exit did have visible evidence, but in the later 11:57 window rather than
+the 10:35-11:30 slice.
+
+Refined lesson: if price has already traded through an old supply/demand row
+and comes back with fresh volume there, wait for the retest to resolve above
+or below the old row. The old row is a context marker; the new evidence after
+the probe is the tradable information.
+
+Auction framing from the user:
+
+The move up from 014 after 10:39 is an up auction until proven otherwise. A
+prior contested level like 045/049 is not, by itself, a reason for price to
+stop there on the way back down. If the market accepted through it on the way
+up, then revisiting it later may only mean "old business was already done
+there."
+
+The useful proof came when fresh supply formed higher, around 061/063. That
+suggests shorts were able to build inventory during the retrace, but could not
+keep getting higher prices. Once that new supply was filled and price could
+not auction higher, there was no strong reason to pause at the older 045/049
+contested area. Continuing through it was evidence in favor of the short: the
+auction needed to find a new place to trade.
+
+### Case 4 - final low, 750 demand and squeeze fuel
+
+The final act of the day was the low and short squeeze after it. User exited
+shorts around 850/867, then watched price continue lower. The real-time thesis
+was: PM break of balance may continue lower, but VWAP/value were far above, so
+a short-term flush/bounce was likely. User bought 750 with one contract, but
+did not leverage up when new demand emerged around 753, then exited the long at
+817 after thinking price had reached a high-volume node and might balance or
+rotate back toward lows.
+
+Replay sequence:
+
+```text
+12:51-12:57  761/759/766 supply rows keep pressing the low
+12:57:32     755 VOD chaos
+12:58:21     750 demand dom appears
+12:58:42     750 demand updates
+12:59:44     752 demand updates
+13:01:06     772 demand dom appears
+13:04:10     VOD chaos near 798-800 during upside drive
+13:08:59     818 supply row appears
+13:09-13:13  817/822 supply updates, but price does not return to lows
+```
+
+Tape around the low was not an empty drive up. It built and then squeezed:
+
+```text
+12:52:15  28774.50 -> 28753.75  vol 636  delta -266
+12:53:15  28754.75 -> 28750.50  vol 328  delta -124
+12:54:00  28751.50 -> 28747.25  vol 559  delta -199
+12:58:30  28754.50 -> 28747.25  vol 188  delta  -82
+13:00:00  28749.50 -> 28769.25  vol 974  delta +234
+13:03:30  28771.00 -> 28791.25  vol 554  delta +184
+13:05:30  28800.75 -> 28809.00  vol 388  delta  +84
+13:06:45  28823.50 -> 28829.75  vol 431  delta  +89
+```
+
+Target clusters:
+
+```text
+28750  vol 758   delta  -92
+28753  vol 1182  delta -274
+28772  vol 1055  delta  +67
+28818  vol 640   delta +168
+```
+
+Lesson: a bounce from a new demand zone formed at the day's extreme is different
+from a thin/empty reflex bounce. The latter should be expected to stall/rotate
+more easily. The former can become squeeze fuel because new demand has just
+allowed shorts to reload and then denied them a return to the low. Anyone
+shorting further against that new demand becomes fuel once price accepts above.
+
+Follow-through note from the user: there were several attempted shorts higher
+into VWAP before the regime finally clicked. After VWAP around 004, user flipped
+long and used the ledger to support the long sequence: 978, 000 to 048, then
+073, 096, 101 to 169, and 170 into the end-of-day close. Details deliberately
+omitted; the durable observation is that once the extreme-demand base had held
+and price accepted above VWAP, the better use of the ledger was to find long
+adds/exits in the squeeze rather than keep treating every overhead level as the
+place the bounce "should" stop.
+
+### Zone dislocation / volume-away hypothesis
+
+User raised whether the ledger should account for the volume that moves away
+from a zone, not just the volume/evidence that forms at the zone. The 13:48-14:00
+passage is a good fixture:
+
+```text
+13:48-13:52  into 887/895 supply: O=28894.25 H=28904.25 L=28877.75 C=28902.00 vol=2952 delta=+144
+13:53-13:56  through/away:        O=28901.75 H=28925.00 L=28895.25 C=28907.25 vol=4228 delta= +94
+13:57-13:59  accepted above:      O=28906.75 H=28924.75 L=28904.25 C=28920.00 vol=1390 delta=+138
+```
+
+The useful read is not "large volume happened" in isolation. It is that price
+traded through prior supply/demand, did meaningful business away from it, and
+then did not reclaim back through the old zone. That is a zone-state transition:
+old supply can become consumed/accepted-above; old demand can become
+consumed/accepted-below.
+
+If implemented, this should be a subtle transition annotation on existing
+spatial rows, not a new classifier. Candidate shorthand:
+
+```text
+887 supply dom -> bought thru
+902 demand dom -> accepts above
+```
+
+Research first. A reasonable metric would normalize volume-away to recent
+time-based tape volume, because the main 5000-tick chart intentionally hides
+time-rate volume. Inputs: volume and delta after crossing the zone by N ticks,
+range expansion away from the zone, and failure to reclaim the zone within a
+short hold window.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.
