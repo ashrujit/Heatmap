@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using TradingPlatform.BusinessLayer;
+using TradingPlatform.BusinessLayer.Chart;
 
 namespace LevelLedger
 {
@@ -14,6 +16,13 @@ namespace LevelLedger
         public int PanelWidthPx = 300;
         public int VisibleRows = 10;
         public float FontSize = 9.0f;
+        public bool PanelEnabled = true;
+        public bool VodBuildDotsEnabled = true;
+        public int VodBuildDotSizePx = 7;
+        public int VodBuildDotAlpha = 175;
+        public bool BuildBandsEnabled = true;
+        public int BuildBandActiveAlpha = 46;
+        public int BuildBandBreachedAlpha = 18;
         public bool L2Stale;
         public Rectangle LastHitRect;
 
@@ -28,18 +37,50 @@ namespace LevelLedger
         private static readonly Color SellImpulse = Color.FromArgb(235, 135, 95);
         private static readonly Color Neutral = Color.FromArgb(190, 185, 175);
         private static readonly Color Chaos = Color.FromArgb(245, 190, 70);
+        private static readonly Color BidChaos = Color.FromArgb(95, 165, 235);
+        private static readonly Color AskChaos = Color.FromArgb(238, 132, 72);
 
         public LevelLedgerPainter(double tickSize)
         {
             _tickSize = tickSize > 0 ? tickSize : 0.25;
         }
 
-        public void Paint(PaintChartEventArgs args, LedgerSnapshot snapshot)
+        public void Paint(
+            PaintChartEventArgs args,
+            IChart chart,
+            LedgerSnapshot snapshot,
+            IReadOnlyList<VodBuildDot> vodBuildDots,
+            IReadOnlyList<BuildBandOverlay> buildBands)
         {
             var g = args.Graphics;
             var rect = args.Rectangle;
             if (rect.Width <= 0 || rect.Height <= 0) return;
 
+            var prev = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            try
+            {
+                if (BuildBandsEnabled)
+                    DrawBuildBands(g, chart, rect, buildBands);
+                if (VodBuildDotsEnabled)
+                    DrawVodBuildDots(g, chart, rect, vodBuildDots);
+                if (L2Stale)
+                    DrawStaleBadge(g, rect);
+                if (!PanelEnabled)
+                {
+                    LastHitRect = Rectangle.Empty;
+                    return;
+                }
+                DrawPanel(g, rect, snapshot);
+            }
+            finally
+            {
+                g.SmoothingMode = prev;
+            }
+        }
+
+        private void DrawPanel(Graphics g, Rectangle rect, LedgerSnapshot snapshot)
+        {
             int rowH = Math.Max(15, (int)Math.Ceiling(FontSize + 7));
             int headerH = Math.Max(22, rowH + 5);
             int w = Math.Max(180, PanelWidthPx);
@@ -48,49 +89,144 @@ namespace LevelLedger
             int y = Math.Min(rect.Bottom - h - 4, Math.Max(rect.Top + 4, rect.Top + TopOffsetPx));
 
             LastHitRect = new Rectangle(x, y, w, h);
-            if (L2Stale) DrawStaleBadge(g, rect);
+            using (var bg = new SolidBrush(Bg))
+                g.FillRectangle(bg, x, y, w, h);
+            using (var header = new SolidBrush(HeaderBg))
+                g.FillRectangle(header, x, y, w, headerH);
+            using (var pen = new Pen(Border, 1f))
+                g.DrawRectangle(pen, x, y, w, h);
 
-            var prev = g.SmoothingMode;
-            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using var headerFont = new Font("Segoe UI", FontSize, FontStyle.Bold);
+            using var rowFont = new Font("Consolas", Math.Max(7.0f, FontSize - 0.2f), FontStyle.Regular);
+            using var headerBrush = new SolidBrush(HeaderFg);
+            using var mutedBrush = new SolidBrush(Muted);
+
+            string title = "Level Ledger";
+            g.DrawString(title, headerFont, headerBrush, x + 8, y + 3);
+
+            string status = snapshot.IsActive
+                ? $"@{ToNy(snapshot.ActivatedUtc.Value):HH:mm}  -{snapshot.LookbackMinutes}m"
+                : "click";
+            if (snapshot.IsActive && snapshot.FocusTick.HasValue)
+                status += $"  {Abbrev(snapshot.FocusTick.Value)}";
+            var statusSize = g.MeasureString(status, rowFont);
+            g.DrawString(status, rowFont, mutedBrush, x + w - statusSize.Width - 8, y + 5);
+
+            if (!snapshot.IsActive || snapshot.Rows == null || snapshot.Rows.Count == 0)
+                return;
+
+            int rowY = y + headerH + 4;
+            foreach (var row in snapshot.Rows)
+            {
+                DrawRow(g, rowFont, row, x + 8, rowY, w - 16);
+                rowY += rowH;
+                if (rowY > y + h - rowH) break;
+            }
+        }
+
+        private void DrawBuildBands(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<BuildBandOverlay> bands)
+        {
+            if (chart == null || bands == null || bands.Count == 0) return;
+            var cv = chart.MainWindow?.CoordinatesConverter;
+            if (cv == null) return;
+
+            foreach (var band in bands)
+            {
+                int xStart;
+                try { xStart = (int)cv.GetChartX(band.StartUtc); }
+                catch { continue; }
+
+                int xLeft = Math.Max(rect.Left, xStart);
+                int xRight = rect.Right;
+                if (xRight <= xLeft) continue;
+
+                int yTop, yBottom;
+                try
+                {
+                    yTop = (int)cv.GetChartY(band.MaxTick * _tickSize);
+                    yBottom = (int)cv.GetChartY(band.MinTick * _tickSize);
+                }
+                catch { continue; }
+
+                if (yBottom < rect.Top || yTop > rect.Bottom) continue;
+                yTop = Math.Max(rect.Top, yTop);
+                yBottom = Math.Min(rect.Bottom, yBottom);
+                if (yBottom <= yTop) yBottom = yTop + 1;
+
+                bool breached = band.BreachedUtc.HasValue;
+                int fillAlpha = Clamp(breached ? BuildBandBreachedAlpha : BuildBandActiveAlpha, 1, 255);
+                int edgeAlpha = Clamp(fillAlpha + (breached ? 24 : 65), 1, 255);
+                Color sideColor = band.Side == BuildBandSide.Supply ? BearDominance : BullDominance;
+
+                using var fill = new SolidBrush(Color.FromArgb(fillAlpha, sideColor));
+                using var edge = new Pen(Color.FromArgb(edgeAlpha, sideColor), breached ? 1f : 1.4f);
+                if (breached)
+                    edge.DashStyle = DashStyle.Dot;
+
+                g.FillRectangle(fill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
+                g.DrawLine(edge, xLeft, yTop, xRight, yTop);
+                g.DrawLine(edge, xLeft, yBottom, xRight, yBottom);
+            }
+        }
+
+        private void DrawVodBuildDots(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<VodBuildDot> dots)
+        {
+            if (chart == null || dots == null || dots.Count == 0) return;
+            var cv = chart.MainWindow?.CoordinatesConverter;
+            if (cv == null) return;
+
+            DateTime tLeft, tRight;
             try
             {
-                using (var bg = new SolidBrush(Bg))
-                    g.FillRectangle(bg, x, y, w, h);
-                using (var header = new SolidBrush(HeaderBg))
-                    g.FillRectangle(header, x, y, w, headerH);
-                using (var pen = new Pen(Border, 1f))
-                    g.DrawRectangle(pen, x, y, w, h);
-
-                using var headerFont = new Font("Segoe UI", FontSize, FontStyle.Bold);
-                using var rowFont = new Font("Consolas", Math.Max(7.0f, FontSize - 0.2f), FontStyle.Regular);
-                using var headerBrush = new SolidBrush(HeaderFg);
-                using var mutedBrush = new SolidBrush(Muted);
-
-                string title = "Level Ledger";
-                g.DrawString(title, headerFont, headerBrush, x + 8, y + 3);
-
-                string status = snapshot.IsActive
-                    ? $"@{ToNy(snapshot.ActivatedUtc.Value):HH:mm}  -{snapshot.LookbackMinutes}m"
-                    : "click";
-                if (snapshot.IsActive && snapshot.FocusTick.HasValue)
-                    status += $"  {Abbrev(snapshot.FocusTick.Value)}";
-                var statusSize = g.MeasureString(status, rowFont);
-                g.DrawString(status, rowFont, mutedBrush, x + w - statusSize.Width - 8, y + 5);
-
-                if (!snapshot.IsActive || snapshot.Rows == null || snapshot.Rows.Count == 0)
-                    return;
-
-                int rowY = y + headerH + 4;
-                foreach (var row in snapshot.Rows)
-                {
-                    DrawRow(g, rowFont, row, x + 8, rowY, w - 16);
-                    rowY += rowH;
-                    if (rowY > y + h - rowH) break;
-                }
+                tLeft = cv.GetTime(rect.Left);
+                tRight = cv.GetTime(rect.Right);
             }
-            finally
+            catch
             {
-                g.SmoothingMode = prev;
+                tLeft = DateTime.MinValue;
+                tRight = DateTime.MaxValue;
+            }
+
+            int size = Math.Max(3, VodBuildDotSizePx);
+            int half = size / 2;
+            int fillAlpha = Clamp(VodBuildDotAlpha, 1, 255);
+            int rimAlpha = Clamp(fillAlpha + 55, 1, 255);
+            using var fill = new SolidBrush(Color.FromArgb(fillAlpha, Chaos));
+            using var bidPen = new Pen(Color.FromArgb(rimAlpha, BidChaos), 1.6f);
+            using var askPen = new Pen(Color.FromArgb(rimAlpha, AskChaos), 1.6f);
+            using var mixedPen = new Pen(Color.FromArgb(rimAlpha, Neutral), 1.3f);
+
+            foreach (var dot in dots)
+            {
+                if (dot.TimeUtc < tLeft || dot.TimeUtc > tRight) continue;
+
+                int x, y;
+                try
+                {
+                    x = (int)cv.GetChartX(dot.TimeUtc);
+                    y = (int)cv.GetChartY(dot.PriceTick * _tickSize);
+                }
+                catch { continue; }
+
+                if (x < rect.Left - half || x > rect.Right + half) continue;
+                if (y < rect.Top - half || y > rect.Bottom + half) continue;
+
+                var bounds = new RectangleF(x - half, y - half, size, size);
+                g.FillEllipse(fill, bounds);
+                switch (dot.ChaosSide)
+                {
+                    case VodChaosSide.Bid:
+                        g.DrawEllipse(bidPen, bounds);
+                        break;
+                    case VodChaosSide.Ask:
+                        g.DrawEllipse(askPen, bounds);
+                        break;
+                    default:
+                        g.DrawArc(bidPen, bounds, 90, 180);
+                        g.DrawArc(askPen, bounds, 270, 180);
+                        g.DrawEllipse(mixedPen, bounds);
+                        break;
+                }
             }
         }
 
@@ -99,9 +235,10 @@ namespace LevelLedger
             string t = ToNy(row.TimeUtc).ToString("HH:mm");
             string price = Abbrev(row.PriceTick);
             string arrow = row.Direction > 0 ? "\u2191" : row.Direction < 0 ? "\u2193" : "\u00B7";
+            string marker = IsNewDominance(row) ? "+" : " ";
             string zBadge = ZBadge(row);
             string updates = row.Updates > 1 && row.Kind != RowKind.SpatialDominance ? $" x{row.Updates}" : "";
-            string text = $"{t} {price,7} {arrow} {row.Text}{zBadge}{updates}";
+            string text = $"{marker} {t} {price,7} {arrow} {row.Text}{zBadge}{updates}";
 
             Color baseColor = RowColor(row);
             int alpha = row.Superseded ? 95 : RowAlpha(row);
@@ -114,6 +251,13 @@ namespace LevelLedger
             }
 
             g.DrawString(text, font, brush, x, y);
+        }
+
+        private static bool IsNewDominance(LedgerRow row)
+        {
+            if (row.Kind != RowKind.SpatialDominance) return false;
+            if (row.Direction == 0 || row.Superseded) return false;
+            return row.Updates == 1;
         }
 
         private static string ZBadge(LedgerRow row)
@@ -208,5 +352,7 @@ namespace LevelLedger
             g.FillRectangle(bg, x, y, w, h);
             g.DrawString(text, font, fg, x + pad, y + pad / 2);
         }
+
+        private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
     }
 }

@@ -25,6 +25,7 @@ namespace LevelLedger
         private const int DominanceMaxZonesPerEval = 2;
         private const double DominanceMinDensity = 12.0;
         private const double MinDominanceRatio = 1.1;
+        private const double ChaosSideDominanceRatio = 1.25;
 
         private readonly int _bookLookbackSec;
         private readonly double _eventZThreshold;
@@ -36,11 +37,15 @@ namespace LevelLedger
 
         private readonly LinkedList<BookSample> _bookSamples = new();
         private readonly LinkedList<BookEvent> _bookEvents = new();
+        private readonly LinkedList<VodBuildDot> _vodBuildDots = new();
+        private readonly LinkedList<BuildBandOverlay> _buildBands = new();
+        private readonly LinkedList<BuildBandEvent> _buildBandPending = new();
         private readonly LinkedList<TradeBar> _tradeBars = new();
         private readonly List<LedgerRow> _rows = new();
 
         private TradeBar _currentBar;
         private int _nextRowId = 1;
+        private int _nextBuildBandId = 1;
         private DateTime? _activeUtc;
         private long? _activationTick;
         private long? _lastNodeTick;
@@ -50,6 +55,8 @@ namespace LevelLedger
         private readonly LinkedList<TimedDouble> _innerDeltas = new();
         private readonly LinkedList<TimedDouble> _vodValues = new();
         private double? _prevInnerDepth;
+        private double? _prevBidInner;
+        private double? _prevAskInner;
 
         public LevelLedgerEngine(
             int bookLookbackSec,
@@ -70,6 +77,15 @@ namespace LevelLedger
         }
 
         public bool IsActive => _activeUtc.HasValue;
+        public double ChartVodBuildVodZ { get; set; } = 5.0;
+        public double ChartVodBuildBuildZ { get; set; } = 4.0;
+        public int ChartVodBuildRetentionMinutes { get; set; } = 0;
+        public double ChartBuildBandBuildZ { get; set; } = 3.0;
+        public int ChartBuildBandClusterN { get; set; } = 3;
+        public int ChartBuildBandClusterTicks { get; set; } = 8;
+        public int ChartBuildBandClusterSec { get; set; } = 90;
+        public int ChartBuildBandPriceThroughBufferTicks { get; set; } = 1;
+        public int ChartBuildBandRetentionMinutes { get; set; } = 0;
 
         public void Activate(DateTime nowUtc)
         {
@@ -143,7 +159,9 @@ namespace LevelLedger
             TryFire(nowUtc, sample.MidTick, zBc, -1, "BID_OUT", "BID_IN");
             TryFire(nowUtc, sample.MidTick, zAc, +1, "ASK_OUT", "ASK_IN");
 
-            UpdateVod(nowUtc, sample);
+            UpdateBuildBands(nowUtc, sample.MidTick, zBi, zAi);
+            ApplyBuildBandPriceThrough(nowUtc, sample.MidTick);
+            UpdateVod(nowUtc, sample, zBi, zAi);
             EvaluateSpatialDominance(nowUtc, sample.MidTick);
             Prune(nowUtc);
         }
@@ -180,6 +198,18 @@ namespace LevelLedger
                 FocusTick = _activationTick,
                 LookbackMinutes = _activationLookbackMinutes,
             };
+        }
+
+        public IReadOnlyList<VodBuildDot> GetVodBuildDots(DateTime nowUtc)
+        {
+            PruneVodBuildDots(nowUtc);
+            return _vodBuildDots.Select(d => d.Clone()).ToArray();
+        }
+
+        public IReadOnlyList<BuildBandOverlay> GetBuildBands(DateTime nowUtc)
+        {
+            PruneBuildBands(nowUtc);
+            return _buildBands.Select(b => b.Clone()).ToArray();
         }
 
         private long? LastKnownTick { get; set; }
@@ -293,7 +323,119 @@ namespace LevelLedger
             });
         }
 
-        private void UpdateVod(DateTime nowUtc, BookSample sample)
+        private void UpdateBuildBands(DateTime nowUtc, long priceTick, double zBidInner, double zAskInner)
+        {
+            PruneBuildBandPending(nowUtc);
+
+            double threshold = Math.Max(1.0, ChartBuildBandBuildZ);
+            if (zBidInner > threshold)
+            {
+                AddBuildBandEvent(new BuildBandEvent
+                {
+                    TimeUtc = nowUtc,
+                    PriceTick = priceTick,
+                    Side = BuildBandSide.Demand,
+                    AbsZ = zBidInner,
+                });
+            }
+
+            if (zAskInner > threshold)
+            {
+                AddBuildBandEvent(new BuildBandEvent
+                {
+                    TimeUtc = nowUtc,
+                    PriceTick = priceTick,
+                    Side = BuildBandSide.Supply,
+                    AbsZ = zAskInner,
+                });
+            }
+        }
+
+        private void AddBuildBandEvent(BuildBandEvent ev)
+        {
+            int clusterTicks = Math.Max(1, ChartBuildBandClusterTicks);
+            int clusterSec = Math.Max(1, ChartBuildBandClusterSec);
+
+            foreach (var band in _buildBands)
+            {
+                if (band.BreachedUtc.HasValue) continue;
+                if (band.Side != ev.Side) continue;
+                if ((ev.TimeUtc - band.LastUpdateUtc).TotalSeconds > clusterSec) continue;
+
+                long lo = band.MinTick - clusterTicks;
+                long hi = band.MaxTick + clusterTicks;
+                if (ev.PriceTick < lo || ev.PriceTick > hi) continue;
+
+                if (ev.PriceTick < band.MinTick) band.MinTick = ev.PriceTick;
+                if (ev.PriceTick > band.MaxTick) band.MaxTick = ev.PriceTick;
+                band.LastUpdateUtc = ev.TimeUtc;
+                band.EventCount++;
+                band.MaxAbsZ = Math.Max(band.MaxAbsZ, ev.AbsZ);
+                return;
+            }
+
+            var members = new List<BuildBandEvent> { ev };
+            foreach (var pending in _buildBandPending)
+            {
+                if (pending.Side != ev.Side) continue;
+                if (Math.Abs(pending.PriceTick - ev.PriceTick) > clusterTicks) continue;
+                if ((ev.TimeUtc - pending.TimeUtc).TotalSeconds > clusterSec) continue;
+                members.Add(pending);
+            }
+
+            int minEvents = Math.Max(2, ChartBuildBandClusterN);
+            if (members.Count >= minEvents)
+            {
+                var band = new BuildBandOverlay
+                {
+                    Id = _nextBuildBandId++,
+                    Side = ev.Side,
+                    MinTick = members.Min(m => m.PriceTick),
+                    MaxTick = members.Max(m => m.PriceTick),
+                    StartUtc = members.Min(m => m.TimeUtc),
+                    FormedUtc = ev.TimeUtc,
+                    LastUpdateUtc = members.Max(m => m.TimeUtc),
+                    EventCount = members.Count,
+                    MaxAbsZ = members.Max(m => m.AbsZ),
+                };
+                _buildBands.AddLast(band);
+
+                var node = _buildBandPending.First;
+                while (node != null)
+                {
+                    var next = node.Next;
+                    if (members.Contains(node.Value))
+                        _buildBandPending.Remove(node);
+                    node = next;
+                }
+            }
+            else
+            {
+                _buildBandPending.AddLast(ev);
+            }
+        }
+
+        private void ApplyBuildBandPriceThrough(DateTime nowUtc, long currentMidTick)
+        {
+            int bufferTicks = Math.Max(0, ChartBuildBandPriceThroughBufferTicks);
+            foreach (var band in _buildBands)
+            {
+                if (band.BreachedUtc.HasValue) continue;
+
+                if (band.Side == BuildBandSide.Supply && currentMidTick > band.MaxTick + bufferTicks)
+                {
+                    band.BreachedUtc = nowUtc;
+                    band.BreachPriceTick = currentMidTick;
+                }
+                else if (band.Side == BuildBandSide.Demand && currentMidTick < band.MinTick - bufferTicks)
+                {
+                    band.BreachedUtc = nowUtc;
+                    band.BreachPriceTick = currentMidTick;
+                }
+            }
+        }
+
+        private void UpdateVod(DateTime nowUtc, BookSample sample, double zBidInner, double zAskInner)
         {
             double curr = sample.BidInner + sample.AskInner;
             if (_prevInnerDepth.HasValue)
@@ -309,12 +451,51 @@ namespace LevelLedger
                     {
                         var (m, s) = MeanStdOf(_vodValues, nowUtc, _bookLookbackSec * 4);
                         double z = (vod - m) / Math.Max(0.1, s);
+                        AddVodBuildDotIfNeeded(nowUtc, sample, z, zBidInner, zAskInner);
                         if (Math.Abs(z) >= Math.Max(4.0, _eventZThreshold + 1.0))
                             AddOrUpdateRow(nowUtc, sample.MidTick, 0, "VOD chaos", RowKind.Chaos, Math.Abs(z), Math.Abs(z));
                     }
                 }
             }
             _prevInnerDepth = curr;
+            _prevBidInner = sample.BidInner;
+            _prevAskInner = sample.AskInner;
+        }
+
+        private void AddVodBuildDotIfNeeded(DateTime nowUtc, BookSample sample, double vodZ, double zBidInner, double zAskInner)
+        {
+            if (vodZ < Math.Max(_eventZThreshold, ChartVodBuildVodZ)) return;
+
+            double buildFloor = Math.Max(_eventZThreshold, ChartVodBuildBuildZ);
+            double bidBuildZ = zBidInner >= buildFloor ? zBidInner : 0.0;
+            double askBuildZ = zAskInner >= buildFloor ? zAskInner : 0.0;
+            if (bidBuildZ <= 0 && askBuildZ <= 0) return;
+
+            _vodBuildDots.AddLast(new VodBuildDot
+            {
+                TimeUtc = nowUtc,
+                PriceTick = sample.MidTick,
+                VodAbsZ = Math.Abs(vodZ),
+                BidBuildZ = bidBuildZ,
+                AskBuildZ = askBuildZ,
+                ChaosSide = ResolveChaosSide(sample),
+            });
+        }
+
+        private VodChaosSide ResolveChaosSide(BookSample sample)
+        {
+            if (!_prevBidInner.HasValue || !_prevAskInner.HasValue)
+                return VodChaosSide.Mixed;
+
+            double bidMove = Math.Abs(sample.BidInner - _prevBidInner.Value);
+            double askMove = Math.Abs(sample.AskInner - _prevAskInner.Value);
+            if (bidMove <= 0 && askMove <= 0)
+                return VodChaosSide.Mixed;
+            if (bidMove >= askMove * ChaosSideDominanceRatio)
+                return VodChaosSide.Bid;
+            if (askMove >= bidMove * ChaosSideDominanceRatio)
+                return VodChaosSide.Ask;
+            return VodChaosSide.Mixed;
         }
 
         private void EvaluateSpatialDominance(DateTime nowUtc, long currentMidTick)
@@ -475,8 +656,42 @@ namespace LevelLedger
         {
             EvictOlderThan(_bookEvents, nowUtc, EventRetentionSec);
             EvictOlderThan(_tradeBars, nowUtc, EventRetentionSec);
+            PruneVodBuildDots(nowUtc);
+            PruneBuildBands(nowUtc);
+            PruneBuildBandPending(nowUtc);
             var cutoff = nowUtc.AddSeconds(-RowRetentionSec);
             _rows.RemoveAll(r => r.TimeUtc < cutoff);
+        }
+
+        private void PruneVodBuildDots(DateTime nowUtc)
+        {
+            int minutes = Math.Max(0, ChartVodBuildRetentionMinutes);
+            if (minutes == 0) return;
+            EvictOlderThan(_vodBuildDots, nowUtc, minutes * 60);
+        }
+
+        private void PruneBuildBandPending(DateTime nowUtc)
+        {
+            int seconds = Math.Max(1, ChartBuildBandClusterSec);
+            EvictOlderThan(_buildBandPending, nowUtc, seconds);
+        }
+
+        private void PruneBuildBands(DateTime nowUtc)
+        {
+            int minutes = Math.Max(0, ChartBuildBandRetentionMinutes);
+            if (minutes == 0) return;
+
+            var cutoff = nowUtc.AddMinutes(-minutes);
+            var node = _buildBands.First;
+            while (node != null)
+            {
+                var next = node.Next;
+                var band = node.Value;
+                DateTime reference = band.BreachedUtc ?? band.LastUpdateUtc;
+                if (reference < cutoff)
+                    _buildBands.Remove(node);
+                node = next;
+            }
         }
 
         private BookSample ComputeSample(DateTime timeUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
@@ -642,7 +857,7 @@ namespace LevelLedger
                 list.RemoveFirst();
         }
 
-        private interface ITimed
+        internal interface ITimed
         {
             DateTime TimeUtc { get; }
         }
@@ -664,6 +879,14 @@ namespace LevelLedger
             public int Bias;
             public double AbsZ;
             public string Type;
+        }
+
+        private sealed class BuildBandEvent : ITimed
+        {
+            public DateTime TimeUtc { get; set; }
+            public long PriceTick;
+            public BuildBandSide Side;
+            public double AbsZ;
         }
 
         private sealed class TimedDouble : ITimed
@@ -714,6 +937,50 @@ namespace LevelLedger
         NodeBuild,
         NodeMigration,
         Chaos,
+    }
+
+    internal enum VodChaosSide
+    {
+        Mixed,
+        Bid,
+        Ask,
+    }
+
+    internal enum BuildBandSide
+    {
+        Demand,
+        Supply,
+    }
+
+    internal sealed class VodBuildDot : LevelLedgerEngine.ITimed
+    {
+        public DateTime TimeUtc { get; set; }
+        public long PriceTick;
+        public double VodAbsZ;
+        public double BidBuildZ;
+        public double AskBuildZ;
+        public VodChaosSide ChaosSide;
+
+        public VodBuildDot Clone()
+            => (VodBuildDot)MemberwiseClone();
+    }
+
+    internal sealed class BuildBandOverlay
+    {
+        public int Id;
+        public BuildBandSide Side;
+        public long MinTick;
+        public long MaxTick;
+        public DateTime StartUtc;
+        public DateTime FormedUtc;
+        public DateTime LastUpdateUtc;
+        public int EventCount;
+        public double MaxAbsZ;
+        public DateTime? BreachedUtc;
+        public long? BreachPriceTick;
+
+        public BuildBandOverlay Clone()
+            => (BuildBandOverlay)MemberwiseClone();
     }
 
     internal sealed class LedgerRow

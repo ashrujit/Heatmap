@@ -50,25 +50,86 @@ namespace LevelLedger
         public int BookFreshnessSec = 5;
 
         // Render
-        [InputParameter("Panel Left Offset (px)", sortIndex: 920,
+        [InputParameter("Panel: Enabled", sortIndex: 920)]
+        public bool PanelEnabled = true;
+
+        [InputParameter("Panel Left Offset (px)", sortIndex: 921,
             minimum: 0, maximum: 2000, increment: 5, decimalPlaces: 0)]
         public int PanelLeftOffsetPx = 90;
 
-        [InputParameter("Panel Top Offset (px)", sortIndex: 921,
+        [InputParameter("Panel Top Offset (px)", sortIndex: 922,
             minimum: 0, maximum: 1500, increment: 5, decimalPlaces: 0)]
         public int PanelTopOffsetPx = 90;
 
-        [InputParameter("Panel Width (px)", sortIndex: 922,
+        [InputParameter("Panel Width (px)", sortIndex: 923,
             minimum: 180, maximum: 520, increment: 10, decimalPlaces: 0)]
         public int PanelWidthPx = 300;
 
-        [InputParameter("Visible Rows", sortIndex: 923,
+        [InputParameter("Visible Rows", sortIndex: 924,
             minimum: 4, maximum: 12, increment: 1, decimalPlaces: 0)]
         public int VisibleRows = 10;
 
-        [InputParameter("Font Size", sortIndex: 924,
+        [InputParameter("Font Size", sortIndex: 925,
             minimum: 7, maximum: 14, increment: 0.5, decimalPlaces: 1)]
         public double FontSize = 9.0;
+
+        [InputParameter("VOD+BUILD Dots: Enabled", sortIndex: 940)]
+        public bool VodBuildDotsEnabled = true;
+
+        [InputParameter("VOD+BUILD Dots: VOD |z|", sortIndex: 941,
+            minimum: 3.0, maximum: 12.0, increment: 0.25, decimalPlaces: 2)]
+        public double VodBuildDotVodZ = 5.0;
+
+        [InputParameter("VOD+BUILD Dots: BUILD |z|", sortIndex: 942,
+            minimum: 2.0, maximum: 8.0, increment: 0.25, decimalPlaces: 2)]
+        public double VodBuildDotBuildZ = 4.0;
+
+        [InputParameter("VOD+BUILD Dots: Size (px)", sortIndex: 943,
+            minimum: 3, maximum: 16, increment: 1, decimalPlaces: 0)]
+        public int VodBuildDotSizePx = 7;
+
+        [InputParameter("VOD+BUILD Dots: Alpha", sortIndex: 944,
+            minimum: 20, maximum: 255, increment: 5, decimalPlaces: 0)]
+        public int VodBuildDotAlpha = 175;
+
+        [InputParameter("VOD+BUILD Dots: Retention Minutes (0=session)", sortIndex: 945,
+            minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
+        public int VodBuildDotRetentionMinutes = 0;
+
+        [InputParameter("Build Bands: Enabled", sortIndex: 950)]
+        public bool BuildBandsEnabled = true;
+
+        [InputParameter("Build Bands: BUILD |z|", sortIndex: 951,
+            minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
+        public double BuildBandBuildZ = 3.0;
+
+        [InputParameter("Build Bands: Cluster Min Events", sortIndex: 952,
+            minimum: 2, maximum: 10, increment: 1, decimalPlaces: 0)]
+        public int BuildBandClusterN = 3;
+
+        [InputParameter("Build Bands: Cluster Tick Range", sortIndex: 953,
+            minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
+        public int BuildBandClusterTicks = 8;
+
+        [InputParameter("Build Bands: Cluster Window (sec)", sortIndex: 954,
+            minimum: 15, maximum: 600, increment: 15, decimalPlaces: 0)]
+        public int BuildBandClusterSec = 90;
+
+        [InputParameter("Build Bands: Price-Through Buffer (ticks)", sortIndex: 955,
+            minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
+        public int BuildBandPriceThroughBufferTicks = 1;
+
+        [InputParameter("Build Bands: Active Alpha", sortIndex: 956,
+            minimum: 8, maximum: 160, increment: 2, decimalPlaces: 0)]
+        public int BuildBandActiveAlpha = 46;
+
+        [InputParameter("Build Bands: Breached Alpha", sortIndex: 957,
+            minimum: 4, maximum: 100, increment: 1, decimalPlaces: 0)]
+        public int BuildBandBreachedAlpha = 18;
+
+        [InputParameter("Build Bands: Retention Minutes (0=session)", sortIndex: 958,
+            minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
+        public int BuildBandRetentionMinutes = 0;
 
         private LevelLedgerEngine _engine;
         private LevelLedgerPainter _painter;
@@ -96,7 +157,8 @@ namespace LevelLedger
                 if (settings != null)
                 {
                     var grpDetect = new SettingItemSeparatorGroup("Level Ledger - Detection", 900);
-                    var grpRender = new SettingItemSeparatorGroup("Level Ledger - Render", 920);
+                    var grpRender = new SettingItemSeparatorGroup("Level Ledger - Panel", 920);
+                    var grpOverlays = new SettingItemSeparatorGroup("Level Ledger - Chart Overlays", 940);
                     foreach (var item in settings)
                     {
                         if (item == null) continue;
@@ -104,6 +166,8 @@ namespace LevelLedger
                             item.SeparatorGroup = grpDetect;
                         else if (item.SortIndex >= 920 && item.SortIndex < 940)
                             item.SeparatorGroup = grpRender;
+                        else if (item.SortIndex >= 940 && item.SortIndex < 960)
+                            item.SeparatorGroup = grpOverlays;
                     }
                 }
                 return settings;
@@ -129,11 +193,18 @@ namespace LevelLedger
                     TradeDeltaRatio);
                 _painter = new LevelLedgerPainter(_tickSize)
                 {
+                    PanelEnabled = PanelEnabled,
                     LeftOffsetPx = PanelLeftOffsetPx,
                     TopOffsetPx = PanelTopOffsetPx,
                     PanelWidthPx = PanelWidthPx,
                     VisibleRows = VisibleRows,
                     FontSize = (float)FontSize,
+                    VodBuildDotsEnabled = VodBuildDotsEnabled,
+                    VodBuildDotSizePx = VodBuildDotSizePx,
+                    VodBuildDotAlpha = VodBuildDotAlpha,
+                    BuildBandsEnabled = BuildBandsEnabled,
+                    BuildBandActiveAlpha = BuildBandActiveAlpha,
+                    BuildBandBreachedAlpha = BuildBandBreachedAlpha,
                 };
 
                 _domParams = new GetDepthOfMarketParameters
@@ -204,6 +275,7 @@ namespace LevelLedger
                     return;
                 }
 
+                ApplyEngineConfig();
                 _engine.OnBookSample(now, dom, _tickSize);
             }
             catch (Exception ex)
@@ -236,25 +308,44 @@ namespace LevelLedger
         {
             try
             {
+                IChart chart = null;
                 if (_subscribedChart == null)
                 {
-                    var chart = this.CurrentChart;
+                    chart = this.CurrentChart;
                     if (chart != null)
                     {
                         chart.MouseClick += Chart_MouseClick;
                         _subscribedChart = chart;
                     }
                 }
+                else
+                {
+                    chart = _subscribedChart;
+                }
 
                 if (_painter != null && _engine != null)
                 {
+                    _painter.PanelEnabled = PanelEnabled;
                     _painter.LeftOffsetPx = PanelLeftOffsetPx;
                     _painter.TopOffsetPx = PanelTopOffsetPx;
                     _painter.PanelWidthPx = PanelWidthPx;
                     _painter.VisibleRows = VisibleRows;
                     _painter.FontSize = (float)FontSize;
                     _painter.L2Stale = _l2Stale;
-                    _painter.Paint(args, _engine.GetSnapshot(Math.Max(1, VisibleRows), DateTime.UtcNow));
+                    _painter.VodBuildDotsEnabled = VodBuildDotsEnabled;
+                    _painter.VodBuildDotSizePx = VodBuildDotSizePx;
+                    _painter.VodBuildDotAlpha = VodBuildDotAlpha;
+                    _painter.BuildBandsEnabled = BuildBandsEnabled;
+                    _painter.BuildBandActiveAlpha = BuildBandActiveAlpha;
+                    _painter.BuildBandBreachedAlpha = BuildBandBreachedAlpha;
+
+                    var now = DateTime.UtcNow;
+                    _painter.Paint(
+                        args,
+                        chart,
+                        _engine.GetSnapshot(Math.Max(1, VisibleRows), now),
+                        _engine.GetVodBuildDots(now),
+                        _engine.GetBuildBands(now));
                 }
             }
             catch (Exception ex)
@@ -267,6 +358,20 @@ namespace LevelLedger
                 }
                 catch { }
             }
+        }
+
+        private void ApplyEngineConfig()
+        {
+            if (_engine == null) return;
+            _engine.ChartVodBuildVodZ = VodBuildDotVodZ;
+            _engine.ChartVodBuildBuildZ = VodBuildDotBuildZ;
+            _engine.ChartVodBuildRetentionMinutes = VodBuildDotRetentionMinutes;
+            _engine.ChartBuildBandBuildZ = BuildBandBuildZ;
+            _engine.ChartBuildBandClusterN = BuildBandClusterN;
+            _engine.ChartBuildBandClusterTicks = BuildBandClusterTicks;
+            _engine.ChartBuildBandClusterSec = BuildBandClusterSec;
+            _engine.ChartBuildBandPriceThroughBufferTicks = BuildBandPriceThroughBufferTicks;
+            _engine.ChartBuildBandRetentionMinutes = BuildBandRetentionMinutes;
         }
 
         private void Chart_MouseClick(object sender, ChartMouseNativeEventArgs e)

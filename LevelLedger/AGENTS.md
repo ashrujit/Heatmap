@@ -57,9 +57,34 @@ Trade impulse and VOD rows show a compact `zN` badge from the already-computed a
 Color/saturation carries row class:
 
 - Spatial dominance rows are highest-priority and use the strongest side colors.
+- A leading `+` is reserved for a first-print spatial dominance row that has not yet merged into a same-side update. It is deliberately not shown on updates, VOD chaos, node rows, or trade impulse rows; those rows are already isolated event observations. The marker exists only to answer, "did a new side just take a stance here?"
 - Trade impulse rows (`buyers lift` / `sellers hit`) use separate, quieter side colors so tape bursts do not visually masquerade as zone control.
 - `VOD chaos` is amber/neutral and intentionally not side-colored. It is a warning/fragility marker, not a directional claim.
+- The chart VOD+BUILD overlay is different from the ledger `VOD chaos` row on purpose. Dots require stricter same-sample `VOD + BID/ASK_BUILD` confirmation, paint as amber circles, and use a bid/ask/mixed rim only to show which side of the book thrashed. The rim is a side-of-chaos hint, not a buy/sell signal.
 - Node rows are muted because they are contextual structure rather than an immediate warning.
+
+## Chart Overlay Fold-In
+
+LevelLedger is now the migration target for L2_Surface ideas that survive research. The goal is not to copy every L2_Surface layer; each candidate earns its place independently from parquet review and live use.
+
+Overlays must stay independently toggleable from the ledger panel. This lets the same indicator run on charts where the panel is useful and on charts where only the researched chart paint is wanted.
+
+The first folded overlay is VOD+BUILD dots:
+
+- Ledger row: `VOD chaos` remains broader, neutral, merged, and row-oriented.
+- Chart dot: same-sample `VOD` plus `BID_BUILD` or `ASK_BUILD`, defaulting to the stricter surface thresholds.
+- Visual grammar: amber fill for chaos, side-colored rim for bid/ask/mixed book-side turbulence.
+
+The second folded overlay is raw build bands:
+
+- The overlay uses the L2_Surface default raw clustering shape: same-side `BID_BUILD`/`ASK_BUILD` only, default `3` events within `8` ticks and `90s`, with a default `BUILD |z|` threshold of `3.0`.
+- This is intentionally not LevelLedger spatial dominance. Build bands are raw evidence objects, useful precisely because they show repeated same-side book building at a price area before the broader ledger math compresses or opposes that evidence.
+- Price-through does not delete a band. Breached bands fade and keep their zone, so prior supply/demand can remain visible as failed or absorbed structure. Example research case: on 2026-05-14, a demand band near `653` above the earlier `647-649` supply band helped show that the selling rotation had likely ended and buyers had built enough to drive above prior supply.
+
+Parked candidates:
+
+- L2_Surface inflection lines/dots were researched against 2026-05-14 and 2026-05-15 parquet via `research/surface_candidates.py --candidate inflection` and should not be folded in for now. The signal is a derived state machine over the same side-aware L2 event stream that LiquidityMeter already renders as cum/ROC. LiquidityMeter is not numerically identical under all defaults: its ROC is the same signed rolling-sum operator, while its cumulative leg is anchored/rolling by meter settings rather than L2_Surface's fixed 5-minute cum plus trigger-baseline delta. Still, the practical information is redundant for live use: by the time inflection confirms, ladder, price, LevelLedger, and LiquidityMeter usually already expose the same pressure shift.
+- L2_Surface flow bands were researched against 2026-05-14 and 2026-05-15 parquet via `research/surface_candidates.py --candidate flow`. The default band recipe produced zero bands on both days. A relaxed probe (`--band-event-count 3 --band-sustain-sec 3`) produced only one band per day: a 2026-05-14 RTH-open artifact and a short 2026-05-15 10:00 bear patch. The VOD+BUILD climax component is already represented by the folded chart dots; the sustained flow-band state machine does not yet justify LevelLedger integration.
 
 ## Current Spatial Defaults
 
@@ -95,9 +120,9 @@ Early sanity checks:
 - 2026-05-07 around 12:38-12:40 shows supply dominance near `756`, matching the bounce/reload area.
 - 2026-05-05 around 10:17-10:24 shows demand dominance around `055-056`, matching the normal continuation add zone after the first lucky edge entry.
 
-## Why This Is Separate From L2_Surface
+## Relationship To L2_Surface
 
-L2_Surface paints spatial memory all day. LevelLedger is a temporary workbench once the trader asks "what now?" around a context they already care about. It should not replace L2_Surface, LiquidityMeter, Absorption_Exhaustion, profile, TPO, or the ladder.
+L2_Surface was the original always-on L2 paint surface. LevelLedger remains the decision workbench, but it is also the long-term home for researched L2_Surface computations that prove useful in live reads. Do not change L2_Surface while migrating candidates unless explicitly requested; preserve it as a reference implementation until the LevelLedger replacement path is mature.
 
 ## Known Limits
 
