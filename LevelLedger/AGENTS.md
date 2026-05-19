@@ -81,6 +81,13 @@ The second folded overlay is raw build bands:
 - This is intentionally not LevelLedger spatial dominance. Build bands are raw evidence objects, useful precisely because they show repeated same-side book building at a price area before the broader ledger math compresses or opposes that evidence.
 - Price-through does not delete a band. Breached bands fade and keep their zone, so prior supply/demand can remain visible as failed or absorbed structure. Example research case: on 2026-05-14, a demand band near `653` above the earlier `647-649` supply band helped show that the selling rotation had likely ended and buyers had built enough to drive above prior supply.
 
+The third folded overlay is VOD stacks:
+
+- VOD stack centers use the broader `VOD chaos` cluster, not only the stricter VOD+BUILD dot. The design reason is that instability often appears before an extreme breaks or fails, while VOD+BUILD dots are intentionally sparse.
+- Visual grammar is deliberately separate from dominance rows and build bands: yellow dotted center line for the unstable auction, blue dotted confirmed demand lines, orange dotted confirmed supply lines.
+- Directional stack lines are not emitted on the first directional event. A post-VOD supply/demand candidate must be followed by price moving away by the configured tick distance before it becomes visible. This prevents a low-break VOD from immediately painting a misleading demand line unless the auction actually rejects away from that area.
+- A distinct new VOD cluster fades the prior stack. The current stack remains the center of attention; older stacks can stay faintly visible for review until the retention setting removes them.
+
 Parked candidates:
 
 - L2_Surface inflection lines/dots were researched against 2026-05-14 and 2026-05-15 parquet via `research/surface_candidates.py --candidate inflection` and should not be folded in for now. The signal is a derived state machine over the same side-aware L2 event stream that LiquidityMeter already renders as cum/ROC. LiquidityMeter is not numerically identical under all defaults: its ROC is the same signed rolling-sum operator, while its cumulative leg is anchored/rolling by meter settings rather than L2_Surface's fixed 5-minute cum plus trigger-baseline delta. Still, the practical information is redundant for live use: by the time inflection confirms, ladder, price, LevelLedger, and LiquidityMeter usually already expose the same pressure shift.

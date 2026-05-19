@@ -23,6 +23,7 @@ namespace LevelLedger
         public bool BuildBandsEnabled = true;
         public int BuildBandActiveAlpha = 46;
         public int BuildBandBreachedAlpha = 18;
+        public bool VodStacksEnabled = true;
         public bool L2Stale;
         public Rectangle LastHitRect;
 
@@ -39,6 +40,8 @@ namespace LevelLedger
         private static readonly Color Chaos = Color.FromArgb(245, 190, 70);
         private static readonly Color BidChaos = Color.FromArgb(95, 165, 235);
         private static readonly Color AskChaos = Color.FromArgb(238, 132, 72);
+        private static readonly Color StackDemand = Color.FromArgb(75, 185, 225);
+        private static readonly Color StackSupply = Color.FromArgb(238, 132, 72);
 
         public LevelLedgerPainter(double tickSize)
         {
@@ -50,7 +53,8 @@ namespace LevelLedger
             IChart chart,
             LedgerSnapshot snapshot,
             IReadOnlyList<VodBuildDot> vodBuildDots,
-            IReadOnlyList<BuildBandOverlay> buildBands)
+            IReadOnlyList<BuildBandOverlay> buildBands,
+            IReadOnlyList<VodStackOverlay> vodStacks)
         {
             var g = args.Graphics;
             var rect = args.Rectangle;
@@ -62,6 +66,8 @@ namespace LevelLedger
             {
                 if (BuildBandsEnabled)
                     DrawBuildBands(g, chart, rect, buildBands);
+                if (VodStacksEnabled)
+                    DrawVodStacks(g, chart, rect, vodStacks);
                 if (VodBuildDotsEnabled)
                     DrawVodBuildDots(g, chart, rect, vodBuildDots);
                 if (L2Stale)
@@ -167,6 +173,85 @@ namespace LevelLedger
                 g.DrawLine(edge, xLeft, yTop, xRight, yTop);
                 g.DrawLine(edge, xLeft, yBottom, xRight, yBottom);
             }
+        }
+
+        private void DrawVodStacks(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<VodStackOverlay> stacks)
+        {
+            if (chart == null || stacks == null || stacks.Count == 0) return;
+            var cv = chart.MainWindow?.CoordinatesConverter;
+            if (cv == null) return;
+
+            foreach (var stack in stacks)
+            {
+                bool faded = stack.FadedUtc.HasValue;
+                DrawVodStackCenter(g, cv, rect, stack, faded);
+
+                if (stack.Edges == null) continue;
+                foreach (var edge in stack.Edges)
+                {
+                    if (!edge.ConfirmedUtc.HasValue) continue;
+                    DrawVodStackEdge(g, cv, rect, edge, faded);
+                }
+            }
+        }
+
+        private void DrawVodStackCenter(
+            Graphics g,
+            IChartWindowCoordinatesConverter cv,
+            Rectangle rect,
+            VodStackOverlay stack,
+            bool faded)
+        {
+            int xStart;
+            int y;
+            try
+            {
+                xStart = (int)cv.GetChartX(stack.StartUtc);
+                y = (int)cv.GetChartY(stack.CenterTick * _tickSize);
+            }
+            catch { return; }
+
+            if (y < rect.Top || y > rect.Bottom) return;
+            int xLeft = Math.Max(rect.Left, xStart);
+            if (rect.Right <= xLeft) return;
+
+            int alpha = faded ? 42 : 165;
+            using var pen = new Pen(Color.FromArgb(alpha, Chaos), faded ? 1.0f : 1.4f)
+            {
+                DashStyle = DashStyle.Dot,
+            };
+            g.DrawLine(pen, xLeft, y, rect.Right, y);
+        }
+
+        private void DrawVodStackEdge(
+            Graphics g,
+            IChartWindowCoordinatesConverter cv,
+            Rectangle rect,
+            VodStackEdge edge,
+            bool stackFaded)
+        {
+            int xStart;
+            int y;
+            try
+            {
+                xStart = (int)cv.GetChartX(edge.EventUtc);
+                y = (int)cv.GetChartY(edge.CenterTick * _tickSize);
+            }
+            catch { return; }
+
+            if (y < rect.Top || y > rect.Bottom) return;
+            int xLeft = Math.Max(rect.Left, xStart);
+            if (rect.Right <= xLeft) return;
+
+            bool breached = edge.BreachedUtc.HasValue;
+            int alpha = stackFaded ? 38 : (breached ? 58 : 175);
+            float width = stackFaded || breached ? 1.0f : 1.5f;
+            Color color = edge.Side == VodStackEdgeSide.Supply ? StackSupply : StackDemand;
+            using var pen = new Pen(Color.FromArgb(alpha, color), width)
+            {
+                DashStyle = DashStyle.Dot,
+            };
+            g.DrawLine(pen, xLeft, y, rect.Right, y);
         }
 
         private void DrawVodBuildDots(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<VodBuildDot> dots)

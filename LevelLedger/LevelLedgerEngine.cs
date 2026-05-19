@@ -26,6 +26,11 @@ namespace LevelLedger
         private const double DominanceMinDensity = 12.0;
         private const double MinDominanceRatio = 1.1;
         private const double ChaosSideDominanceRatio = 1.25;
+        private const int VodStackClusterMergeSec = 75;
+        private const int VodStackClusterMergeTicks = 36;
+        private const int VodStackEdgeMergeTicks = 12;
+        private const int VodStackMaxLinesPerSide = 4;
+        private const int VodStackUnconfirmedKeepSec = 10 * 60;
 
         private readonly int _bookLookbackSec;
         private readonly double _eventZThreshold;
@@ -40,12 +45,15 @@ namespace LevelLedger
         private readonly LinkedList<VodBuildDot> _vodBuildDots = new();
         private readonly LinkedList<BuildBandOverlay> _buildBands = new();
         private readonly LinkedList<BuildBandEvent> _buildBandPending = new();
+        private readonly LinkedList<VodStackOverlay> _vodStacks = new();
         private readonly LinkedList<TradeBar> _tradeBars = new();
         private readonly List<LedgerRow> _rows = new();
 
         private TradeBar _currentBar;
         private int _nextRowId = 1;
         private int _nextBuildBandId = 1;
+        private int _nextVodStackId = 1;
+        private VodStackOverlay _activeVodStack;
         private DateTime? _activeUtc;
         private long? _activationTick;
         private long? _lastNodeTick;
@@ -86,6 +94,11 @@ namespace LevelLedger
         public int ChartBuildBandClusterSec { get; set; } = 90;
         public int ChartBuildBandPriceThroughBufferTicks { get; set; } = 1;
         public int ChartBuildBandRetentionMinutes { get; set; } = 0;
+        public double ChartVodStackVodZ { get; set; } = 4.0;
+        public double ChartVodStackEdgeZ { get; set; } = 2.5;
+        public int ChartVodStackConfirmMoveTicks { get; set; } = 24;
+        public int ChartVodStackPriceThroughBufferTicks { get; set; } = 2;
+        public int ChartVodStackRetentionMinutes { get; set; } = 120;
 
         public void Activate(DateTime nowUtc)
         {
@@ -162,6 +175,8 @@ namespace LevelLedger
             UpdateBuildBands(nowUtc, sample.MidTick, zBi, zAi);
             ApplyBuildBandPriceThrough(nowUtc, sample.MidTick);
             UpdateVod(nowUtc, sample, zBi, zAi);
+            UpdateVodStackEdges(nowUtc, sample.MidTick, zBi, zAi, zBc, zAc);
+            ApplyVodStackPriceThrough(nowUtc, sample.MidTick);
             EvaluateSpatialDominance(nowUtc, sample.MidTick);
             Prune(nowUtc);
         }
@@ -210,6 +225,12 @@ namespace LevelLedger
         {
             PruneBuildBands(nowUtc);
             return _buildBands.Select(b => b.Clone()).ToArray();
+        }
+
+        public IReadOnlyList<VodStackOverlay> GetVodStacks(DateTime nowUtc)
+        {
+            PruneVodStacks(nowUtc);
+            return _vodStacks.Select(s => s.Clone()).ToArray();
         }
 
         private long? LastKnownTick { get; set; }
@@ -452,6 +473,7 @@ namespace LevelLedger
                         var (m, s) = MeanStdOf(_vodValues, nowUtc, _bookLookbackSec * 4);
                         double z = (vod - m) / Math.Max(0.1, s);
                         AddVodBuildDotIfNeeded(nowUtc, sample, z, zBidInner, zAskInner);
+                        AddOrUpdateVodStackAnchor(nowUtc, sample, z);
                         if (Math.Abs(z) >= Math.Max(4.0, _eventZThreshold + 1.0))
                             AddOrUpdateRow(nowUtc, sample.MidTick, 0, "VOD chaos", RowKind.Chaos, Math.Abs(z), Math.Abs(z));
                     }
@@ -496,6 +518,213 @@ namespace LevelLedger
             if (askMove >= bidMove * ChaosSideDominanceRatio)
                 return VodChaosSide.Ask;
             return VodChaosSide.Mixed;
+        }
+
+        private void AddOrUpdateVodStackAnchor(DateTime nowUtc, BookSample sample, double vodZ)
+        {
+            if (vodZ < Math.Max(1.0, ChartVodStackVodZ)) return;
+
+            var side = ResolveChaosSide(sample);
+            var stack = _activeVodStack;
+            bool merge = stack != null
+                && !stack.FadedUtc.HasValue
+                && (nowUtc - stack.LastVodUtc).TotalSeconds <= VodStackClusterMergeSec
+                && sample.MidTick >= stack.AnchorMinTick - VodStackClusterMergeTicks
+                && sample.MidTick <= stack.AnchorMaxTick + VodStackClusterMergeTicks;
+
+            if (!merge)
+            {
+                FadeOpenVodStacks(nowUtc);
+                stack = new VodStackOverlay
+                {
+                    Id = _nextVodStackId++,
+                    StartUtc = nowUtc,
+                    LastVodUtc = nowUtc,
+                    AnchorMinTick = sample.MidTick,
+                    AnchorMaxTick = sample.MidTick,
+                    CenterTick = sample.MidTick,
+                    MaxVodAbsZ = Math.Abs(vodZ),
+                    ChaosSide = side,
+                    Edges = new List<VodStackEdge>(),
+                };
+                _vodStacks.AddLast(stack);
+                _activeVodStack = stack;
+                return;
+            }
+
+            stack.LastVodUtc = nowUtc;
+            stack.AnchorMinTick = Math.Min(stack.AnchorMinTick, sample.MidTick);
+            stack.AnchorMaxTick = Math.Max(stack.AnchorMaxTick, sample.MidTick);
+            stack.CenterTick = (stack.AnchorMinTick + stack.AnchorMaxTick) / 2;
+            stack.MaxVodAbsZ = Math.Max(stack.MaxVodAbsZ, Math.Abs(vodZ));
+            stack.ChaosSide = MergeChaosSide(stack.ChaosSide, side);
+        }
+
+        private void FadeOpenVodStacks(DateTime nowUtc)
+        {
+            foreach (var stack in _vodStacks)
+            {
+                if (!stack.FadedUtc.HasValue)
+                    stack.FadedUtc = nowUtc;
+            }
+        }
+
+        private void UpdateVodStackEdges(
+            DateTime nowUtc,
+            long currentMidTick,
+            double zBidInner,
+            double zAskInner,
+            double zBidCentroid,
+            double zAskCentroid)
+        {
+            var stack = _activeVodStack;
+            if (stack == null || stack.FadedUtc.HasValue) return;
+
+            double threshold = Math.Max(1.0, ChartVodStackEdgeZ);
+            if (zBidInner >= threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Demand, zBidInner, "BID_BUILD");
+            if (zAskInner >= threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Supply, zAskInner, "ASK_BUILD");
+            if (zBidCentroid >= threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Supply, zBidCentroid, "BID_OUT");
+            else if (zBidCentroid <= -threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Demand, -zBidCentroid, "BID_IN");
+            if (zAskCentroid >= threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Demand, zAskCentroid, "ASK_OUT");
+            else if (zAskCentroid <= -threshold)
+                AddVodStackEdgeEvent(stack, nowUtc, currentMidTick, VodStackEdgeSide.Supply, -zAskCentroid, "ASK_IN");
+
+            ConfirmVodStackEdges(stack, nowUtc, currentMidTick);
+            PruneVodStackEdges(stack, nowUtc);
+        }
+
+        private void AddVodStackEdgeEvent(
+            VodStackOverlay stack,
+            DateTime nowUtc,
+            long priceTick,
+            VodStackEdgeSide side,
+            double absZ,
+            string eventType)
+        {
+            foreach (var edge in stack.Edges)
+            {
+                if (edge.Side != side) continue;
+                if (edge.InvalidUtc.HasValue) continue;
+                if (edge.BreachedUtc.HasValue) continue;
+                if (Math.Abs(edge.CenterTick - priceTick) > VodStackEdgeMergeTicks) continue;
+
+                edge.MinTick = Math.Min(edge.MinTick, priceTick);
+                edge.MaxTick = Math.Max(edge.MaxTick, priceTick);
+                edge.CenterTick = (edge.MinTick + edge.MaxTick) / 2;
+                edge.LastUpdateUtc = nowUtc;
+                edge.EventCount++;
+                edge.MaxAbsZ = Math.Max(edge.MaxAbsZ, absZ);
+                edge.EventType = eventType;
+                return;
+            }
+
+            stack.Edges.Add(new VodStackEdge
+            {
+                Side = side,
+                MinTick = priceTick,
+                MaxTick = priceTick,
+                CenterTick = priceTick,
+                EventUtc = nowUtc,
+                LastUpdateUtc = nowUtc,
+                MaxAbsZ = absZ,
+                EventCount = 1,
+                EventType = eventType,
+            });
+
+            TrimVodStackLines(stack, side);
+        }
+
+        private void ConfirmVodStackEdges(VodStackOverlay stack, DateTime nowUtc, long currentMidTick)
+        {
+            int confirmTicks = Math.Max(1, ChartVodStackConfirmMoveTicks);
+            foreach (var edge in stack.Edges)
+            {
+                if (edge.ConfirmedUtc.HasValue || edge.InvalidUtc.HasValue) continue;
+
+                if (edge.Side == VodStackEdgeSide.Supply
+                    && currentMidTick <= edge.MinTick - confirmTicks)
+                {
+                    edge.ConfirmedUtc = nowUtc;
+                }
+                else if (edge.Side == VodStackEdgeSide.Demand
+                    && currentMidTick >= edge.MaxTick + confirmTicks)
+                {
+                    edge.ConfirmedUtc = nowUtc;
+                }
+            }
+        }
+
+        private void ApplyVodStackPriceThrough(DateTime nowUtc, long currentMidTick)
+        {
+            int bufferTicks = Math.Max(0, ChartVodStackPriceThroughBufferTicks);
+            foreach (var stack in _vodStacks)
+            {
+                foreach (var edge in stack.Edges)
+                {
+                    if (edge.InvalidUtc.HasValue || edge.BreachedUtc.HasValue) continue;
+
+                    bool throughSupply = edge.Side == VodStackEdgeSide.Supply
+                        && currentMidTick > edge.MaxTick + bufferTicks;
+                    bool throughDemand = edge.Side == VodStackEdgeSide.Demand
+                        && currentMidTick < edge.MinTick - bufferTicks;
+
+                    if (!throughSupply && !throughDemand) continue;
+
+                    if (edge.ConfirmedUtc.HasValue)
+                    {
+                        edge.BreachedUtc = nowUtc;
+                        edge.BreachPriceTick = currentMidTick;
+                    }
+                    else
+                    {
+                        edge.InvalidUtc = nowUtc;
+                    }
+                }
+            }
+        }
+
+        private static void PruneVodStackEdges(VodStackOverlay stack, DateTime nowUtc)
+        {
+            for (int i = stack.Edges.Count - 1; i >= 0; i--)
+            {
+                var edge = stack.Edges[i];
+                if (edge.InvalidUtc.HasValue)
+                {
+                    stack.Edges.RemoveAt(i);
+                    continue;
+                }
+
+                if (!edge.ConfirmedUtc.HasValue
+                    && (nowUtc - edge.LastUpdateUtc).TotalSeconds > VodStackUnconfirmedKeepSec)
+                    stack.Edges.RemoveAt(i);
+            }
+        }
+
+        private static void TrimVodStackLines(VodStackOverlay stack, VodStackEdgeSide side)
+        {
+            var sideLines = stack.Edges
+                .Where(e => e.Side == side)
+                .OrderBy(e => e.EventUtc)
+                .ToList();
+
+            while (sideLines.Count > VodStackMaxLinesPerSide)
+            {
+                var remove = sideLines[0];
+                stack.Edges.Remove(remove);
+                sideLines.RemoveAt(0);
+            }
+        }
+
+        private static VodChaosSide MergeChaosSide(VodChaosSide existing, VodChaosSide next)
+        {
+            if (existing == VodChaosSide.Mixed || next == VodChaosSide.Mixed)
+                return VodChaosSide.Mixed;
+            return existing == next ? existing : VodChaosSide.Mixed;
         }
 
         private void EvaluateSpatialDominance(DateTime nowUtc, long currentMidTick)
@@ -659,6 +888,7 @@ namespace LevelLedger
             PruneVodBuildDots(nowUtc);
             PruneBuildBands(nowUtc);
             PruneBuildBandPending(nowUtc);
+            PruneVodStacks(nowUtc);
             var cutoff = nowUtc.AddSeconds(-RowRetentionSec);
             _rows.RemoveAll(r => r.TimeUtc < cutoff);
         }
@@ -690,6 +920,28 @@ namespace LevelLedger
                 DateTime reference = band.BreachedUtc ?? band.LastUpdateUtc;
                 if (reference < cutoff)
                     _buildBands.Remove(node);
+                node = next;
+            }
+        }
+
+        private void PruneVodStacks(DateTime nowUtc)
+        {
+            int minutes = Math.Max(0, ChartVodStackRetentionMinutes);
+            if (minutes == 0) return;
+
+            var cutoff = nowUtc.AddMinutes(-minutes);
+            var node = _vodStacks.First;
+            while (node != null)
+            {
+                var next = node.Next;
+                var stack = node.Value;
+                DateTime reference = stack.FadedUtc ?? stack.LastVodUtc;
+                if (reference < cutoff)
+                {
+                    if (ReferenceEquals(_activeVodStack, stack))
+                        _activeVodStack = null;
+                    _vodStacks.Remove(node);
+                }
                 node = next;
             }
         }
@@ -952,6 +1204,12 @@ namespace LevelLedger
         Supply,
     }
 
+    internal enum VodStackEdgeSide
+    {
+        Demand,
+        Supply,
+    }
+
     internal sealed class VodBuildDot : LevelLedgerEngine.ITimed
     {
         public DateTime TimeUtc { get; set; }
@@ -981,6 +1239,47 @@ namespace LevelLedger
 
         public BuildBandOverlay Clone()
             => (BuildBandOverlay)MemberwiseClone();
+    }
+
+    internal sealed class VodStackOverlay
+    {
+        public int Id;
+        public DateTime StartUtc;
+        public DateTime LastVodUtc;
+        public long AnchorMinTick;
+        public long AnchorMaxTick;
+        public long CenterTick;
+        public double MaxVodAbsZ;
+        public VodChaosSide ChaosSide;
+        public DateTime? FadedUtc;
+        public List<VodStackEdge> Edges = new();
+
+        public VodStackOverlay Clone()
+        {
+            var copy = (VodStackOverlay)MemberwiseClone();
+            copy.Edges = Edges.Select(e => e.Clone()).ToList();
+            return copy;
+        }
+    }
+
+    internal sealed class VodStackEdge
+    {
+        public VodStackEdgeSide Side;
+        public long MinTick;
+        public long MaxTick;
+        public long CenterTick;
+        public DateTime EventUtc;
+        public DateTime LastUpdateUtc;
+        public DateTime? ConfirmedUtc;
+        public DateTime? BreachedUtc;
+        public long? BreachPriceTick;
+        public DateTime? InvalidUtc;
+        public double MaxAbsZ;
+        public int EventCount;
+        public string EventType;
+
+        public VodStackEdge Clone()
+            => (VodStackEdge)MemberwiseClone();
     }
 
     internal sealed class LedgerRow

@@ -9,7 +9,7 @@ namespace LevelLedger
 {
     public class LevelLedger : Indicator
     {
-        private const string IndicatorVersion = "0.2.0";
+        private const string IndicatorVersion = "0.2.1";
         private const int L1ToleranceTicks = 2;
 
         // Detection
@@ -131,6 +131,29 @@ namespace LevelLedger
             minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
         public int BuildBandRetentionMinutes = 0;
 
+        [InputParameter("VOD Stacks: Enabled", sortIndex: 960)]
+        public bool VodStacksEnabled = true;
+
+        [InputParameter("VOD Stacks: VOD |z|", sortIndex: 961,
+            minimum: 3.0, maximum: 12.0, increment: 0.25, decimalPlaces: 2)]
+        public double VodStackVodZ = 4.0;
+
+        [InputParameter("VOD Stacks: Edge |z|", sortIndex: 962,
+            minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
+        public double VodStackEdgeZ = 2.5;
+
+        [InputParameter("VOD Stacks: Confirm Move (ticks)", sortIndex: 963,
+            minimum: 4, maximum: 120, increment: 1, decimalPlaces: 0)]
+        public int VodStackConfirmMoveTicks = 24;
+
+        [InputParameter("VOD Stacks: Price-Through Buffer (ticks)", sortIndex: 964,
+            minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
+        public int VodStackPriceThroughBufferTicks = 2;
+
+        [InputParameter("VOD Stacks: Retention Minutes (0=session)", sortIndex: 965,
+            minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
+        public int VodStackRetentionMinutes = 120;
+
         private LevelLedgerEngine _engine;
         private LevelLedgerPainter _painter;
         private GetDepthOfMarketParameters _domParams;
@@ -166,7 +189,7 @@ namespace LevelLedger
                             item.SeparatorGroup = grpDetect;
                         else if (item.SortIndex >= 920 && item.SortIndex < 940)
                             item.SeparatorGroup = grpRender;
-                        else if (item.SortIndex >= 940 && item.SortIndex < 960)
+                        else if (item.SortIndex >= 940 && item.SortIndex < 980)
                             item.SeparatorGroup = grpOverlays;
                     }
                 }
@@ -205,6 +228,7 @@ namespace LevelLedger
                     BuildBandsEnabled = BuildBandsEnabled,
                     BuildBandActiveAlpha = BuildBandActiveAlpha,
                     BuildBandBreachedAlpha = BuildBandBreachedAlpha,
+                    VodStacksEnabled = VodStacksEnabled,
                 };
 
                 _domParams = new GetDepthOfMarketParameters
@@ -338,6 +362,7 @@ namespace LevelLedger
                     _painter.BuildBandsEnabled = BuildBandsEnabled;
                     _painter.BuildBandActiveAlpha = BuildBandActiveAlpha;
                     _painter.BuildBandBreachedAlpha = BuildBandBreachedAlpha;
+                    _painter.VodStacksEnabled = VodStacksEnabled;
 
                     var now = DateTime.UtcNow;
                     _painter.Paint(
@@ -345,7 +370,8 @@ namespace LevelLedger
                         chart,
                         _engine.GetSnapshot(Math.Max(1, VisibleRows), now),
                         _engine.GetVodBuildDots(now),
-                        _engine.GetBuildBands(now));
+                        _engine.GetBuildBands(now),
+                        _engine.GetVodStacks(now));
                 }
             }
             catch (Exception ex)
@@ -372,6 +398,11 @@ namespace LevelLedger
             _engine.ChartBuildBandClusterSec = BuildBandClusterSec;
             _engine.ChartBuildBandPriceThroughBufferTicks = BuildBandPriceThroughBufferTicks;
             _engine.ChartBuildBandRetentionMinutes = BuildBandRetentionMinutes;
+            _engine.ChartVodStackVodZ = VodStackVodZ;
+            _engine.ChartVodStackEdgeZ = VodStackEdgeZ;
+            _engine.ChartVodStackConfirmMoveTicks = VodStackConfirmMoveTicks;
+            _engine.ChartVodStackPriceThroughBufferTicks = VodStackPriceThroughBufferTicks;
+            _engine.ChartVodStackRetentionMinutes = VodStackRetentionMinutes;
         }
 
         private void Chart_MouseClick(object sender, ChartMouseNativeEventArgs e)
