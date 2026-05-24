@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import polars as pl
 
+from capture_loader import load_capture_window, snapshot_columns
+
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -31,7 +33,6 @@ except Exception:
 
 NY = ZoneInfo("America/New_York")
 TICK_SIZE = 0.25
-CAPTURE_ROOT = r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures"
 OUT_DIR = r"C:\Heatmap\research\out"
 
 INNER_LEVELS = 10
@@ -126,37 +127,12 @@ def ny_label(ts: dt.datetime | None, with_date: bool = False) -> str:
     return ts.astimezone(NY).strftime(fmt)
 
 
-def capture_path(symbol_dir: str, kind: str, day: dt.date) -> str:
-    return os.path.join(
-        CAPTURE_ROOT,
-        symbol_dir,
-        f"{kind}-{day.isoformat()}.parquet",
-    )
-
-
 def load_window(kind: str, symbol_dir: str, start: dt.datetime, end: dt.datetime) -> pl.DataFrame:
-    scans: list[pl.LazyFrame] = []
     if kind == "snapshots":
-        cols = ["timestamp_us", "ref_tick"]
-        for i in range(BROAD_LEVELS):
-            cols.extend([f"bid_offset_{i}", f"bid_size_{i}", f"ask_offset_{i}", f"ask_size_{i}"])
+        cols = snapshot_columns(BROAD_LEVELS)
     else:
         cols = ["timestamp_us", "price", "size", "aggressor_sign"]
-    lo = us(start)
-    hi = us(end)
-    day = start.date()
-    while day <= end.date():
-        path = capture_path(symbol_dir, kind, day)
-        if os.path.exists(path):
-            scans.append(
-                pl.scan_parquet(path)
-                .select(cols)
-                .filter((pl.col("timestamp_us") >= lo) & (pl.col("timestamp_us") < hi))
-            )
-        day += dt.timedelta(days=1)
-    if not scans:
-        raise FileNotFoundError(f"no {kind} parquet files for {start} to {end}")
-    return pl.concat(scans, how="diagonal").collect().sort("timestamp_us")
+    return load_capture_window(kind, symbol_dir, start, end, cols)
 
 
 def add_ny_ts(df: pl.DataFrame) -> pl.DataFrame:

@@ -9,12 +9,17 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import sys
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import polars as pl
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "research"))
+from capture_loader import load_capture_window, snapshot_columns
 
 
 TICK_SIZE = 0.25
@@ -541,20 +546,15 @@ def ny_hms(ts: datetime) -> str:
     return ts.astimezone(NY).strftime("%H:%M:%S")
 
 
-def load_snapshots(symbol_dir: str, day: str) -> pl.DataFrame:
-    root = rf"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\{symbol_dir}"
-    path = os.path.join(root, f"snapshots-{day}.parquet")
-    cols = ["timestamp_us", "ref_tick"]
-    for i in range(BROAD_LEVELS):
-        cols.extend(
-            [
-                f"bid_offset_{i}",
-                f"bid_size_{i}",
-                f"ask_offset_{i}",
-                f"ask_size_{i}",
-            ]
-        )
-    return pl.read_parquet(path, columns=cols).sort("timestamp_us")
+def load_snapshots(symbol_dir: str, start: datetime, end: datetime) -> pl.DataFrame:
+    return load_capture_window(
+        "snapshots",
+        symbol_dir,
+        start,
+        end,
+        snapshot_columns(BROAD_LEVELS),
+        inclusive_end=True,
+    )
 
 
 def main() -> None:
@@ -575,10 +575,7 @@ def main() -> None:
     window_end = parse_ny(args.date, end_s)
     replay_start = window_start - timedelta(minutes=args.warmup_min)
 
-    snap = load_snapshots(args.symbol_dir, args.date).filter(
-        (pl.col("timestamp_us") >= int(replay_start.timestamp() * 1_000_000))
-        & (pl.col("timestamp_us") <= int(window_end.timestamp() * 1_000_000))
-    )
+    snap = load_snapshots(args.symbol_dir, replay_start, window_end)
 
     engine = Engine()
     for row in snap.iter_rows(named=True):

@@ -26,13 +26,12 @@ import numpy as np
 import datetime as dt
 import os, sys
 from zoneinfo import ZoneInfo
+from capture_loader import load_capture_day, snapshot_columns, tick_columns
 # Force UTF-8 stdout so Polars tables (unicode box-draw) don't crash on cp1252
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
 SYMBOL_DIR = os.environ.get("SYMBOL_DIR", "NQM6")
-LIVE = rf"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\{SYMBOL_DIR}"
-COPY = r"C:\Users\j\AppData\Local\Temp\cap_copy"  # used while live writer holds lock
 SESSION = os.environ.get("SESSION", "2026-05-07")
 INNER_LEVELS = 10
 BROAD_LEVELS = 30
@@ -50,14 +49,8 @@ OUT_DIR = r"C:\Heatmap\research\out"
 ny = ZoneInfo("America/New_York")
 
 def load(name):
-    for root in (LIVE, COPY):
-        p = os.path.join(root, f"{name}-{SESSION}.parquet")
-        if os.path.exists(p):
-            try:
-                return pl.read_parquet(p)
-            except OSError:
-                continue   # file locked, try next location
-    raise FileNotFoundError(f"no readable {name}-{SESSION}.parquet")
+    cols = snapshot_columns(BROAD_LEVELS) if name == "snapshots" else tick_columns()
+    return load_capture_day(name, SYMBOL_DIR, SESSION, cols)
 
 def utc_to_ny(us): return dt.datetime.fromtimestamp(us / 1e6, tz=ny)
 def ny_str(us): return utc_to_ny(us).strftime("%H:%M:%S")

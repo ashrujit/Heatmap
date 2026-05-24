@@ -33,14 +33,13 @@ import numpy as np
 import datetime as dt
 import os, sys
 from zoneinfo import ZoneInfo
+from capture_loader import load_capture_day, snapshot_columns, tick_columns
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
 SESSION    = os.environ.get("SESSION", "2026-05-08")
 SYMBOL_DIR = os.environ.get("SYMBOL_DIR", "NQ")
 
-LIVE = rf"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures\{SYMBOL_DIR}"
-COPY = r"C:\Users\j\AppData\Local\Temp\cap_copy"
 OUT_DIR = r"C:\Heatmap\research\out"
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -76,12 +75,8 @@ ny = ZoneInfo("America/New_York")
 
 # ── Load + RTH filter ────────────────────────────────────────────────────
 def load(name):
-    for root in (LIVE, COPY):
-        p = os.path.join(root, f"{name}-{SESSION}.parquet")
-        if os.path.exists(p):
-            try: return pl.read_parquet(p)
-            except OSError: continue
-    raise FileNotFoundError(f"{name}-{SESSION}.parquet")
+    cols = snapshot_columns(BROAD_LEVELS) if name == "snapshots" else tick_columns()
+    return load_capture_day(name, SYMBOL_DIR, SESSION, cols)
 
 def filter_rth(df):
     return df.with_columns(

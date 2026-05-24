@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
+from capture_loader import add_ny_ts, load_capture_window, tick_columns
+
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -80,31 +82,12 @@ def ny_str(ts: dt.datetime) -> str:
     return ts.astimezone(NY).strftime("%H:%M:%S")
 
 
-def capture_path(symbol_dir: str, day: str) -> str:
-    return (
-        rf"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap"
-        rf"\captures\{symbol_dir}\ticks-{day}.parquet"
-    )
-
-
 def load_ticks(case: Case, context_sec: int) -> pl.DataFrame:
     start = parse_ny(case.date, case.start) - dt.timedelta(seconds=context_sec)
     end = parse_ny(case.date, case.end)
-    lo = int(start.timestamp() * 1_000_000)
-    hi = int(end.timestamp() * 1_000_000)
-    path = capture_path(case.symbol_dir, case.date)
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
 
     return (
-        pl.read_parquet(path)
-        .filter((pl.col("timestamp_us") >= lo) & (pl.col("timestamp_us") <= hi))
-        .with_columns(
-            pl.from_epoch("timestamp_us", time_unit="us")
-            .dt.replace_time_zone("UTC")
-            .dt.convert_time_zone("America/New_York")
-            .alias("ts")
-        )
+        add_ny_ts(load_capture_window("ticks", case.symbol_dir, start, end, tick_columns(), inclusive_end=True))
         .sort("ts")
     )
 

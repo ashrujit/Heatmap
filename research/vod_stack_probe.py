@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
+from capture_loader import load_capture_window, snapshot_columns
+
 
 TICK_SIZE = 0.25
 INNER_LEVELS = 10
@@ -178,23 +180,15 @@ def std_over(items: deque[tuple[datetime, float]], now: datetime, seconds: int) 
     return mean_std(vals)[1]
 
 
-def load_snapshots(day: str, symbol_dir: str, capture_root: Path, start: datetime, end: datetime, warmup_min: int) -> pl.DataFrame:
-    path = capture_root / symbol_dir / f"snapshots-{day}.parquet"
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    cols = ["timestamp_us", "ref_tick"]
-    for i in range(BROAD_LEVELS):
-        cols.extend([f"bid_offset_{i}", f"bid_size_{i}", f"ask_offset_{i}", f"ask_size_{i}"])
-
+def load_snapshots(day: str, symbol_dir: str, start: datetime, end: datetime, warmup_min: int) -> pl.DataFrame:
     load_start = start - timedelta(minutes=max(0, warmup_min))
-    return (
-        pl.read_parquet(str(path), columns=cols)
-        .filter(
-            (pl.col("timestamp_us") >= int(load_start.timestamp() * 1_000_000))
-            & (pl.col("timestamp_us") <= int(end.timestamp() * 1_000_000))
-        )
-        .sort("timestamp_us")
+    return load_capture_window(
+        "snapshots",
+        symbol_dir,
+        load_start,
+        end,
+        snapshot_columns(BROAD_LEVELS),
+        inclusive_end=True,
     )
 
 
@@ -374,8 +368,7 @@ def summarize_stack(stack: VodStack, start: datetime, end: datetime) -> list[str
 
 def run(args: argparse.Namespace) -> tuple[Path, list[VodStack]]:
     start, end = parse_window(args.date, args.window)
-    capture_root = Path(args.capture_root)
-    rows = load_snapshots(args.date, args.symbol_dir, capture_root, start, end, args.warmup_min)
+    rows = load_snapshots(args.date, args.symbol_dir, start, end, args.warmup_min)
 
     samples: deque[Sample] = deque()
     inner_deltas: deque[tuple[datetime, float]] = deque()
@@ -490,7 +483,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", required=True)
     parser.add_argument("--symbol-dir", default=os.environ.get("SYMBOL_DIR", "NQM6"))
-    parser.add_argument("--capture-root", default=r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures")
+    parser.add_argument("--capture-root", default="", help=argparse.SUPPRESS)
     parser.add_argument("--window", help="NY time window, e.g. 09:30-16:00")
     parser.add_argument("--warmup-min", type=int, default=30)
     parser.add_argument("--lookback-sec", type=int, default=30)

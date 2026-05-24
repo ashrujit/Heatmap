@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
+from capture_loader import load_capture_window, snapshot_columns
+
 
 TICK_SIZE = 0.25
 INNER_LEVELS = 10
@@ -190,10 +192,6 @@ def event_side(kind: str) -> str:
     return "."
 
 
-def capture_root(symbol_dir: str) -> Path:
-    return Path(r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures") / symbol_dir
-
-
 def ny_dt(day: str, hhmm: str) -> datetime:
     fmt = "%Y-%m-%d %H:%M:%S" if hhmm.count(":") == 2 else "%Y-%m-%d %H:%M"
     return datetime.strptime(f"{day} {hhmm}", fmt).replace(tzinfo=NY)
@@ -253,23 +251,14 @@ def chaos_side(sample: Sample, prev_bid_inner: float | None, prev_ask_inner: flo
 
 
 def load_snapshots(day: str, symbol_dir: str, start: datetime, end: datetime, warmup_min: int) -> pl.DataFrame:
-    root = capture_root(symbol_dir)
-    path = root / f"snapshots-{day}.parquet"
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    cols = ["timestamp_us", "ref_tick"]
-    for i in range(BROAD_LEVELS):
-        cols.extend([f"bid_offset_{i}", f"bid_size_{i}", f"ask_offset_{i}", f"ask_size_{i}"])
-
     load_start = start - timedelta(minutes=max(0, warmup_min))
-    start_us = int(load_start.timestamp() * 1_000_000)
-    end_us = int(end.timestamp() * 1_000_000)
-
-    return (
-        pl.read_parquet(str(path), columns=cols)
-        .filter((pl.col("timestamp_us") >= start_us) & (pl.col("timestamp_us") <= end_us))
-        .sort("timestamp_us")
+    return load_capture_window(
+        "snapshots",
+        symbol_dir,
+        load_start,
+        end,
+        snapshot_columns(BROAD_LEVELS),
+        inclusive_end=True,
     )
 
 
