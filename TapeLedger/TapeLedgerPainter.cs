@@ -49,17 +49,32 @@ namespace TapeLedger
             g.SmoothingMode = SmoothingMode.AntiAlias;
             try
             {
+                Rectangle panelRect = GetPanelRect(rect, snapshot);
                 if (BandsEnabled)
                     DrawBands(g, chart, rect, snapshot.Bands);
-                if (BannersEnabled)
-                    DrawBanners(g, rect, snapshot.Banners);
                 if (PanelEnabled)
-                    DrawPanel(g, rect, snapshot);
+                    DrawPanel(g, snapshot, panelRect);
+                if (BannersEnabled)
+                    DrawBanners(g, rect, snapshot.Banners, panelRect);
             }
             finally
             {
                 g.SmoothingMode = prev;
             }
+        }
+
+        private Rectangle GetPanelRect(Rectangle rect, TapeSnapshot snapshot)
+        {
+            int rowH = Math.Max(18, (int)Math.Ceiling(FontSize + 8));
+            int headerH = Math.Max(28, rowH + 8);
+            int bandRows = Math.Min(6, snapshot.Bands?.Length ?? 0);
+            int msgRows = Math.Min(8, snapshot.Messages?.Length ?? 0);
+            int h = headerH + rowH * (4 + bandRows + msgRows) + 18;
+            int maxW = Math.Max(1, rect.Width - 8);
+            int w = Math.Min(maxW, Math.Max(300, PanelWidthPx));
+            int x = Math.Min(Math.Max(rect.Left + 4, rect.Right - w - 4), Math.Max(rect.Left + 4, rect.Left + LeftOffsetPx));
+            int y = Math.Min(Math.Max(rect.Top + 4, rect.Bottom - h - 4), Math.Max(rect.Top + 4, rect.Top + TopOffsetPx));
+            return new Rectangle(x, y, w, h);
         }
 
         private void DrawBands(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<TapeBandView> bands)
@@ -135,17 +150,27 @@ namespace TapeLedger
             g.DrawString(TrimToWidth(g, font, text, w - padX * 2), font, fg, x + padX, y + 1);
         }
 
-        private void DrawBanners(Graphics g, Rectangle rect, IReadOnlyList<TapeBannerView> banners)
+        private void DrawBanners(Graphics g, Rectangle rect, IReadOnlyList<TapeBannerView> banners, Rectangle panelRect)
         {
             if (banners == null || banners.Count == 0) return;
             using var titleFont = new Font("Segoe UI", Math.Max(9.0f, FontSize + 0.5f), FontStyle.Bold);
             using var detailFont = new Font("Segoe UI", Math.Max(8.0f, FontSize - 1.0f), FontStyle.Regular);
 
-            int x = rect.Left + 10;
-            int y = rect.Top + 8;
-            int w = Math.Min(rect.Width - 20, 780);
             int h = Math.Max(25, (int)Math.Ceiling(FontSize + 17));
-            foreach (var banner in banners.Take(4))
+            const int rowGap = 5;
+            const int panelGap = 8;
+            var visible = banners.Take(4).ToArray();
+            int availableAbovePanel = panelRect.Top - rect.Top - panelGap - 4;
+            int maxRowsAbovePanel = Math.Max(1, (availableAbovePanel + rowGap) / (h + rowGap));
+            int count = Math.Min(visible.Length, maxRowsAbovePanel);
+            if (visible.Length > count)
+                visible = visible.Skip(visible.Length - count).ToArray();
+
+            int stackH = visible.Length * h + Math.Max(0, visible.Length - 1) * rowGap;
+            int w = Math.Min(Math.Max(1, rect.Width - 8), panelRect.Width);
+            int x = Math.Max(rect.Left + 4, Math.Min(panelRect.Left, rect.Right - w - 4));
+            int y = Math.Max(rect.Top + 4, panelRect.Top - panelGap - stackH);
+            foreach (var banner in visible)
             {
                 Color color = SideColor(banner.Side);
                 using var bg = new SolidBrush(Color.FromArgb(Clamp(BannerAlpha, 60, 255), color));
@@ -162,23 +187,24 @@ namespace TapeLedger
                 if (!string.IsNullOrWhiteSpace(banner.Detail))
                 {
                     string detail = TrimToWidth(g, detailFont, banner.Detail, (int)(w * 0.38));
-                    var size = g.MeasureString(detail, detailFont);
-                    g.DrawString(detail, detailFont, sub, x + w - size.Width - 10, y + 6);
+                    if (!string.IsNullOrEmpty(detail))
+                    {
+                        var size = g.MeasureString(detail, detailFont);
+                        g.DrawString(detail, detailFont, sub, x + w - size.Width - 10, y + 6);
+                    }
                 }
-                y += h + 5;
+                y += h + rowGap;
             }
         }
 
-        private void DrawPanel(Graphics g, Rectangle rect, TapeSnapshot snapshot)
+        private void DrawPanel(Graphics g, TapeSnapshot snapshot, Rectangle panelRect)
         {
             int rowH = Math.Max(18, (int)Math.Ceiling(FontSize + 8));
             int headerH = Math.Max(28, rowH + 8);
-            int bandRows = Math.Min(6, snapshot.Bands?.Length ?? 0);
-            int msgRows = Math.Min(8, snapshot.Messages?.Length ?? 0);
-            int h = headerH + rowH * (4 + bandRows + msgRows) + 18;
-            int w = Math.Max(300, PanelWidthPx);
-            int x = Math.Min(rect.Right - w - 4, Math.Max(rect.Left + 4, rect.Left + LeftOffsetPx));
-            int y = Math.Min(rect.Bottom - h - 4, Math.Max(rect.Top + 4, rect.Top + TopOffsetPx));
+            int x = panelRect.Left;
+            int y = panelRect.Top;
+            int w = panelRect.Width;
+            int h = panelRect.Height;
 
             using var bg = new SolidBrush(PanelBg);
             using var head = new SolidBrush(PanelHeader);

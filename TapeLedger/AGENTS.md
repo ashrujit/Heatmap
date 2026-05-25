@@ -33,3 +33,17 @@ on the mostly-empty 5-minute chart.
 - Shelf zones use 4-point bins by default, matching the research harness.
 - The first version favors readable visual behavior over perfectly matching the
   offline Python probes. It should be tuned from live chart screenshots.
+
+## Quantower Settings Behavior
+
+- Override `OnSettingsUpdated` and do not call the base implementation. Base
+  `Indicator.OnSettingsUpdated` calls `Refresh()`, which is reasonable for
+  historical indicators but destructive here because TapeLedger's evidence is
+  forward-only live tape that cannot be rebuilt after a settings dialog apply.
+- Render settings are hot-loaded into the painter and engine settings are
+  applied in place. Changing visual settings such as font size should redraw
+  the chart without clearing accumulated shelves, banners, or messages.
+- Banners are anchored above the panel rectangle rather than the chart's top
+  edge. Quantower can occupy the top of the chart with its own controls, so the
+  panel top offset is intentionally the control for moving both the panel and
+  its banners down.

@@ -224,6 +224,21 @@ namespace TapeLedger
             }
         }
 
+        protected override void OnSettingsUpdated()
+        {
+            try
+            {
+                // Base Indicator.OnSettingsUpdated calls Refresh(), which clears forward-only live tape state.
+                ApplySettings();
+                CurrentChart?.RedrawBuffer();
+            }
+            catch (Exception ex)
+            {
+                try { Core.Instance.Loggers.Log($"[{nameof(TapeLedger)}] settings update failed: {ex.Message}", LoggingLevel.Error); }
+                catch { }
+            }
+        }
+
         protected override void OnClear()
         {
             try
