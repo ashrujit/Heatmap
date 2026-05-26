@@ -72,6 +72,26 @@ namespace TapeLedger
             minimum: 8, maximum: 240, increment: 1, decimalPlaces: 0)]
         public int ExtremeRejectTicks = 64;
 
+        [InputParameter("Quick Reject Min Probe Ticks", sortIndex: 1225,
+            minimum: 4, maximum: 240, increment: 1, decimalPlaces: 0)]
+        public int QuickRejectMinProbeTicks = 48;
+
+        [InputParameter("Quick Reject Reclaim Ticks", sortIndex: 1226,
+            minimum: 1, maximum: 80, increment: 1, decimalPlaces: 0)]
+        public int QuickRejectReclaimTicks = 8;
+
+        [InputParameter("Quick Reject Cancel Volume", sortIndex: 1227,
+            minimum: 100, maximum: 20000, increment: 100, decimalPlaces: 0)]
+        public double QuickRejectCancelVolume = 1200.0;
+
+        [InputParameter("Quick Reject Cancel Seconds", sortIndex: 1228,
+            minimum: 5, maximum: 300, increment: 5, decimalPlaces: 0)]
+        public int QuickRejectCancelSeconds = 35;
+
+        [InputParameter("Quick Reject Local Lookback Bars", sortIndex: 1229,
+            minimum: 1, maximum: 12, increment: 1, decimalPlaces: 0)]
+        public int QuickRejectLocalLookbackBars = 3;
+
         [InputParameter("Watch 1 Start HHmm", sortIndex: 1230,
             minimum: 0, maximum: 2359, increment: 1, decimalPlaces: 0)]
         public int Watch1StartHHmm = 1115;
@@ -120,6 +140,13 @@ namespace TapeLedger
         [InputParameter("Font Size", sortIndex: 1248,
             minimum: 7, maximum: 24, increment: 0.5, decimalPlaces: 1)]
         public double FontSize = 10.0;
+
+        [InputParameter("Quick Reject Bands Enabled", sortIndex: 1249)]
+        public bool QuickRejectBandsEnabled = true;
+
+        [InputParameter("Quick Reject Alpha", sortIndex: 1250,
+            minimum: 10, maximum: 180, increment: 2, decimalPlaces: 0)]
+        public int QuickRejectAlpha = 86;
 
         private readonly ConcurrentQueue<Last> _tradeQueue = new();
         private TapeLedgerEngine _engine;
@@ -273,6 +300,12 @@ namespace TapeLedger
                 _engine.ExtremeTestTicks = ExtremeTestTicks;
                 _engine.ExtremeCapTicks = ExtremeCapTicks;
                 _engine.ExtremeRejectTicks = ExtremeRejectTicks;
+                _engine.QuickRejectEnabled = QuickRejectBandsEnabled;
+                _engine.QuickRejectMinProbeTicks = QuickRejectMinProbeTicks;
+                _engine.QuickRejectReclaimTicks = QuickRejectReclaimTicks;
+                _engine.QuickRejectCancelVolume = QuickRejectCancelVolume;
+                _engine.QuickRejectCancelSeconds = QuickRejectCancelSeconds;
+                _engine.QuickRejectLocalLookbackBars = QuickRejectLocalLookbackBars;
                 _engine.Watch1StartHHmm = Watch1StartHHmm;
                 _engine.Watch1EndHHmm = Watch1EndHHmm;
                 _engine.Watch2StartHHmm = Watch2StartHHmm;
@@ -281,9 +314,11 @@ namespace TapeLedger
             if (_painter != null)
             {
                 _painter.BandsEnabled = BandsEnabled;
+                _painter.QuickRejectBandsEnabled = QuickRejectBandsEnabled;
                 _painter.BannersEnabled = BannersEnabled;
                 _painter.PanelEnabled = PanelEnabled;
                 _painter.BandAlpha = BandAlpha;
+                _painter.QuickRejectAlpha = QuickRejectAlpha;
                 _painter.BannerAlpha = BannerAlpha;
                 _painter.LeftOffsetPx = PanelLeftOffsetPx;
                 _painter.TopOffsetPx = PanelTopOffsetPx;

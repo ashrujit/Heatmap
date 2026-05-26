@@ -19,6 +19,10 @@ on the mostly-empty 5-minute chart.
 
 - Bands are the primary artifact. Traded shelves are spatial and sequential, so
   they belong at price.
+- Quick-reject zones are band-only context, not panel or banner items. They mark
+  where price probed outside a reference and quickly reclaimed without building
+  accepted business. They are provisional and disappear when later tape accepts
+  outside the rejected side; they should not be muted and left behind.
 - Banners are allowed and intentionally obvious. Break quality can be missed if
   buried in panel text.
 - The panel is a compact sequence ledger, not a scrolling footprint clone.

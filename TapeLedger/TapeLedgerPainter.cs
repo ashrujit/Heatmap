@@ -13,9 +13,11 @@ namespace TapeLedger
         private readonly double _tickSize;
 
         public bool BandsEnabled = true;
+        public bool QuickRejectBandsEnabled = true;
         public bool BannersEnabled = true;
         public bool PanelEnabled = true;
         public int BandAlpha = 72;
+        public int QuickRejectAlpha = 86;
         public int BandEdgeAlpha = 220;
         public int BannerAlpha = 218;
         public int LeftOffsetPx = 90;
@@ -27,6 +29,7 @@ namespace TapeLedger
         private static readonly Color Supply = Color.FromArgb(255, 112, 67);
         private static readonly Color Accepted = Color.FromArgb(78, 154, 255);
         private static readonly Color Warning = Color.FromArgb(255, 205, 64);
+        private static readonly Color QuickReject = Color.FromArgb(185, 115, 255);
         private static readonly Color Neutral = Color.FromArgb(215, 220, 228);
         private static readonly Color Muted = Color.FromArgb(178, 184, 193);
         private static readonly Color PanelBg = Color.FromArgb(96, 12, 15, 20);
@@ -52,6 +55,8 @@ namespace TapeLedger
                 Rectangle panelRect = GetPanelRect(rect, snapshot);
                 if (BandsEnabled)
                     DrawBands(g, chart, rect, snapshot.Bands);
+                if (QuickRejectBandsEnabled)
+                    DrawQuickRejectBands(g, chart, rect, snapshot.QuickRejectBands);
                 if (PanelEnabled)
                     DrawPanel(g, snapshot, panelRect);
                 if (BannersEnabled)
@@ -75,6 +80,67 @@ namespace TapeLedger
             int x = Math.Min(Math.Max(rect.Left + 4, rect.Right - w - 4), Math.Max(rect.Left + 4, rect.Left + LeftOffsetPx));
             int y = Math.Min(Math.Max(rect.Top + 4, rect.Bottom - h - 4), Math.Max(rect.Top + 4, rect.Top + TopOffsetPx));
             return new Rectangle(x, y, w, h);
+        }
+
+        private void DrawQuickRejectBands(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<QuickRejectBandView> bands)
+        {
+            if (chart == null || bands == null || bands.Count == 0) return;
+            var cv = chart.MainWindow?.CoordinatesConverter;
+            if (cv == null) return;
+
+            foreach (var band in bands)
+            {
+                int yTop;
+                int yBottom;
+                int xStart;
+                try
+                {
+                    yTop = (int)cv.GetChartY((band.MaxTick + 1) * _tickSize);
+                    yBottom = (int)cv.GetChartY(band.MinTick * _tickSize);
+                    xStart = (int)cv.GetChartX(band.StartUtc);
+                }
+                catch { continue; }
+
+                if (yTop > yBottom)
+                {
+                    int tmp = yTop;
+                    yTop = yBottom;
+                    yBottom = tmp;
+                }
+                if (yBottom < rect.Top || yTop > rect.Bottom) continue;
+
+                yTop = Math.Max(rect.Top, yTop);
+                yBottom = Math.Min(rect.Bottom, Math.Max(yBottom, yTop + 5));
+                int x = Math.Max(rect.Left, Math.Min(rect.Right - 16, xStart));
+                int w = Math.Max(40, rect.Right - x);
+
+                using var fill = new SolidBrush(Color.FromArgb(Clamp(QuickRejectAlpha, 8, 210), QuickReject));
+                using var pen = new Pen(Color.FromArgb(240, QuickReject), 1.8f);
+                pen.DashStyle = DashStyle.Dash;
+
+                g.FillRectangle(fill, x, yTop, w, yBottom - yTop);
+                g.DrawLine(pen, x, yTop, rect.Right, yTop);
+                g.DrawLine(pen, x, yBottom, rect.Right, yBottom);
+                DrawQuickRejectLabel(g, rect, band, yTop, yBottom);
+            }
+        }
+
+        private void DrawQuickRejectLabel(Graphics g, Rectangle rect, QuickRejectBandView band, int yTop, int yBottom)
+        {
+            string text = band.Text;
+            using var font = new Font("Segoe UI", Math.Max(8.0f, FontSize - 1.0f), FontStyle.Bold);
+            SizeF size = g.MeasureString(text, font);
+            int padX = 6;
+            int h = Math.Max(18, (int)Math.Ceiling(size.Height) + 2);
+            int w = Math.Min(rect.Width - 20, (int)Math.Ceiling(size.Width) + padX * 2);
+            int x = rect.Right - w - 8;
+            int y = Math.Max(rect.Top + 2, Math.Min(rect.Bottom - h - 2, (yTop + yBottom - h) / 2));
+            using var bg = new SolidBrush(Color.FromArgb(205, 18, 11, 28));
+            using var border = new Pen(Color.FromArgb(245, QuickReject), 1f);
+            using var fg = new SolidBrush(Color.FromArgb(250, 248, 242, 255));
+            g.FillRectangle(bg, x, y, w, h);
+            g.DrawRectangle(border, x, y, w, h);
+            g.DrawString(TrimToWidth(g, font, text, w - padX * 2), font, fg, x + padX, y + 1);
         }
 
         private void DrawBands(Graphics g, IChart chart, Rectangle rect, IReadOnlyList<TapeBandView> bands)

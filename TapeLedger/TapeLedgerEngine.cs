@@ -37,6 +37,18 @@ namespace TapeLedger
         public string Text = "";
     }
 
+    internal sealed class QuickRejectBandView
+    {
+        public long MinTick;
+        public long MaxTick;
+        public long RefTick;
+        public long ExtremeTick;
+        public DateTime StartUtc;
+        public DateTime BuiltUtc;
+        public int Direction;
+        public string Text = "";
+    }
+
     internal sealed class TapeBannerView
     {
         public TapeSide Side;
@@ -64,6 +76,7 @@ namespace TapeLedger
         public long? IbHighTick;
         public long? IbLowTick;
         public TapeBandView[] Bands = Array.Empty<TapeBandView>();
+        public QuickRejectBandView[] QuickRejectBands = Array.Empty<QuickRejectBandView>();
         public TapeBannerView[] Banners = Array.Empty<TapeBannerView>();
         public TapeMessageView[] Messages = Array.Empty<TapeMessageView>();
     }
@@ -73,8 +86,12 @@ namespace TapeLedger
         private readonly double _tickSize;
         private readonly TimeZoneInfo _nyZone;
         private readonly List<BinAggregate> _recentBins = new();
+        private readonly List<CompletedBar> _recentBars = new();
         private readonly List<TapeMessageView> _messages = new();
         private readonly List<ExtremeCandidate> _extremes = new();
+        private readonly List<QuickRejectState> _quickRejects = new();
+        private readonly Dictionary<string, QuickRejectProbe> _quickRejectProbes = new();
+        private int _nextQuickRejectId = 1;
         private DateTime? _sessionDateNy;
         private BarState _bar;
         private BreakState _orBreak;
@@ -104,6 +121,14 @@ namespace TapeLedger
         public int ExtremeTestTicks { get; set; } = 32;
         public int ExtremeCapTicks { get; set; } = 32;
         public int ExtremeRejectTicks { get; set; } = 64;
+        public bool QuickRejectEnabled { get; set; } = true;
+        public int QuickRejectMinProbeTicks { get; set; } = 48;
+        public int QuickRejectReclaimTicks { get; set; } = 8;
+        public int QuickRejectMaxSeconds { get; set; } = 180;
+        public double QuickRejectCancelVolume { get; set; } = 1200.0;
+        public int QuickRejectCancelSeconds { get; set; } = 35;
+        public int QuickRejectLocalLookbackBars { get; set; } = 3;
+        public int QuickRejectDedupeTicks { get; set; } = 16;
         public int Watch1StartHHmm { get; set; } = 1115;
         public int Watch1EndHHmm { get; set; } = 1215;
         public int Watch2StartHHmm { get; set; } = 1215;
@@ -159,12 +184,14 @@ namespace TapeLedger
             }
 
             UpdateBar(timeUtc, tick, size, aggressorSign);
+            UpdateQuickRejects(local, timeUtc, tick, size, aggressorSign);
             TrackExtremeTrade(timeUtc, tick);
         }
 
         public TapeSnapshot GetSnapshot(DateTime nowUtc)
         {
             var bands = BuildShelfBands(nowUtc);
+            var quickRejectBands = BuildQuickRejectBands();
             var banners = BuildBanners(nowUtc);
             return new TapeSnapshot
             {
@@ -178,6 +205,7 @@ namespace TapeLedger
                 IbHighTick = _ibHighTick,
                 IbLowTick = _ibLowTick,
                 Bands = bands,
+                QuickRejectBands = quickRejectBands,
                 Banners = banners,
                 Messages = _messages.OrderByDescending(m => m.TimeUtc).Take(8).Reverse().ToArray(),
             };
@@ -187,8 +215,12 @@ namespace TapeLedger
         {
             _sessionDateNy = localDate.Date;
             _recentBins.Clear();
+            _recentBars.Clear();
             _messages.Clear();
             _extremes.Clear();
+            _quickRejects.Clear();
+            _quickRejectProbes.Clear();
+            _nextQuickRejectId = 1;
             _bar = null;
             _orBreak = null;
             _ibBreak = null;
@@ -233,6 +265,18 @@ namespace TapeLedger
 
         private void FinalizeBar(BarState bar)
         {
+            _recentBars.Add(new CompletedBar
+            {
+                StartUtc = bar.StartUtc,
+                EndUtc = bar.StartUtc.AddMinutes(Math.Max(1, BarMinutes)),
+                OpenTick = bar.OpenTick,
+                HighTick = bar.HighTick,
+                LowTick = bar.LowTick,
+                CloseTick = bar.CloseTick,
+                Volume = bar.Volume,
+                Delta = bar.Delta,
+                Trades = bar.Trades,
+            });
             foreach (var b in bar.Bins.Values)
             {
                 _recentBins.Add(new BinAggregate
@@ -247,6 +291,7 @@ namespace TapeLedger
                     Seconds = b.Seconds.Count,
                 });
             }
+            _recentBars.RemoveAll(b => (bar.StartUtc - b.StartUtc).TotalMinutes > 240);
             _recentBins.RemoveAll(b => (bar.StartUtc - b.TimeUtc).TotalMinutes > 240);
 
             EvaluateBreaks(bar);
@@ -433,6 +478,209 @@ namespace TapeLedger
                 e.LowRejected = true;
                 AddMessage(bar.StartUtc, TapeSide.Warning, $"{e.WindowName} low reject -> repair shelves");
             }
+        }
+
+        private void UpdateQuickRejects(DateTime local, DateTime utc, long tick, double size, int aggressorSign)
+        {
+            if (!QuickRejectEnabled)
+            {
+                _quickRejects.Clear();
+                _quickRejectProbes.Clear();
+                return;
+            }
+
+            UpdateQuickRejectCancels(utc, tick, size);
+
+            var refs = BuildQuickRejectReferences(local, utc);
+            var activeKeys = new HashSet<string>();
+            foreach (var r in refs)
+            {
+                activeKeys.Add(r.Key);
+                if (!_quickRejectProbes.TryGetValue(r.Key, out var probe))
+                {
+                    probe = new QuickRejectProbe
+                    {
+                        Key = r.Key,
+                        Source = r.Source,
+                        RefName = r.RefName,
+                        Direction = r.Direction,
+                        RefTick = r.RefTick,
+                    };
+                    _quickRejectProbes[r.Key] = probe;
+                }
+                else
+                {
+                    probe.Source = r.Source;
+                    probe.RefName = r.RefName;
+                    probe.Direction = r.Direction;
+                    probe.RefTick = r.RefTick;
+                }
+
+                UpdateQuickRejectProbe(probe, utc, tick, size, aggressorSign);
+            }
+
+            var stale = _quickRejectProbes.Keys
+                .Where(k => k.StartsWith("LOCAL:", StringComparison.Ordinal) && !activeKeys.Contains(k))
+                .ToList();
+            foreach (string key in stale)
+                _quickRejectProbes.Remove(key);
+        }
+
+        private List<QuickRejectReference> BuildQuickRejectReferences(DateTime local, DateTime utc)
+        {
+            var refs = new List<QuickRejectReference>();
+            if (!_sessionDateNy.HasValue) return refs;
+
+            var rthStart = SessionTimeUtc(local.Date, RthStartHHmm);
+            var orEnd = rthStart.AddMinutes(Math.Max(1, OrMinutes));
+            var ibEnd = rthStart.AddMinutes(Math.Max(1, IbMinutes));
+
+            if (utc >= orEnd && _rthOpenTick.HasValue)
+            {
+                refs.Add(new QuickRejectReference("REF:OPEN:L", "REF", "OPEN", -1, _rthOpenTick.Value));
+                refs.Add(new QuickRejectReference("REF:OPEN:H", "REF", "OPEN", +1, _rthOpenTick.Value));
+            }
+            if (utc >= orEnd && _orLowTick.HasValue && _orHighTick.HasValue)
+            {
+                refs.Add(new QuickRejectReference("REF:OR5L", "REF", "OR5L", -1, _orLowTick.Value));
+                refs.Add(new QuickRejectReference("REF:OR5H", "REF", "OR5H", +1, _orHighTick.Value));
+            }
+            if (utc >= ibEnd && _ibLowTick.HasValue && _ibHighTick.HasValue)
+            {
+                refs.Add(new QuickRejectReference("REF:IBL", "REF", "IBL", -1, _ibLowTick.Value));
+                refs.Add(new QuickRejectReference("REF:IBH", "REF", "IBH", +1, _ibHighTick.Value));
+            }
+
+            int lookbackCount = Math.Max(1, QuickRejectLocalLookbackBars);
+            var lookback = _recentBars
+                .OrderByDescending(b => b.StartUtc)
+                .Take(lookbackCount)
+                .ToList();
+            if (lookback.Count > 0)
+            {
+                long low = lookback.Min(b => b.LowTick);
+                long high = lookback.Max(b => b.HighTick);
+                int dedupeTicks = Math.Max(1, QuickRejectDedupeTicks);
+                if (!refs.Any(r => r.Direction < 0 && Math.Abs(r.RefTick - low) <= dedupeTicks))
+                    refs.Add(new QuickRejectReference($"LOCAL:L:{low}", "LOCAL", "LOCL", -1, low));
+                if (!refs.Any(r => r.Direction > 0 && Math.Abs(r.RefTick - high) <= dedupeTicks))
+                    refs.Add(new QuickRejectReference($"LOCAL:H:{high}", "LOCAL", "LOCH", +1, high));
+            }
+
+            return refs;
+        }
+
+        private void UpdateQuickRejectProbe(QuickRejectProbe probe, DateTime utc, long tick, double size, int aggressorSign)
+        {
+            bool outside = IsOutside(probe.Direction, tick, probe.RefTick);
+            if (outside)
+            {
+                if (!probe.HasProbe)
+                    probe.Start(utc, tick);
+                probe.NoteOutside(utc, tick, size, aggressorSign);
+                if (probe.ElapsedSeconds(utc) > QuickRejectMaxSeconds || probe.Seconds.Count > QuickRejectMaxSeconds)
+                    probe.Expired = true;
+                return;
+            }
+
+            if (!probe.HasProbe) return;
+
+            if (IsReclaimed(probe.Direction, tick, probe.RefTick, Math.Max(1, QuickRejectReclaimTicks)))
+            {
+                TryBuildQuickReject(probe, utc);
+                probe.Reset();
+                return;
+            }
+
+            if (probe.ElapsedSeconds(utc) > QuickRejectMaxSeconds)
+                probe.Expired = true;
+        }
+
+        private void TryBuildQuickReject(QuickRejectProbe probe, DateTime builtUtc)
+        {
+            long probeTicks = Math.Abs(probe.ExtremeTick - probe.RefTick);
+            if (probe.Expired) return;
+            if (probeTicks < Math.Max(1, QuickRejectMinProbeTicks)) return;
+            if (probe.Seconds.Count > Math.Max(1, QuickRejectMaxSeconds)) return;
+            if (HasDuplicateQuickReject(probe.Direction, probe.RefTick)) return;
+
+            long minTick = Math.Min(probe.RefTick, probe.ExtremeTick);
+            long maxTick = Math.Max(probe.RefTick, probe.ExtremeTick);
+            _quickRejects.Add(new QuickRejectState
+            {
+                Id = _nextQuickRejectId++,
+                Source = probe.Source,
+                RefName = probe.RefName,
+                Direction = probe.Direction,
+                RefTick = probe.RefTick,
+                ExtremeTick = probe.ExtremeTick,
+                MinTick = minTick,
+                MaxTick = maxTick,
+                StartUtc = probe.FirstOutsideUtc,
+                BuiltUtc = builtUtc,
+                OutsideVolume = probe.OutsideVolume,
+                OutsideDelta = probe.OutsideDelta,
+                OutsideSeconds = probe.Seconds.Count,
+            });
+
+            if (_quickRejects.Count > 16)
+                _quickRejects.RemoveRange(0, _quickRejects.Count - 16);
+        }
+
+        private bool HasDuplicateQuickReject(int direction, long refTick)
+        {
+            int dedupeTicks = Math.Max(1, QuickRejectDedupeTicks);
+            return _quickRejects.Any(q => q.Direction == direction && Math.Abs(q.RefTick - refTick) <= dedupeTicks);
+        }
+
+        private void UpdateQuickRejectCancels(DateTime utc, long tick, double size)
+        {
+            if (_quickRejects.Count == 0) return;
+            long second = utc.Ticks / TimeSpan.TicksPerSecond;
+            for (int i = _quickRejects.Count - 1; i >= 0; i--)
+            {
+                var q = _quickRejects[i];
+                if (utc <= q.BuiltUtc) continue;
+                if (!IsOutside(q.Direction, tick, q.RefTick)) continue;
+
+                q.CancelVolume += size;
+                q.CancelSeconds.Add(second);
+                if (q.CancelVolume >= QuickRejectCancelVolume && q.CancelSeconds.Count >= QuickRejectCancelSeconds)
+                    _quickRejects.RemoveAt(i);
+            }
+        }
+
+        private QuickRejectBandView[] BuildQuickRejectBands()
+        {
+            if (!QuickRejectEnabled || _quickRejects.Count == 0)
+                return Array.Empty<QuickRejectBandView>();
+
+            return _quickRejects
+                .OrderBy(q => q.MinTick)
+                .Select(q => new QuickRejectBandView
+                {
+                    MinTick = q.MinTick,
+                    MaxTick = q.MaxTick,
+                    RefTick = q.RefTick,
+                    ExtremeTick = q.ExtremeTick,
+                    StartUtc = q.StartUtc,
+                    BuiltUtc = q.BuiltUtc,
+                    Direction = q.Direction,
+                    Text = $"QR {q.RefName} {Abbrev(q.RefTick)}",
+                })
+                .ToArray();
+        }
+
+        private static bool IsOutside(int direction, long tick, long refTick)
+        {
+            return direction > 0 ? tick > refTick : tick < refTick;
+        }
+
+        private static bool IsReclaimed(int direction, long tick, long refTick, int reclaimTicks)
+        {
+            return direction > 0
+                ? tick <= refTick - reclaimTicks
+                : tick >= refTick + reclaimTicks;
         }
 
         private TapeBandView[] BuildShelfBands(DateTime nowUtc)
@@ -699,6 +947,111 @@ namespace TapeLedger
         {
             public DateTime FirstUtc;
             public DateTime LastUtc;
+        }
+
+        private sealed class CompletedBar
+        {
+            public DateTime StartUtc;
+            public DateTime EndUtc;
+            public long OpenTick;
+            public long HighTick;
+            public long LowTick;
+            public long CloseTick;
+            public double Volume;
+            public double Delta;
+            public int Trades;
+        }
+
+        private sealed class QuickRejectReference
+        {
+            public readonly string Key;
+            public readonly string Source;
+            public readonly string RefName;
+            public readonly int Direction;
+            public readonly long RefTick;
+
+            public QuickRejectReference(string key, string source, string refName, int direction, long refTick)
+            {
+                Key = key;
+                Source = source;
+                RefName = refName;
+                Direction = direction;
+                RefTick = refTick;
+            }
+        }
+
+        private sealed class QuickRejectProbe
+        {
+            public string Key = "";
+            public string Source = "";
+            public string RefName = "";
+            public int Direction;
+            public long RefTick;
+            public bool HasProbe;
+            public bool Expired;
+            public DateTime FirstOutsideUtc;
+            public DateTime LastOutsideUtc;
+            public long ExtremeTick;
+            public double OutsideVolume;
+            public double OutsideDelta;
+            public readonly HashSet<long> Seconds = new();
+
+            public void Start(DateTime utc, long tick)
+            {
+                HasProbe = true;
+                Expired = false;
+                FirstOutsideUtc = utc;
+                LastOutsideUtc = utc;
+                ExtremeTick = tick;
+                OutsideVolume = 0.0;
+                OutsideDelta = 0.0;
+                Seconds.Clear();
+            }
+
+            public void NoteOutside(DateTime utc, long tick, double size, int sign)
+            {
+                LastOutsideUtc = utc;
+                ExtremeTick = Direction > 0
+                    ? Math.Max(ExtremeTick, tick)
+                    : Math.Min(ExtremeTick, tick);
+                OutsideVolume += size;
+                OutsideDelta += size * sign;
+                Seconds.Add(utc.Ticks / TimeSpan.TicksPerSecond);
+            }
+
+            public double ElapsedSeconds(DateTime utc)
+            {
+                if (!HasProbe) return 0.0;
+                return Math.Max(0.0, (utc - FirstOutsideUtc).TotalSeconds);
+            }
+
+            public void Reset()
+            {
+                HasProbe = false;
+                Expired = false;
+                OutsideVolume = 0.0;
+                OutsideDelta = 0.0;
+                Seconds.Clear();
+            }
+        }
+
+        private sealed class QuickRejectState
+        {
+            public int Id;
+            public string Source = "";
+            public string RefName = "";
+            public int Direction;
+            public long RefTick;
+            public long ExtremeTick;
+            public long MinTick;
+            public long MaxTick;
+            public DateTime StartUtc;
+            public DateTime BuiltUtc;
+            public double OutsideVolume;
+            public double OutsideDelta;
+            public int OutsideSeconds;
+            public double CancelVolume;
+            public readonly HashSet<long> CancelSeconds = new();
         }
 
         private sealed class BreakState
