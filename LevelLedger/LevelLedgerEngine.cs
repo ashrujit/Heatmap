@@ -23,28 +23,42 @@ namespace LevelLedger
         private const int DominanceFreshCauseSec = 90;
         private const int DominanceEvalCooldownSec = 20;
         private const int DominanceMaxZonesPerEval = 2;
+        private const int SpatialRowUpdatePriceTicks = 8;
+        private const int SpatialRowUpdateForceSeconds = 180;
+        private const double SpatialRowUpdateRatioDelta = 0.7;
+        private const double SpatialRowUpdateRatioRelative = 0.35;
         private const double DominanceMinDensity = 12.0;
         private const double MinDominanceRatio = 1.1;
         private const double ChaosSideDominanceRatio = 1.25;
+        private const double OwnershipMinScore = 8.0;
+        private const int OwnershipTestBufferTicks = 4;
+        private const int OwnershipHoldConfirmTicks = 10;
+        private const int OwnershipContestedSec = 20 * 60;
+        private const int OwnershipContestedProximityTicks = 80;
+        private const int OwnershipContestedSpanTicks = 240;
+        private const int OwnershipContestedMinFails = 4;
+        private const int OwnershipThesisBackingTicks = 260;
+        private const int OwnershipThesisMinStack = 2;
         private const int VodStackClusterMergeSec = 75;
         private const int VodStackClusterMergeTicks = 36;
         private const int VodStackEdgeMergeTicks = 12;
         private const int VodStackMaxLinesPerSide = 4;
         private const int VodStackUnconfirmedKeepSec = 10 * 60;
 
-        private readonly int _bookLookbackSec;
-        private readonly double _eventZThreshold;
-        private readonly double _dominanceRatioThreshold;
-        private readonly int _activationLookbackMinutes;
-        private readonly int _tradeBarSec;
-        private readonly double _tradeVolZ;
-        private readonly double _tradeDeltaRatio;
+        private int _bookLookbackSec;
+        private double _eventZThreshold;
+        private double _dominanceRatioThreshold;
+        private int _activationLookbackMinutes;
+        private int _tradeBarSec;
+        private double _tradeVolZ;
+        private double _tradeDeltaRatio;
 
         private readonly LinkedList<BookSample> _bookSamples = new();
         private readonly LinkedList<BookEvent> _bookEvents = new();
         private readonly LinkedList<VodBuildDot> _vodBuildDots = new();
         private readonly LinkedList<BuildBandOverlay> _buildBands = new();
         private readonly LinkedList<BuildBandEvent> _buildBandPending = new();
+        private readonly List<BuildBandCandidate> _buildBandCandidates = new();
         private readonly LinkedList<VodStackOverlay> _vodStacks = new();
         private readonly LinkedList<TradeBar> _tradeBars = new();
         private readonly List<LedgerRow> _rows = new();
@@ -75,6 +89,25 @@ namespace LevelLedger
             double tradeVolZ,
             double tradeDeltaRatio)
         {
+            UpdateConfig(
+                bookLookbackSec,
+                eventZThreshold,
+                dominanceRatioThreshold,
+                activationLookbackMinutes,
+                tradeBarSec,
+                tradeVolZ,
+                tradeDeltaRatio);
+        }
+
+        public void UpdateConfig(
+            int bookLookbackSec,
+            double eventZThreshold,
+            double dominanceRatioThreshold,
+            int activationLookbackMinutes,
+            int tradeBarSec,
+            double tradeVolZ,
+            double tradeDeltaRatio)
+        {
             _bookLookbackSec = Math.Max(10, bookLookbackSec);
             _eventZThreshold = Math.Max(1.0, eventZThreshold);
             _dominanceRatioThreshold = Math.Max(MinDominanceRatio, dominanceRatioThreshold);
@@ -88,11 +121,16 @@ namespace LevelLedger
         public double ChartVodBuildVodZ { get; set; } = 5.0;
         public double ChartVodBuildBuildZ { get; set; } = 4.0;
         public int ChartVodBuildRetentionMinutes { get; set; } = 0;
-        public double ChartBuildBandBuildZ { get; set; } = 3.0;
+        public double ChartBuildBandBuildZ { get; set; } = 2.5;
         public int ChartBuildBandClusterN { get; set; } = 3;
-        public int ChartBuildBandClusterTicks { get; set; } = 8;
+        public int ChartBuildBandClusterTicks { get; set; } = 10;
         public int ChartBuildBandClusterSec { get; set; } = 90;
-        public int ChartBuildBandPriceThroughBufferTicks { get; set; } = 1;
+        public int ChartBuildBandConfirmMoveTicks { get; set; } = 8;
+        public int ChartBuildBandConfirmSec { get; set; } = 10;
+        public int ChartBuildBandPriceThroughBufferTicks { get; set; } = 2;
+        public int ChartBuildBandFailureConfirmTicks { get; set; } = 24;
+        public int ChartBuildBandFailureSec { get; set; } = 20;
+        public int ChartBuildBandMaxRails { get; set; } = 12;
         public int ChartBuildBandRetentionMinutes { get; set; } = 0;
         public double ChartVodStackVodZ { get; set; } = 4.0;
         public double ChartVodStackEdgeZ { get; set; } = 2.5;
@@ -172,8 +210,8 @@ namespace LevelLedger
             TryFire(nowUtc, sample.MidTick, zBc, -1, "BID_OUT", "BID_IN");
             TryFire(nowUtc, sample.MidTick, zAc, +1, "ASK_OUT", "ASK_IN");
 
-            UpdateBuildBands(nowUtc, sample.MidTick, zBi, zAi);
-            ApplyBuildBandPriceThrough(nowUtc, sample.MidTick);
+            UpdateBuildBandCandidates(nowUtc, sample.MidTick);
+            UpdateBuildBandStates(nowUtc, sample.MidTick);
             UpdateVod(nowUtc, sample, zBi, zAi);
             UpdateVodStackEdges(nowUtc, sample.MidTick, zBi, zAi, zBc, zAc);
             ApplyVodStackPriceThrough(nowUtc, sample.MidTick);
@@ -224,7 +262,11 @@ namespace LevelLedger
         public IReadOnlyList<BuildBandOverlay> GetBuildBands(DateTime nowUtc)
         {
             PruneBuildBands(nowUtc);
-            return _buildBands.Select(b => b.Clone()).ToArray();
+            long currentTick = LastKnownTick ?? 0;
+            MarkThesisRails(currentTick);
+            return SelectBuildBandsForDisplay(nowUtc, currentTick)
+                .Select(b => b.Clone())
+                .ToArray();
         }
 
         public IReadOnlyList<VodStackOverlay> GetVodStacks(DateTime nowUtc)
@@ -332,44 +374,30 @@ namespace LevelLedger
 
         private void TryFire(DateTime timeUtc, long priceTick, double z, int biasPos, string posLabel, string negLabel)
         {
-            if (Math.Abs(z) <= _eventZThreshold) return;
+            double absZ = Math.Abs(z);
             int bias = z > 0 ? biasPos : -biasPos;
+            string type = z > 0 ? posLabel : negLabel;
+            if (absZ > Math.Max(1.0, ChartBuildBandBuildZ))
+            {
+                AddBuildBandEvent(new BuildBandEvent
+                {
+                    TimeUtc = timeUtc,
+                    PriceTick = priceTick,
+                    Side = bias > 0 ? BuildBandSide.Demand : BuildBandSide.Supply,
+                    AbsZ = absZ,
+                    Type = type,
+                });
+            }
+
+            if (absZ <= _eventZThreshold) return;
             _bookEvents.AddLast(new BookEvent
             {
                 TimeUtc = timeUtc,
                 PriceTick = priceTick,
                 Bias = bias,
-                AbsZ = Math.Abs(z),
-                Type = z > 0 ? posLabel : negLabel,
+                AbsZ = absZ,
+                Type = type,
             });
-        }
-
-        private void UpdateBuildBands(DateTime nowUtc, long priceTick, double zBidInner, double zAskInner)
-        {
-            PruneBuildBandPending(nowUtc);
-
-            double threshold = Math.Max(1.0, ChartBuildBandBuildZ);
-            if (zBidInner > threshold)
-            {
-                AddBuildBandEvent(new BuildBandEvent
-                {
-                    TimeUtc = nowUtc,
-                    PriceTick = priceTick,
-                    Side = BuildBandSide.Demand,
-                    AbsZ = zBidInner,
-                });
-            }
-
-            if (zAskInner > threshold)
-            {
-                AddBuildBandEvent(new BuildBandEvent
-                {
-                    TimeUtc = nowUtc,
-                    PriceTick = priceTick,
-                    Side = BuildBandSide.Supply,
-                    AbsZ = zAskInner,
-                });
-            }
         }
 
         private void AddBuildBandEvent(BuildBandEvent ev)
@@ -377,21 +405,23 @@ namespace LevelLedger
             int clusterTicks = Math.Max(1, ChartBuildBandClusterTicks);
             int clusterSec = Math.Max(1, ChartBuildBandClusterSec);
 
-            foreach (var band in _buildBands)
+            foreach (var candidate in _buildBandCandidates)
             {
-                if (band.BreachedUtc.HasValue) continue;
-                if (band.Side != ev.Side) continue;
-                if ((ev.TimeUtc - band.LastUpdateUtc).TotalSeconds > clusterSec) continue;
+                if (candidate.State != BuildBandCandidateState.Candidate) continue;
+                if (candidate.Side != ev.Side) continue;
+                if ((ev.TimeUtc - candidate.LastUpdateUtc).TotalSeconds > clusterSec) continue;
 
-                long lo = band.MinTick - clusterTicks;
-                long hi = band.MaxTick + clusterTicks;
+                long lo = candidate.MinTick - clusterTicks;
+                long hi = candidate.MaxTick + clusterTicks;
                 if (ev.PriceTick < lo || ev.PriceTick > hi) continue;
 
-                if (ev.PriceTick < band.MinTick) band.MinTick = ev.PriceTick;
-                if (ev.PriceTick > band.MaxTick) band.MaxTick = ev.PriceTick;
-                band.LastUpdateUtc = ev.TimeUtc;
-                band.EventCount++;
-                band.MaxAbsZ = Math.Max(band.MaxAbsZ, ev.AbsZ);
+                if (ev.PriceTick < candidate.MinTick) candidate.MinTick = ev.PriceTick;
+                if (ev.PriceTick > candidate.MaxTick) candidate.MaxTick = ev.PriceTick;
+                candidate.LastUpdateUtc = ev.TimeUtc;
+                candidate.EventCount++;
+                candidate.Score += ev.AbsZ;
+                candidate.MaxAbsZ = Math.Max(candidate.MaxAbsZ, ev.AbsZ);
+                candidate.Kinds.Add(ev.Type);
                 return;
             }
 
@@ -405,9 +435,10 @@ namespace LevelLedger
             }
 
             int minEvents = Math.Max(2, ChartBuildBandClusterN);
-            if (members.Count >= minEvents)
+            double score = members.Sum(m => m.AbsZ);
+            if (members.Count >= minEvents && score >= OwnershipMinScore)
             {
-                var band = new BuildBandOverlay
+                var candidate = new BuildBandCandidate
                 {
                     Id = _nextBuildBandId++,
                     Side = ev.Side,
@@ -417,9 +448,11 @@ namespace LevelLedger
                     FormedUtc = ev.TimeUtc,
                     LastUpdateUtc = members.Max(m => m.TimeUtc),
                     EventCount = members.Count,
+                    Score = score,
                     MaxAbsZ = members.Max(m => m.AbsZ),
+                    Kinds = new HashSet<string>(members.Select(m => m.Type)),
                 };
-                _buildBands.AddLast(band);
+                _buildBandCandidates.Add(candidate);
 
                 var node = _buildBandPending.First;
                 while (node != null)
@@ -436,24 +469,237 @@ namespace LevelLedger
             }
         }
 
-        private void ApplyBuildBandPriceThrough(DateTime nowUtc, long currentMidTick)
+        private void UpdateBuildBandCandidates(DateTime nowUtc, long currentMidTick)
         {
-            int bufferTicks = Math.Max(0, ChartBuildBandPriceThroughBufferTicks);
-            foreach (var band in _buildBands)
+            int confirmTicks = Math.Max(1, ChartBuildBandConfirmMoveTicks);
+            foreach (var candidate in _buildBandCandidates)
             {
-                if (band.BreachedUtc.HasValue) continue;
+                if (candidate.State != BuildBandCandidateState.Candidate) continue;
 
-                if (band.Side == BuildBandSide.Supply && currentMidTick > band.MaxTick + bufferTicks)
+                bool favor = MovedWithEvidence(candidate, currentMidTick, confirmTicks);
+                bool adverse = MovedAgainstEvidence(candidate, currentMidTick, confirmTicks);
+                if (favor)
                 {
-                    band.BreachedUtc = nowUtc;
-                    band.BreachPriceTick = currentMidTick;
+                    NoteOrConfirm(candidate, nowUtc, BuildBandConfirm.Favor, currentMidTick);
                 }
-                else if (band.Side == BuildBandSide.Demand && currentMidTick < band.MinTick - bufferTicks)
+                else if (adverse)
                 {
-                    band.BreachedUtc = nowUtc;
-                    band.BreachPriceTick = currentMidTick;
+                    NoteOrConfirm(candidate, nowUtc, BuildBandConfirm.Adverse, currentMidTick);
+                }
+                else
+                {
+                    candidate.PendingConfirm = BuildBandConfirm.None;
+                    candidate.PendingConfirmUtc = null;
                 }
             }
+        }
+
+        private void NoteOrConfirm(
+            BuildBandCandidate candidate,
+            DateTime nowUtc,
+            BuildBandConfirm confirm,
+            long currentMidTick)
+        {
+            if (candidate.PendingConfirm != confirm)
+            {
+                candidate.PendingConfirm = confirm;
+                candidate.PendingConfirmUtc = nowUtc;
+                return;
+            }
+
+            if (!candidate.PendingConfirmUtc.HasValue)
+            {
+                candidate.PendingConfirmUtc = nowUtc;
+                return;
+            }
+
+            if ((nowUtc - candidate.PendingConfirmUtc.Value).TotalSeconds < Math.Max(0, ChartBuildBandConfirmSec))
+                return;
+
+            BuildBandSide side = confirm == BuildBandConfirm.Favor
+                ? candidate.Side
+                : Opposite(candidate.Side);
+            BuildBandSource source = confirm == BuildBandConfirm.Favor
+                ? BuildBandSource.Lean
+                : BuildBandSource.Consumed;
+
+            var band = new BuildBandOverlay
+            {
+                Id = candidate.Id,
+                Role = BuildBandRole.Rail,
+                Side = side,
+                Source = source,
+                State = BuildBandState.Owned,
+                MinTick = candidate.MinTick,
+                MaxTick = candidate.MaxTick,
+                StartUtc = candidate.StartUtc,
+                FormedUtc = candidate.FormedUtc,
+                LastUpdateUtc = candidate.LastUpdateUtc,
+                OwnedUtc = nowUtc,
+                LastStateUtc = nowUtc,
+                EventCount = candidate.EventCount,
+                Score = candidate.Score,
+                MaxAbsZ = candidate.MaxAbsZ,
+                SourceSide = candidate.Side,
+            };
+            _buildBands.AddLast(band);
+            candidate.State = BuildBandCandidateState.Confirmed;
+        }
+
+        private static bool MovedWithEvidence(BuildBandCandidate candidate, long currentMidTick, int confirmTicks)
+            => candidate.Side == BuildBandSide.Demand
+                ? currentMidTick >= candidate.MaxTick + confirmTicks
+                : currentMidTick <= candidate.MinTick - confirmTicks;
+
+        private static bool MovedAgainstEvidence(BuildBandCandidate candidate, long currentMidTick, int confirmTicks)
+            => candidate.Side == BuildBandSide.Demand
+                ? currentMidTick <= candidate.MinTick - confirmTicks
+                : currentMidTick >= candidate.MaxTick + confirmTicks;
+
+        private static BuildBandSide Opposite(BuildBandSide side)
+            => side == BuildBandSide.Demand ? BuildBandSide.Supply : BuildBandSide.Demand;
+
+        private void UpdateBuildBandStates(DateTime nowUtc, long currentMidTick)
+        {
+            foreach (var band in _buildBands)
+            {
+                if (band.Role != BuildBandRole.Rail || band.State == BuildBandState.Failed)
+                    continue;
+
+                if (BuildBandFailCondition(band, currentMidTick))
+                {
+                    if (!band.PendingFailureUtc.HasValue)
+                        band.PendingFailureUtc = nowUtc;
+
+                    bool moveConfirmed = BuildBandFailMoveConfirmed(band, currentMidTick);
+                    bool timeConfirmed = (nowUtc - band.PendingFailureUtc.Value).TotalSeconds
+                        >= Math.Max(0, ChartBuildBandFailureSec);
+                    if (moveConfirmed || timeConfirmed)
+                    {
+                        band.State = BuildBandState.Failed;
+                        band.FailedUtc = nowUtc;
+                        band.BreachedUtc = nowUtc;
+                        band.BreachPriceTick = currentMidTick;
+                        band.FailPriceTick = currentMidTick;
+                        band.WasThesis = band.WasThesis || band.IsThesis;
+                        band.LastStateUtc = nowUtc;
+                        RecordBuildBandFailure(band, nowUtc);
+                    }
+                    continue;
+                }
+
+                band.PendingFailureUtc = null;
+
+                if (BuildBandTestCondition(band, currentMidTick))
+                {
+                    if (band.State != BuildBandState.Tested)
+                    {
+                        band.State = BuildBandState.Tested;
+                        band.TestedUtc = nowUtc;
+                        band.LastStateUtc = nowUtc;
+                    }
+                    continue;
+                }
+
+                if (band.State == BuildBandState.Tested && BuildBandHoldCondition(band, currentMidTick))
+                {
+                    band.State = BuildBandState.Owned;
+                    band.HeldUtc = nowUtc;
+                    band.LastStateUtc = nowUtc;
+                }
+            }
+        }
+
+        private bool BuildBandTestCondition(BuildBandOverlay band, long currentMidTick)
+        {
+            int failBuffer = Math.Max(0, ChartBuildBandPriceThroughBufferTicks);
+            if (band.Side == BuildBandSide.Demand)
+                return currentMidTick >= band.MinTick - failBuffer
+                    && currentMidTick <= band.MaxTick + OwnershipTestBufferTicks;
+            return currentMidTick >= band.MinTick - OwnershipTestBufferTicks
+                && currentMidTick <= band.MaxTick + failBuffer;
+        }
+
+        private bool BuildBandFailCondition(BuildBandOverlay band, long currentMidTick)
+        {
+            int failBuffer = Math.Max(0, ChartBuildBandPriceThroughBufferTicks);
+            return band.Side == BuildBandSide.Demand
+                ? currentMidTick < band.MinTick - failBuffer
+                : currentMidTick > band.MaxTick + failBuffer;
+        }
+
+        private bool BuildBandFailMoveConfirmed(BuildBandOverlay band, long currentMidTick)
+        {
+            int confirmTicks = Math.Max(1, ChartBuildBandFailureConfirmTicks);
+            return band.Side == BuildBandSide.Demand
+                ? currentMidTick <= band.MinTick - confirmTicks
+                : currentMidTick >= band.MaxTick + confirmTicks;
+        }
+
+        private static bool BuildBandHoldCondition(BuildBandOverlay band, long currentMidTick)
+            => band.Side == BuildBandSide.Demand
+                ? currentMidTick >= band.MaxTick + OwnershipHoldConfirmTicks
+                : currentMidTick <= band.MinTick - OwnershipHoldConfirmTicks;
+
+        private void RecordBuildBandFailure(BuildBandOverlay failedBand, DateTime nowUtc)
+        {
+            BuildBandOverlay matched = null;
+            foreach (var zone in _buildBands)
+            {
+                if (zone.Role != BuildBandRole.Contested)
+                    continue;
+                if ((nowUtc - zone.LastUpdateUtc).TotalSeconds > OwnershipContestedSec)
+                    continue;
+                if (failedBand.MaxTick < zone.MinTick - OwnershipContestedProximityTicks)
+                    continue;
+                if (failedBand.MinTick > zone.MaxTick + OwnershipContestedProximityTicks)
+                    continue;
+
+                long nextMin = Math.Min(zone.MinTick, failedBand.MinTick);
+                long nextMax = Math.Max(zone.MaxTick, failedBand.MaxTick);
+                if (nextMax - nextMin > OwnershipContestedSpanTicks)
+                    continue;
+
+                matched = zone;
+                break;
+            }
+
+            if (matched == null)
+            {
+                matched = new BuildBandOverlay
+                {
+                    Id = _nextBuildBandId++,
+                    Role = BuildBandRole.Contested,
+                    State = BuildBandState.Contested,
+                    Side = failedBand.Side,
+                    MinTick = failedBand.MinTick,
+                    MaxTick = failedBand.MaxTick,
+                    StartUtc = nowUtc,
+                    FormedUtc = nowUtc,
+                    LastUpdateUtc = nowUtc,
+                    OwnedUtc = nowUtc,
+                    LastStateUtc = nowUtc,
+                    Score = failedBand.Score,
+                    EventCount = 1,
+                    MaxAbsZ = failedBand.MaxAbsZ,
+                };
+                _buildBands.AddLast(matched);
+            }
+            else
+            {
+                matched.MinTick = Math.Min(matched.MinTick, failedBand.MinTick);
+                matched.MaxTick = Math.Max(matched.MaxTick, failedBand.MaxTick);
+                matched.LastUpdateUtc = nowUtc;
+                matched.LastStateUtc = nowUtc;
+                matched.Score += failedBand.Score;
+                matched.EventCount++;
+                matched.MaxAbsZ = Math.Max(matched.MaxAbsZ, failedBand.MaxAbsZ);
+            }
+
+            if (failedBand.Side == BuildBandSide.Demand)
+                matched.DemandFailCount++;
+            else
+                matched.SupplyFailCount++;
         }
 
         private void UpdateVod(DateTime nowUtc, BookSample sample, double zBidInner, double zAskInner)
@@ -772,7 +1018,7 @@ namespace LevelLedger
                 string side = candidate.Direction > 0 ? "demand dom" : "supply dom";
                 string text = $"{candidate.Ratio:0.#}x {side}";
                 AddOrUpdateRow(nowUtc, candidate.PriceTick, candidate.Direction, text,
-                    RowKind.SpatialDominance, candidate.DominantDensity);
+                    RowKind.SpatialDominance, candidate.DominantDensity, 0.0, candidate.Ratio);
             }
         }
 
@@ -829,7 +1075,15 @@ namespace LevelLedger
             };
         }
 
-        private void AddOrUpdateRow(DateTime timeUtc, long priceTick, int direction, string text, RowKind kind, double strength, double displayZ = 0.0)
+        private void AddOrUpdateRow(
+            DateTime timeUtc,
+            long priceTick,
+            int direction,
+            string text,
+            RowKind kind,
+            double strength,
+            double displayZ = 0.0,
+            double signalRatio = 0.0)
         {
             int mergeTicks = kind == RowKind.SpatialDominance ? DominanceZoneMergeTicks : RowMergeTicks;
             int mergeSeconds = kind == RowKind.SpatialDominance ? DominanceWindowSec : RowMergeSeconds;
@@ -844,12 +1098,22 @@ namespace LevelLedger
                 if (Math.Abs(r.PriceTick - priceTick) > mergeTicks) continue;
                 if ((timeUtc - r.TimeUtc).TotalSeconds > mergeSeconds) continue;
 
+                if (kind == RowKind.SpatialDominance
+                    && !ShouldUpdateSpatialRow(r, timeUtc, priceTick, text, signalRatio))
+                {
+                    r.Strength = Math.Max(r.Strength, strength);
+                    r.DisplayZ = Math.Max(r.DisplayZ, displayZ);
+                    return;
+                }
+
                 if (kind != RowKind.SpatialDominance)
                     r.TimeUtc = timeUtc;
+                r.LastUpdateUtc = timeUtc;
                 r.PriceTick = priceTick;
                 r.Text = text;
                 r.Strength = Math.Max(r.Strength, strength);
                 r.DisplayZ = Math.Max(r.DisplayZ, displayZ);
+                r.SignalRatio = signalRatio;
                 r.Updates++;
                 return;
             }
@@ -871,14 +1135,143 @@ namespace LevelLedger
             {
                 Id = _nextRowId++,
                 TimeUtc = timeUtc,
+                LastUpdateUtc = timeUtc,
                 PriceTick = priceTick,
                 Direction = direction,
                 Text = text,
                 Kind = kind,
                 Strength = strength,
                 DisplayZ = displayZ,
+                SignalRatio = signalRatio,
                 Updates = 1,
             });
+        }
+
+        private static bool ShouldUpdateSpatialRow(
+            LedgerRow row,
+            DateTime timeUtc,
+            long priceTick,
+            string text,
+            double signalRatio)
+        {
+            if (Math.Abs(row.PriceTick - priceTick) >= SpatialRowUpdatePriceTicks)
+                return true;
+
+            if (row.SignalRatio > 0 && signalRatio > 0)
+            {
+                double ratioDelta = Math.Abs(signalRatio - row.SignalRatio);
+                if (ratioDelta >= SpatialRowUpdateRatioDelta)
+                    return true;
+                if (ratioDelta / Math.Max(1.0, Math.Abs(row.SignalRatio)) >= SpatialRowUpdateRatioRelative)
+                    return true;
+            }
+
+            DateTime reference = row.LastUpdateUtc == default ? row.TimeUtc : row.LastUpdateUtc;
+            return text != row.Text
+                && (timeUtc - reference).TotalSeconds >= SpatialRowUpdateForceSeconds;
+        }
+
+        private IEnumerable<BuildBandOverlay> SelectBuildBandsForDisplay(DateTime nowUtc, long currentTick)
+        {
+            int maxRails = Math.Max(1, ChartBuildBandMaxRails);
+            var zones = _buildBands
+                .Where(IsVisibleContestedZone)
+                .OrderByDescending(z => z.LastUpdateUtc)
+                .Take(3);
+
+            var activeRails = _buildBands
+                .Where(b => b.Role == BuildBandRole.Rail && b.State != BuildBandState.Failed)
+                .OrderByDescending(b => BuildBandRelevance(b, nowUtc, currentTick))
+                .Take(maxRails);
+
+            var failedRails = _buildBands
+                .Where(b => b.Role == BuildBandRole.Rail
+                    && b.State == BuildBandState.Failed
+                    && b.FailedUtc.HasValue
+                    && ((nowUtc - b.FailedUtc.Value).TotalMinutes <= 20.0 || b.WasThesis))
+                .OrderByDescending(b => BuildBandRelevance(b, nowUtc, currentTick))
+                .Take(6);
+
+            return zones.Concat(activeRails).Concat(failedRails)
+                .GroupBy(b => b.Id)
+                .Select(g => g.First())
+                .OrderBy(b => b.Role == BuildBandRole.Contested ? 0 : 1)
+                .ThenBy(b => b.MinTick);
+        }
+
+        private static bool IsVisibleContestedZone(BuildBandOverlay zone)
+            => zone.Role == BuildBandRole.Contested
+                && zone.DemandFailCount > 0
+                && zone.SupplyFailCount > 0
+                && zone.EventCount >= OwnershipContestedMinFails;
+
+        private static double BuildBandRelevance(BuildBandOverlay band, DateTime nowUtc, long currentTick)
+        {
+            double center = (band.MinTick + band.MaxTick) / 2.0;
+            double distance = Math.Abs(currentTick - center);
+            double ageMin = Math.Max(0.0, (nowUtc - band.OwnedUtc).TotalMinutes);
+            double stateBoost = band.State == BuildBandState.Tested ? 20.0 : 0.0;
+            double thesisBoost = band.IsThesis ? 45.0 : (band.WasThesis ? 25.0 : 0.0);
+            double failedPenalty = band.State == BuildBandState.Failed ? 20.0 : 0.0;
+            double sourceBoost = band.Source == BuildBandSource.Consumed ? 5.0 : 0.0;
+            return band.Score + stateBoost + thesisBoost + sourceBoost - failedPenalty - distance * 0.10 - ageMin * 0.05;
+        }
+
+        private void MarkThesisRails(long currentTick)
+        {
+            foreach (var band in _buildBands)
+            {
+                if (band.Role != BuildBandRole.Rail)
+                    continue;
+                band.WasThesis = band.WasThesis || band.IsThesis;
+                band.IsThesis = false;
+            }
+
+            MarkThesisRailForSide(BuildBandSide.Demand, currentTick);
+            MarkThesisRailForSide(BuildBandSide.Supply, currentTick);
+        }
+
+        private void MarkThesisRailForSide(BuildBandSide side, long currentTick)
+        {
+            var candidates = _buildBands
+                .Where(b => b.Role == BuildBandRole.Rail
+                    && b.Side == side
+                    && b.State != BuildBandState.Failed
+                    && IsRailOnCorrectSideOfPrice(b, currentTick))
+                .OrderBy(b => Math.Abs(currentTick - ((b.MinTick + b.MaxTick) / 2.0)))
+                .ThenByDescending(b => b.Score)
+                .ToList();
+
+            foreach (var candidate in candidates)
+            {
+                int backing = _buildBands.Count(b => b.Role == BuildBandRole.Rail
+                    && b.Side == side
+                    && b.State != BuildBandState.Failed
+                    && b.Id != candidate.Id
+                    && IsBackingRail(side, candidate, b));
+                if (backing < OwnershipThesisMinStack - 1)
+                    continue;
+
+                candidate.IsThesis = true;
+                candidate.WasThesis = true;
+                return;
+            }
+        }
+
+        private static bool IsRailOnCorrectSideOfPrice(BuildBandOverlay band, long currentTick)
+            => band.Side == BuildBandSide.Demand
+                ? currentTick >= band.MinTick - OwnershipTestBufferTicks
+                : currentTick <= band.MaxTick + OwnershipTestBufferTicks;
+
+        private static bool IsBackingRail(BuildBandSide side, BuildBandOverlay candidate, BuildBandOverlay other)
+        {
+            double candidateCenter = (candidate.MinTick + candidate.MaxTick) / 2.0;
+            double otherCenter = (other.MinTick + other.MaxTick) / 2.0;
+            if (Math.Abs(candidateCenter - otherCenter) > OwnershipThesisBackingTicks)
+                return false;
+            return side == BuildBandSide.Demand
+                ? otherCenter < candidateCenter - OwnershipHoldConfirmTicks
+                : otherCenter > candidateCenter + OwnershipHoldConfirmTicks;
         }
 
         private void Prune(DateTime nowUtc)
@@ -888,6 +1281,7 @@ namespace LevelLedger
             PruneVodBuildDots(nowUtc);
             PruneBuildBands(nowUtc);
             PruneBuildBandPending(nowUtc);
+            PruneBuildBandCandidates(nowUtc);
             PruneVodStacks(nowUtc);
             var cutoff = nowUtc.AddSeconds(-RowRetentionSec);
             _rows.RemoveAll(r => r.TimeUtc < cutoff);
@@ -906,6 +1300,14 @@ namespace LevelLedger
             EvictOlderThan(_buildBandPending, nowUtc, seconds);
         }
 
+        private void PruneBuildBandCandidates(DateTime nowUtc)
+        {
+            int seconds = Math.Max(1, ChartBuildBandClusterSec * 2);
+            var cutoff = nowUtc.AddSeconds(-seconds);
+            _buildBandCandidates.RemoveAll(c =>
+                c.LastUpdateUtc < cutoff);
+        }
+
         private void PruneBuildBands(DateTime nowUtc)
         {
             int minutes = Math.Max(0, ChartBuildBandRetentionMinutes);
@@ -917,7 +1319,7 @@ namespace LevelLedger
             {
                 var next = node.Next;
                 var band = node.Value;
-                DateTime reference = band.BreachedUtc ?? band.LastUpdateUtc;
+                DateTime reference = band.FailedUtc ?? band.LastUpdateUtc;
                 if (reference < cutoff)
                     _buildBands.Remove(node);
                 node = next;
@@ -1139,6 +1541,25 @@ namespace LevelLedger
             public long PriceTick;
             public BuildBandSide Side;
             public double AbsZ;
+            public string Type;
+        }
+
+        private sealed class BuildBandCandidate
+        {
+            public int Id;
+            public BuildBandSide Side;
+            public long MinTick;
+            public long MaxTick;
+            public DateTime StartUtc;
+            public DateTime FormedUtc;
+            public DateTime LastUpdateUtc;
+            public int EventCount;
+            public double Score;
+            public double MaxAbsZ;
+            public HashSet<string> Kinds = new();
+            public BuildBandCandidateState State = BuildBandCandidateState.Candidate;
+            public BuildBandConfirm PendingConfirm = BuildBandConfirm.None;
+            public DateTime? PendingConfirmUtc;
         }
 
         private sealed class TimedDouble : ITimed
@@ -1204,6 +1625,39 @@ namespace LevelLedger
         Supply,
     }
 
+    internal enum BuildBandRole
+    {
+        Rail,
+        Contested,
+    }
+
+    internal enum BuildBandSource
+    {
+        Lean,
+        Consumed,
+    }
+
+    internal enum BuildBandState
+    {
+        Owned,
+        Tested,
+        Failed,
+        Contested,
+    }
+
+    internal enum BuildBandCandidateState
+    {
+        Candidate,
+        Confirmed,
+    }
+
+    internal enum BuildBandConfirm
+    {
+        None,
+        Favor,
+        Adverse,
+    }
+
     internal enum VodStackEdgeSide
     {
         Demand,
@@ -1226,16 +1680,32 @@ namespace LevelLedger
     internal sealed class BuildBandOverlay
     {
         public int Id;
+        public BuildBandRole Role = BuildBandRole.Rail;
         public BuildBandSide Side;
+        public BuildBandSide SourceSide;
+        public BuildBandSource Source = BuildBandSource.Lean;
+        public BuildBandState State = BuildBandState.Owned;
         public long MinTick;
         public long MaxTick;
         public DateTime StartUtc;
         public DateTime FormedUtc;
+        public DateTime OwnedUtc;
         public DateTime LastUpdateUtc;
+        public DateTime LastStateUtc;
         public int EventCount;
+        public double Score;
         public double MaxAbsZ;
         public DateTime? BreachedUtc;
         public long? BreachPriceTick;
+        public DateTime? TestedUtc;
+        public DateTime? HeldUtc;
+        public DateTime? FailedUtc;
+        public long? FailPriceTick;
+        public DateTime? PendingFailureUtc;
+        public bool IsThesis;
+        public bool WasThesis;
+        public int DemandFailCount;
+        public int SupplyFailCount;
 
         public BuildBandOverlay Clone()
             => (BuildBandOverlay)MemberwiseClone();
@@ -1286,12 +1756,14 @@ namespace LevelLedger
     {
         public int Id;
         public DateTime TimeUtc;
+        public DateTime LastUpdateUtc;
         public long PriceTick;
         public int Direction;
         public string Text;
         public RowKind Kind;
         public double Strength;
         public double DisplayZ;
+        public double SignalRatio;
         public bool Superseded;
         public DateTime SupersededUtc;
         public int Updates;

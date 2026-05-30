@@ -23,6 +23,7 @@ namespace LevelLedger
         public bool BuildBandsEnabled = true;
         public int BuildBandActiveAlpha = 46;
         public int BuildBandBreachedAlpha = 18;
+        public int BuildBandContestedAlpha = 24;
         public bool VodStacksEnabled = true;
         public bool L2Stale;
         public Rectangle LastHitRect;
@@ -159,19 +160,47 @@ namespace LevelLedger
                 yBottom = Math.Min(rect.Bottom, yBottom);
                 if (yBottom <= yTop) yBottom = yTop + 1;
 
-                bool breached = band.BreachedUtc.HasValue;
-                int fillAlpha = Clamp(breached ? BuildBandBreachedAlpha : BuildBandActiveAlpha, 1, 255);
-                int edgeAlpha = Clamp(fillAlpha + (breached ? 24 : 65), 1, 255);
+                if (band.Role == BuildBandRole.Contested)
+                {
+                    int contestedFillAlpha = Clamp(BuildBandContestedAlpha, 1, 255);
+                    int contestedEdgeAlpha = Clamp(contestedFillAlpha + 70, 1, 255);
+                    using var contestedFill = new SolidBrush(Color.FromArgb(contestedFillAlpha, Chaos));
+                    using var contestedEdge = new Pen(Color.FromArgb(contestedEdgeAlpha, Chaos), 1.2f)
+                    {
+                        DashStyle = DashStyle.Dash,
+                    };
+                    g.FillRectangle(contestedFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
+                    g.DrawLine(contestedEdge, xLeft, yTop, xRight, yTop);
+                    g.DrawLine(contestedEdge, xLeft, yBottom, xRight, yBottom);
+                    continue;
+                }
+
+                bool failed = band.State == BuildBandState.Failed || band.BreachedUtc.HasValue;
+                bool thesis = band.IsThesis && !failed;
+                int baseAlpha = failed ? BuildBandBreachedAlpha : BuildBandActiveAlpha;
+                if (band.State == BuildBandState.Tested && !failed)
+                    baseAlpha += 12;
+                if (thesis)
+                    baseAlpha += 24;
+
+                int fillAlpha = Clamp(baseAlpha, 1, 255);
+                int edgeAlpha = Clamp(fillAlpha + (failed ? 28 : thesis ? 105 : 65), 1, 255);
                 Color sideColor = band.Side == BuildBandSide.Supply ? BearDominance : BullDominance;
 
-                using var fill = new SolidBrush(Color.FromArgb(fillAlpha, sideColor));
-                using var edge = new Pen(Color.FromArgb(edgeAlpha, sideColor), breached ? 1f : 1.4f);
-                if (breached)
+                using var railFill = new SolidBrush(Color.FromArgb(fillAlpha, sideColor));
+                using var edge = new Pen(Color.FromArgb(edgeAlpha, sideColor), thesis ? 2.2f : failed ? 1f : 1.4f);
+                if (failed)
                     edge.DashStyle = DashStyle.Dot;
 
-                g.FillRectangle(fill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
+                g.FillRectangle(railFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
                 g.DrawLine(edge, xLeft, yTop, xRight, yTop);
                 g.DrawLine(edge, xLeft, yBottom, xRight, yBottom);
+                if (thesis)
+                {
+                    int capW = 5;
+                    using var cap = new SolidBrush(Color.FromArgb(Clamp(edgeAlpha + 25, 1, 255), sideColor));
+                    g.FillRectangle(cap, rect.Right - capW, yTop, capW, Math.Max(2, yBottom - yTop));
+                }
             }
         }
 

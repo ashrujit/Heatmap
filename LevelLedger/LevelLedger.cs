@@ -9,7 +9,7 @@ namespace LevelLedger
 {
     public class LevelLedger : Indicator
     {
-        private const string IndicatorVersion = "0.2.1";
+        private const string IndicatorVersion = "0.3.0";
         private const int L1ToleranceTicks = 2;
 
         // Detection
@@ -96,61 +96,85 @@ namespace LevelLedger
             minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
         public int VodBuildDotRetentionMinutes = 0;
 
-        [InputParameter("Build Bands: Enabled", sortIndex: 950)]
+        [InputParameter("Ownership Rails: Enabled", sortIndex: 950)]
         public bool BuildBandsEnabled = true;
 
-        [InputParameter("Build Bands: BUILD |z|", sortIndex: 951,
+        [InputParameter("Ownership Rails: Event |z|", sortIndex: 951,
             minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
-        public double BuildBandBuildZ = 3.0;
+        public double BuildBandBuildZ = 2.5;
 
-        [InputParameter("Build Bands: Cluster Min Events", sortIndex: 952,
+        [InputParameter("Ownership Rails: Cluster Min Events", sortIndex: 952,
             minimum: 2, maximum: 10, increment: 1, decimalPlaces: 0)]
         public int BuildBandClusterN = 3;
 
-        [InputParameter("Build Bands: Cluster Tick Range", sortIndex: 953,
+        [InputParameter("Ownership Rails: Cluster Tick Range", sortIndex: 953,
             minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
-        public int BuildBandClusterTicks = 8;
+        public int BuildBandClusterTicks = 10;
 
-        [InputParameter("Build Bands: Cluster Window (sec)", sortIndex: 954,
+        [InputParameter("Ownership Rails: Cluster Window (sec)", sortIndex: 954,
             minimum: 15, maximum: 600, increment: 15, decimalPlaces: 0)]
         public int BuildBandClusterSec = 90;
 
-        [InputParameter("Build Bands: Price-Through Buffer (ticks)", sortIndex: 955,
-            minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
-        public int BuildBandPriceThroughBufferTicks = 1;
+        [InputParameter("Ownership Rails: Confirm Move (ticks)", sortIndex: 955,
+            minimum: 2, maximum: 80, increment: 1, decimalPlaces: 0)]
+        public int BuildBandConfirmMoveTicks = 8;
 
-        [InputParameter("Build Bands: Active Alpha", sortIndex: 956,
+        [InputParameter("Ownership Rails: Confirm Seconds", sortIndex: 956,
+            minimum: 0, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int BuildBandConfirmSec = 10;
+
+        [InputParameter("Ownership Rails: Failure Buffer (ticks)", sortIndex: 957,
+            minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
+        public int BuildBandPriceThroughBufferTicks = 2;
+
+        [InputParameter("Ownership Rails: Failure Confirm (ticks)", sortIndex: 958,
+            minimum: 2, maximum: 120, increment: 1, decimalPlaces: 0)]
+        public int BuildBandFailureConfirmTicks = 24;
+
+        [InputParameter("Ownership Rails: Failure Seconds", sortIndex: 959,
+            minimum: 0, maximum: 120, increment: 1, decimalPlaces: 0)]
+        public int BuildBandFailureSec = 20;
+
+        [InputParameter("Ownership Rails: Max Rails", sortIndex: 960,
+            minimum: 2, maximum: 30, increment: 1, decimalPlaces: 0)]
+        public int BuildBandMaxRails = 12;
+
+        [InputParameter("Ownership Rails: Active Alpha", sortIndex: 961,
             minimum: 8, maximum: 160, increment: 2, decimalPlaces: 0)]
         public int BuildBandActiveAlpha = 46;
 
-        [InputParameter("Build Bands: Breached Alpha", sortIndex: 957,
+        [InputParameter("Ownership Rails: Failed Alpha", sortIndex: 962,
             minimum: 4, maximum: 100, increment: 1, decimalPlaces: 0)]
         public int BuildBandBreachedAlpha = 18;
 
-        [InputParameter("Build Bands: Retention Minutes (0=session)", sortIndex: 958,
+        [InputParameter("Ownership Rails: Contested Alpha", sortIndex: 963,
+            minimum: 4, maximum: 120, increment: 1, decimalPlaces: 0)]
+        public int BuildBandContestedAlpha = 24;
+
+        [InputParameter("Ownership Rails: Retention Minutes (0=session)", sortIndex: 964,
             minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
         public int BuildBandRetentionMinutes = 0;
 
-        [InputParameter("VOD Stacks: Enabled", sortIndex: 960)]
+        [InputParameter("VOD Stacks: Enabled", sortIndex: 970)]
         public bool VodStacksEnabled = true;
 
-        [InputParameter("VOD Stacks: VOD |z|", sortIndex: 961,
+        [InputParameter("VOD Stacks: VOD |z|", sortIndex: 971,
             minimum: 3.0, maximum: 12.0, increment: 0.25, decimalPlaces: 2)]
         public double VodStackVodZ = 4.0;
 
-        [InputParameter("VOD Stacks: Edge |z|", sortIndex: 962,
+        [InputParameter("VOD Stacks: Edge |z|", sortIndex: 972,
             minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
         public double VodStackEdgeZ = 2.5;
 
-        [InputParameter("VOD Stacks: Confirm Move (ticks)", sortIndex: 963,
+        [InputParameter("VOD Stacks: Confirm Move (ticks)", sortIndex: 973,
             minimum: 4, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int VodStackConfirmMoveTicks = 24;
 
-        [InputParameter("VOD Stacks: Price-Through Buffer (ticks)", sortIndex: 964,
+        [InputParameter("VOD Stacks: Price-Through Buffer (ticks)", sortIndex: 974,
             minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int VodStackPriceThroughBufferTicks = 2;
 
-        [InputParameter("VOD Stacks: Retention Minutes (0=session)", sortIndex: 965,
+        [InputParameter("VOD Stacks: Retention Minutes (0=session)", sortIndex: 975,
             minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
         public int VodStackRetentionMinutes = 120;
 
@@ -228,8 +252,11 @@ namespace LevelLedger
                     BuildBandsEnabled = BuildBandsEnabled,
                     BuildBandActiveAlpha = BuildBandActiveAlpha,
                     BuildBandBreachedAlpha = BuildBandBreachedAlpha,
+                    BuildBandContestedAlpha = BuildBandContestedAlpha,
                     VodStacksEnabled = VodStacksEnabled,
                 };
+                ApplyEngineConfig();
+                ApplyPainterConfig();
 
                 _domParams = new GetDepthOfMarketParameters
                 {
@@ -349,20 +376,8 @@ namespace LevelLedger
 
                 if (_painter != null && _engine != null)
                 {
-                    _painter.PanelEnabled = PanelEnabled;
-                    _painter.LeftOffsetPx = PanelLeftOffsetPx;
-                    _painter.TopOffsetPx = PanelTopOffsetPx;
-                    _painter.PanelWidthPx = PanelWidthPx;
-                    _painter.VisibleRows = VisibleRows;
-                    _painter.FontSize = (float)FontSize;
+                    ApplyPainterConfig();
                     _painter.L2Stale = _l2Stale;
-                    _painter.VodBuildDotsEnabled = VodBuildDotsEnabled;
-                    _painter.VodBuildDotSizePx = VodBuildDotSizePx;
-                    _painter.VodBuildDotAlpha = VodBuildDotAlpha;
-                    _painter.BuildBandsEnabled = BuildBandsEnabled;
-                    _painter.BuildBandActiveAlpha = BuildBandActiveAlpha;
-                    _painter.BuildBandBreachedAlpha = BuildBandBreachedAlpha;
-                    _painter.VodStacksEnabled = VodStacksEnabled;
 
                     var now = DateTime.UtcNow;
                     _painter.Paint(
@@ -389,6 +404,14 @@ namespace LevelLedger
         private void ApplyEngineConfig()
         {
             if (_engine == null) return;
+            _engine.UpdateConfig(
+                BookLookbackSeconds,
+                EventZThreshold,
+                SpatialDominanceRatio,
+                ActivationLookbackMinutes,
+                TradeBarSeconds,
+                TradeVolumeZ,
+                TradeDeltaRatio);
             _engine.ChartVodBuildVodZ = VodBuildDotVodZ;
             _engine.ChartVodBuildBuildZ = VodBuildDotBuildZ;
             _engine.ChartVodBuildRetentionMinutes = VodBuildDotRetentionMinutes;
@@ -396,13 +419,58 @@ namespace LevelLedger
             _engine.ChartBuildBandClusterN = BuildBandClusterN;
             _engine.ChartBuildBandClusterTicks = BuildBandClusterTicks;
             _engine.ChartBuildBandClusterSec = BuildBandClusterSec;
+            _engine.ChartBuildBandConfirmMoveTicks = BuildBandConfirmMoveTicks;
+            _engine.ChartBuildBandConfirmSec = BuildBandConfirmSec;
             _engine.ChartBuildBandPriceThroughBufferTicks = BuildBandPriceThroughBufferTicks;
+            _engine.ChartBuildBandFailureConfirmTicks = BuildBandFailureConfirmTicks;
+            _engine.ChartBuildBandFailureSec = BuildBandFailureSec;
+            _engine.ChartBuildBandMaxRails = BuildBandMaxRails;
             _engine.ChartBuildBandRetentionMinutes = BuildBandRetentionMinutes;
             _engine.ChartVodStackVodZ = VodStackVodZ;
             _engine.ChartVodStackEdgeZ = VodStackEdgeZ;
             _engine.ChartVodStackConfirmMoveTicks = VodStackConfirmMoveTicks;
             _engine.ChartVodStackPriceThroughBufferTicks = VodStackPriceThroughBufferTicks;
             _engine.ChartVodStackRetentionMinutes = VodStackRetentionMinutes;
+        }
+
+        private void ApplyPainterConfig()
+        {
+            if (_painter == null) return;
+            _painter.PanelEnabled = PanelEnabled;
+            _painter.LeftOffsetPx = PanelLeftOffsetPx;
+            _painter.TopOffsetPx = PanelTopOffsetPx;
+            _painter.PanelWidthPx = PanelWidthPx;
+            _painter.VisibleRows = VisibleRows;
+            _painter.FontSize = (float)FontSize;
+            _painter.VodBuildDotsEnabled = VodBuildDotsEnabled;
+            _painter.VodBuildDotSizePx = VodBuildDotSizePx;
+            _painter.VodBuildDotAlpha = VodBuildDotAlpha;
+            _painter.BuildBandsEnabled = BuildBandsEnabled;
+            _painter.BuildBandActiveAlpha = BuildBandActiveAlpha;
+            _painter.BuildBandBreachedAlpha = BuildBandBreachedAlpha;
+            _painter.BuildBandContestedAlpha = BuildBandContestedAlpha;
+            _painter.VodStacksEnabled = VodStacksEnabled;
+        }
+
+        protected override void OnSettingsUpdated()
+        {
+            try
+            {
+                // Base Indicator.OnSettingsUpdated calls Refresh(), which clears forward-only ledger state.
+                ApplyEngineConfig();
+                ApplyPainterConfig();
+                CurrentChart?.RedrawBuffer();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    Core.Instance.Loggers.Log(
+                        $"[{nameof(LevelLedger)}] settings update failed: {ex.Message}",
+                        LoggingLevel.Error);
+                }
+                catch { }
+            }
         }
 
         private void Chart_MouseClick(object sender, ChartMouseNativeEventArgs e)

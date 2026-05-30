@@ -63,6 +63,16 @@ Color/saturation carries row class:
 - The chart VOD+BUILD overlay is different from the ledger `VOD chaos` row on purpose. Dots require stricter same-sample `VOD + BID/ASK_BUILD` confirmation, paint as amber circles, and use a bid/ask/mixed rim only to show which side of the book thrashed. The rim is a side-of-chaos hint, not a buy/sell signal.
 - Node rows are muted because they are contextual structure rather than an immediate warning.
 
+## Quantower Settings Behavior
+
+- Override `OnSettingsUpdated` and do not call the base implementation. Base
+  `Indicator.OnSettingsUpdated` calls `Refresh()`, which destroys the
+  forward-only ledger state that cannot be rebuilt from chart history.
+- Settings are applied in place to the existing engine and painter. Visual
+  moves like panel offsets and font size should redraw without clearing rows,
+  ownership rails, VOD dots, or VOD stacks. Detection setting changes affect
+  future samples only; they do not reinterpret already accumulated evidence.
+
 ## Chart Overlay Fold-In
 
 LevelLedger is now the migration target for L2_Surface ideas that survive research. The goal is not to copy every L2_Surface layer; each candidate earns its place independently from parquet review and live use.
@@ -75,16 +85,18 @@ The first folded overlay is VOD+BUILD dots:
 - Chart dot: same-sample `VOD` plus `BID_BUILD` or `ASK_BUILD`, defaulting to the stricter surface thresholds.
 - Visual grammar: amber fill for chaos, side-colored rim for bid/ask/mixed book-side turbulence.
 
-The second folded overlay is raw build bands:
+The second folded overlay is ownership rails:
 
-- The overlay uses the L2_Surface default raw clustering shape: same-side `BID_BUILD`/`ASK_BUILD` only, default `3` events within `8` ticks and `90s`, with a default `BUILD |z|` threshold of `3.0`.
-- This is intentionally not LevelLedger spatial dominance. Build bands are raw evidence objects, useful precisely because they show repeated same-side book building at a price area before the broader ledger math compresses or opposes that evidence.
-- Price-through does not delete a band. Breached bands fade and keep their zone, so prior supply/demand can remain visible as failed or absorbed structure. Example research case: on 2026-05-14, a demand band near `653` above the earlier `647-649` supply band helped show that the selling rotation had likely ended and buyers had built enough to drive above prior supply.
+- The old raw `BID_BUILD`/`ASK_BUILD` build-band layer was retired after 2026-05-28 and 2026-05-29 replay. It was either too sparse at default settings or too noisy when relaxed; the useful object was not a raw cluster, but a rail that answers who owns the current leg and where that ownership is wrong.
+- Ownership candidates use the same side-aware L2 event grammar as the panel (`BID_BUILD`, `BID_IN`, `ASK_OUT`, `ASK_PULL` for demand; opposite events for supply). A candidate becomes a rail only after price accepts away from the area. If price moves through the evidence in the opposite direction, the rail side becomes the consumer of that evidence.
+- Rails can be owned, tested, failed, or part of a contested envelope. A consumed rail is promoted only after follow-on business appears in the direction of consumption; otherwise repeated two-sided failures collapse visually into an amber contested zone.
+- Thesis rails are the nearest accepted rails backed by a same-side stack. They are not signals; they are falsification points. Their visual job is to make "belief should increase here" or "belief should collapse here" obvious without adding panel text or hardcoded trade instructions.
+- `OWNERSHIP_RAILS.md` captures the 2026-05-28 and 2026-05-29 reasoning that led to this grammar. Keep future tuning notes there when they are about trader cognition, fixture reads, or visual semantics rather than code invariants.
 
 The third folded overlay is VOD stacks:
 
 - VOD stack centers use the broader `VOD chaos` cluster, not only the stricter VOD+BUILD dot. The design reason is that instability often appears before an extreme breaks or fails, while VOD+BUILD dots are intentionally sparse.
-- Visual grammar is deliberately separate from dominance rows and build bands: yellow dotted center line for the unstable auction, blue dotted confirmed demand lines, orange dotted confirmed supply lines.
+- Visual grammar is deliberately separate from dominance rows and ownership rails: yellow dotted center line for the unstable auction, blue dotted confirmed demand lines, orange dotted confirmed supply lines.
 - Directional stack lines are not emitted on the first directional event. A post-VOD supply/demand candidate must be followed by price moving away by the configured tick distance before it becomes visible. This prevents a low-break VOD from immediately painting a misleading demand line unless the auction actually rejects away from that area.
 - A distinct new VOD cluster fades the prior stack. The current stack remains the center of attention; older stacks can stay faintly visible for review until the retention setting removes them.
 
@@ -102,6 +114,12 @@ Parked candidates:
 - Visible dominance rows are freshness gated: the dominant side must have a same-zone event within 90 seconds. The rolling field may remember older zones, but stale decay/window crossings do not create new ledger rows.
 - The visible setting `Spatial Dominance Ratio` defaults to 2.2x.
 - The internal minimum dominant density is intentionally fixed for now. It should be tuned from replay/live notes before becoming another user-facing knob.
+- Spatial dominance rows use display hysteresis. The raw dominance field is still
+  evaluated every 20 seconds, but an existing same-side row only rewrites when
+  the zone center moves materially, the dominance ratio changes materially, or
+  enough time passes that a rounded text change is worth showing. This keeps the
+  ledger from behaving like a flickering meter while preserving fresh opposite
+  evidence and new-zone rows.
 
 The 2026-05-11 live review exposed why both gates matter. A 444 demand-dominance row printed near 15:00 while price was already near 388 because older opposing supply aged out of the rolling window. The demand evidence near 444 was real, but the visible row was not caused by fresh/current-auction demand. Dominance memory can be rolling; row emission cannot be driven by passive decay alone.
 
@@ -113,12 +131,23 @@ These are research defaults, not final truths.
 
 `research/replay_levelledger.py` is the closer live-engine replay. It reads captured L2 parquet snapshots and mirrors the C# sample loop, event detection, current-auction gate, and freshness gate. Use it when debugging whether a live row should or should not have printed.
 
+`research/ownership_bands_probe.py` is the replay mirror for ownership rails.
+The problem it explores is trade-management paralysis, not missing detection:
+can the existing LL event stream produce sparse chart rails that answer who owns
+the current leg, where that ownership is wrong, and whether the wrong-location
+is being tested or has failed? Keep this separate from panel rows; the live
+fold-in paints chart rails only.
+Its summary options bucket ownership/failure churn and list durable bands
+because print count alone is misleading on two-sided range days; the useful
+question is which rails survived, not how often a candidate appeared.
+
 Useful commands from repo root:
 
 ```powershell
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-07
 python LevelLedger\research\spatial_dominance_replay.py --date 2026-05-05
 uv run --with polars --with tzdata python LevelLedger\research\replay_levelledger.py --date 2026-05-11 --symbol-dir NQM6 --window 14:45-15:05 --warmup-min 330
+uv run --with polars --with tzdata python LevelLedger\research\ownership_bands_probe.py --date 2026-05-29 --symbol-dir NQM6 --window 09:30-10:05 --warmup-min 90
 ```
 
 Early sanity checks:

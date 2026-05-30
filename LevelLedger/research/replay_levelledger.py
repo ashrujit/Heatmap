@@ -27,6 +27,11 @@ INNER_LEVELS = 10
 BROAD_LEVELS = 30
 BOOK_LOOKBACK_SEC = 30
 EVENT_Z_THRESHOLD = 2.5
+BUILD_BAND_BUILD_Z = 3.0
+BUILD_BAND_CLUSTER_N = 3
+BUILD_BAND_CLUSTER_TICKS = 8
+BUILD_BAND_CLUSTER_SEC = 90
+BUILD_BAND_PRICE_THROUGH_BUFFER_TICKS = 1
 ROW_MERGE_SECONDS = 75
 ROW_MERGE_TICKS = 18
 DOMINANCE_WINDOW_SEC = 20 * 60
@@ -37,6 +42,10 @@ DOMINANCE_CURRENT_RELEVANCE_TICKS = DOMINANCE_KERNEL_TICKS * 3
 DOMINANCE_FRESH_CAUSE_SEC = 90
 DOMINANCE_EVAL_COOLDOWN_SEC = 20
 DOMINANCE_MAX_ZONES_PER_EVAL = 2
+SPATIAL_ROW_UPDATE_PRICE_TICKS = 8
+SPATIAL_ROW_UPDATE_FORCE_SECONDS = 180
+SPATIAL_ROW_UPDATE_RATIO_DELTA = 0.7
+SPATIAL_ROW_UPDATE_RATIO_RELATIVE = 0.35
 DOMINANCE_MIN_DENSITY = 12.0
 DOMINANCE_RATIO_THRESHOLD = 2.2
 ROW_RETENTION_SEC = 40 * 60
@@ -73,6 +82,8 @@ class Row:
     direction: int
     text: str
     strength: float
+    last_update_ts: datetime
+    signal_ratio: float = 0.0
     superseded: bool = False
     superseded_ts: datetime | None = None
     updates: int = 1
@@ -91,19 +102,72 @@ class Mutation:
     current_mid_tick: int
 
 
+@dataclass
+class BuildBandEvent:
+    ts: datetime
+    price_tick: int
+    side: str
+    abs_z: float
+
+
+@dataclass
+class BuildBand:
+    id: int
+    side: str
+    min_tick: int
+    max_tick: int
+    start_ts: datetime
+    formed_ts: datetime
+    last_update_ts: datetime
+    event_count: int
+    max_abs_z: float
+    breached_ts: datetime | None = None
+    breach_price_tick: int | None = None
+
+
+@dataclass
+class BuildBandMutation:
+    action: str
+    action_ts: datetime
+    band_id: int
+    side: str
+    min_tick: int
+    max_tick: int
+    event_count: int
+    max_abs_z: float
+    current_mid_tick: int
+    old: str = ""
+
+
 class Engine:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        band_build_z: float = BUILD_BAND_BUILD_Z,
+        band_cluster_n: int = BUILD_BAND_CLUSTER_N,
+        band_cluster_ticks: int = BUILD_BAND_CLUSTER_TICKS,
+        band_cluster_sec: int = BUILD_BAND_CLUSTER_SEC,
+        band_price_through_buffer_ticks: int = BUILD_BAND_PRICE_THROUGH_BUFFER_TICKS,
+    ) -> None:
         self.book_samples: deque[BookSample] = deque()
         self.book_events: deque[BookEvent] = deque()
         self.all_book_events: list[BookEvent] = []
+        self.build_bands: list[BuildBand] = []
+        self.build_band_pending: deque[BuildBandEvent] = deque()
+        self.build_band_mutations: list[BuildBandMutation] = []
         self.inner_deltas: deque[tuple[datetime, float]] = deque()
         self.vod_values: deque[tuple[datetime, float]] = deque()
         self.rows: list[Row] = []
         self.next_row_id = 1
+        self.next_build_band_id = 1
         self.last_dominance_eval: datetime | None = None
         self.current_mid_tick = 0
         self.prev_inner_depth: float | None = None
         self.mutations: list[Mutation] = []
+        self.band_build_z = max(1.0, band_build_z)
+        self.band_cluster_n = max(2, band_cluster_n)
+        self.band_cluster_ticks = max(1, band_cluster_ticks)
+        self.band_cluster_sec = max(1, band_cluster_sec)
+        self.band_price_through_buffer_ticks = max(0, band_price_through_buffer_ticks)
 
     def on_sample(self, sample: BookSample) -> None:
         now = sample.ts
@@ -128,6 +192,8 @@ class Engine:
         self.try_fire(now, sample.mid_tick, zbc, -1, "BID_OUT", "BID_IN")
         self.try_fire(now, sample.mid_tick, zac, +1, "ASK_OUT", "ASK_IN")
 
+        self.update_build_bands(now, sample.mid_tick, zbi, zai)
+        self.apply_build_band_price_through(now, sample.mid_tick)
         self.update_vod(now, sample)
         self.evaluate_spatial_dominance(now)
         self.evict_events(now, DOMINANCE_WINDOW_SEC)
@@ -219,6 +285,144 @@ class Engine:
         self.book_events.append(event)
         self.all_book_events.append(event)
 
+    def update_build_bands(
+        self,
+        ts: datetime,
+        price_tick: int,
+        z_bid_inner: float,
+        z_ask_inner: float,
+    ) -> None:
+        self.prune_build_band_pending(ts)
+        threshold = self.band_build_z
+        if z_bid_inner > threshold:
+            self.add_build_band_event(
+                BuildBandEvent(ts, price_tick, "demand", z_bid_inner),
+            )
+        if z_ask_inner > threshold:
+            self.add_build_band_event(
+                BuildBandEvent(ts, price_tick, "supply", z_ask_inner),
+            )
+
+    def add_build_band_event(self, ev: BuildBandEvent) -> None:
+        cluster_ticks = self.band_cluster_ticks
+        cluster_sec = self.band_cluster_sec
+
+        for band in self.build_bands:
+            if band.breached_ts is not None:
+                continue
+            if band.side != ev.side:
+                continue
+            if (ev.ts - band.last_update_ts).total_seconds() > cluster_sec:
+                continue
+            lo = band.min_tick - cluster_ticks
+            hi = band.max_tick + cluster_ticks
+            if ev.price_tick < lo or ev.price_tick > hi:
+                continue
+
+            old = band_range(band.min_tick, band.max_tick)
+            band.min_tick = min(band.min_tick, ev.price_tick)
+            band.max_tick = max(band.max_tick, ev.price_tick)
+            band.last_update_ts = ev.ts
+            band.event_count += 1
+            band.max_abs_z = max(band.max_abs_z, ev.abs_z)
+            self.build_band_mutations.append(
+                BuildBandMutation(
+                    action="UPDATE",
+                    action_ts=ev.ts,
+                    band_id=band.id,
+                    side=band.side,
+                    min_tick=band.min_tick,
+                    max_tick=band.max_tick,
+                    event_count=band.event_count,
+                    max_abs_z=band.max_abs_z,
+                    current_mid_tick=self.current_mid_tick,
+                    old=old,
+                )
+            )
+            return
+
+        members = [ev]
+        for pending in self.build_band_pending:
+            if pending.side != ev.side:
+                continue
+            if abs(pending.price_tick - ev.price_tick) > cluster_ticks:
+                continue
+            if (ev.ts - pending.ts).total_seconds() > cluster_sec:
+                continue
+            members.append(pending)
+
+        if len(members) >= self.band_cluster_n:
+            band = BuildBand(
+                id=self.next_build_band_id,
+                side=ev.side,
+                min_tick=min(m.price_tick for m in members),
+                max_tick=max(m.price_tick for m in members),
+                start_ts=min(m.ts for m in members),
+                formed_ts=ev.ts,
+                last_update_ts=max(m.ts for m in members),
+                event_count=len(members),
+                max_abs_z=max(m.abs_z for m in members),
+            )
+            self.next_build_band_id += 1
+            self.build_bands.append(band)
+            self.build_band_mutations.append(
+                BuildBandMutation(
+                    action="FORM",
+                    action_ts=ev.ts,
+                    band_id=band.id,
+                    side=band.side,
+                    min_tick=band.min_tick,
+                    max_tick=band.max_tick,
+                    event_count=band.event_count,
+                    max_abs_z=band.max_abs_z,
+                    current_mid_tick=self.current_mid_tick,
+                )
+            )
+
+            member_ids = {id(member) for member in members}
+            self.build_band_pending = deque(
+                pending for pending in self.build_band_pending
+                if id(pending) not in member_ids
+            )
+        else:
+            self.build_band_pending.append(ev)
+
+    def apply_build_band_price_through(self, ts: datetime, current_mid_tick: int) -> None:
+        buffer_ticks = self.band_price_through_buffer_ticks
+        for band in self.build_bands:
+            if band.breached_ts is not None:
+                continue
+            breached = (
+                band.side == "supply"
+                and current_mid_tick > band.max_tick + buffer_ticks
+            ) or (
+                band.side == "demand"
+                and current_mid_tick < band.min_tick - buffer_ticks
+            )
+            if not breached:
+                continue
+
+            band.breached_ts = ts
+            band.breach_price_tick = current_mid_tick
+            self.build_band_mutations.append(
+                BuildBandMutation(
+                    action="BREACH",
+                    action_ts=ts,
+                    band_id=band.id,
+                    side=band.side,
+                    min_tick=band.min_tick,
+                    max_tick=band.max_tick,
+                    event_count=band.event_count,
+                    max_abs_z=band.max_abs_z,
+                    current_mid_tick=current_mid_tick,
+                )
+            )
+
+    def prune_build_band_pending(self, ts: datetime) -> None:
+        cutoff = ts - timedelta(seconds=self.band_cluster_sec)
+        while self.build_band_pending and self.build_band_pending[0].ts < cutoff:
+            self.build_band_pending.popleft()
+
     def evaluate_spatial_dominance(self, now: datetime) -> None:
         if (
             self.last_dominance_eval is not None
@@ -273,6 +477,7 @@ class Engine:
                 candidate["direction"],
                 text,
                 candidate["dominant"],
+                candidate["ratio"],
             )
 
     def compute_dominance(self, now: datetime, center_tick: int) -> dict | None:
@@ -334,6 +539,7 @@ class Engine:
         direction: int,
         text: str,
         strength: float,
+        signal_ratio: float,
     ) -> None:
         for r in reversed(self.rows):
             if r.superseded:
@@ -344,10 +550,15 @@ class Engine:
                 continue
             if (ts - r.ts).total_seconds() > DOMINANCE_WINDOW_SEC:
                 continue
+            if not self.should_update_spatial_row(r, ts, price_tick, text, signal_ratio):
+                r.strength = max(r.strength, strength)
+                return
             old = f"{abbrev(r.price_tick)} {r.text}"
             r.price_tick = price_tick
             r.text = text
             r.strength = max(r.strength, strength)
+            r.signal_ratio = signal_ratio
+            r.last_update_ts = ts
             r.updates += 1
             self.mutations.append(
                 Mutation(
@@ -383,6 +594,8 @@ class Engine:
             direction=direction,
             text=text,
             strength=strength,
+            last_update_ts=ts,
+            signal_ratio=signal_ratio,
         )
         self.next_row_id += 1
         self.rows.append(row)
@@ -398,6 +611,30 @@ class Engine:
                 old="",
                 current_mid_tick=self.current_mid_tick,
             )
+        )
+
+    @staticmethod
+    def should_update_spatial_row(
+        row: Row,
+        ts: datetime,
+        price_tick: int,
+        text: str,
+        signal_ratio: float,
+    ) -> bool:
+        if abs(row.price_tick - price_tick) >= SPATIAL_ROW_UPDATE_PRICE_TICKS:
+            return True
+
+        if row.signal_ratio > 0 and signal_ratio > 0:
+            ratio_delta = abs(signal_ratio - row.signal_ratio)
+            if ratio_delta >= SPATIAL_ROW_UPDATE_RATIO_DELTA:
+                return True
+            if ratio_delta / max(1.0, abs(row.signal_ratio)) >= SPATIAL_ROW_UPDATE_RATIO_RELATIVE:
+                return True
+
+        return (
+            text != row.text
+            and (ts - row.last_update_ts).total_seconds()
+            >= SPATIAL_ROW_UPDATE_FORCE_SECONDS
         )
 
     def add_or_update_chaos(self, ts: datetime, price_tick: int, strength: float) -> None:
@@ -437,6 +674,7 @@ class Engine:
             direction=0,
             text="VOD chaos",
             strength=strength,
+            last_update_ts=ts,
         )
         self.next_row_id += 1
         self.rows.append(row)
@@ -537,6 +775,12 @@ def abbrev(tick: int) -> str:
     return f"{last:03d}{frac:.2f}".replace("0.", ".")
 
 
+def band_range(min_tick: int, max_tick: int) -> str:
+    if min_tick == max_tick:
+        return abbrev(min_tick)
+    return f"{abbrev(min_tick)}-{abbrev(max_tick)}"
+
+
 def parse_ny(day: str, value: str) -> datetime:
     fmt = "%Y-%m-%d %H:%M:%S" if value.count(":") == 2 else "%Y-%m-%d %H:%M"
     return datetime.strptime(f"{day} {value}", fmt).replace(tzinfo=NY).astimezone(timezone.utc)
@@ -544,6 +788,35 @@ def parse_ny(day: str, value: str) -> datetime:
 
 def ny_hms(ts: datetime) -> str:
     return ts.astimezone(NY).strftime("%H:%M:%S")
+
+
+def snapshot_timing_summary(
+    snap: pl.DataFrame,
+    gap_threshold_sec: float,
+) -> tuple[datetime, datetime, int, list[tuple[datetime, datetime, float]]]:
+    timestamps = snap.get_column("timestamp_us").to_list()
+    if not timestamps:
+        raise ValueError("snapshot capture loaded zero rows")
+
+    duplicate_count = len(timestamps) - len(set(timestamps))
+    gaps: list[tuple[datetime, datetime, float]] = []
+    prev = int(timestamps[0])
+    for value in timestamps[1:]:
+        curr = int(value)
+        delta_sec = (curr - prev) / 1_000_000.0
+        if delta_sec > gap_threshold_sec:
+            gaps.append(
+                (
+                    datetime.fromtimestamp(prev / 1_000_000, tz=timezone.utc),
+                    datetime.fromtimestamp(curr / 1_000_000, tz=timezone.utc),
+                    delta_sec,
+                )
+            )
+        prev = curr
+
+    first = datetime.fromtimestamp(int(timestamps[0]) / 1_000_000, tz=timezone.utc)
+    last = datetime.fromtimestamp(int(timestamps[-1]) / 1_000_000, tz=timezone.utc)
+    return first, last, duplicate_count, gaps
 
 
 def load_snapshots(symbol_dir: str, start: datetime, end: datetime) -> pl.DataFrame:
@@ -557,6 +830,52 @@ def load_snapshots(symbol_dir: str, start: datetime, end: datetime) -> pl.DataFr
     )
 
 
+def print_build_bands(engine: Engine, window_start: datetime, window_end: datetime) -> None:
+    print("\nBuild band mutations in window:")
+    touched_ids: set[int] = set()
+    count = 0
+    for mutation in engine.build_band_mutations:
+        if mutation.action_ts < window_start or mutation.action_ts > window_end:
+            continue
+        touched_ids.add(mutation.band_id)
+        count += 1
+        side = "DEMAND" if mutation.side == "demand" else "SUPPLY"
+        extra = f"  from {mutation.old}" if mutation.action == "UPDATE" and mutation.old else ""
+        print(
+            f"{ny_hms(mutation.action_ts)} {mutation.action:<6} "
+            f"band#{mutation.band_id:<3} {side:<6} "
+            f"{band_range(mutation.min_tick, mutation.max_tick):>13} "
+            f"events={mutation.event_count:<2} "
+            f"maxz={mutation.max_abs_z:4.1f} "
+            f"current={abbrev(mutation.current_mid_tick):>7}{extra}"
+        )
+    if count == 0:
+        print("(none)")
+
+    if not touched_ids:
+        return
+
+    print("\nFinal state for touched build bands:")
+    for band in engine.build_bands:
+        if band.id not in touched_ids:
+            continue
+        status = (
+            f"breached@{ny_hms(band.breached_ts)} {abbrev(band.breach_price_tick)}"
+            if band.breached_ts is not None and band.breach_price_tick is not None
+            else "active"
+        )
+        side = "DEMAND" if band.side == "demand" else "SUPPLY"
+        print(
+            f"band#{band.id:<3} {side:<6} "
+            f"{band_range(band.min_tick, band.max_tick):>13} "
+            f"formed={ny_hms(band.formed_ts)} "
+            f"last={ny_hms(band.last_update_ts)} "
+            f"events={band.event_count:<2} "
+            f"maxz={band.max_abs_z:4.1f} "
+            f"{status}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", required=True)
@@ -568,6 +887,19 @@ def main() -> None:
     parser.add_argument("--print-events", action="store_true")
     parser.add_argument("--event-price-lt", type=float)
     parser.add_argument("--event-price-gt", type=float)
+    parser.add_argument("--gap-threshold-sec", type=float, default=5.0)
+    parser.add_argument("--print-bands", action="store_true")
+    parser.add_argument("--bands-only", action="store_true")
+    parser.add_argument("--band-build-z", type=float, default=BUILD_BAND_BUILD_Z)
+    parser.add_argument("--band-cluster-n", type=int, default=BUILD_BAND_CLUSTER_N)
+    parser.add_argument("--band-cluster-ticks", type=int, default=BUILD_BAND_CLUSTER_TICKS)
+    parser.add_argument("--band-cluster-sec", type=int, default=BUILD_BAND_CLUSTER_SEC)
+    parser.add_argument(
+        "--band-price-through-buffer-ticks",
+        type=int,
+        default=BUILD_BAND_PRICE_THROUGH_BUFFER_TICKS,
+    )
+    parser.add_argument("--summary-only", action="store_true")
     args = parser.parse_args()
 
     start_s, end_s = args.window.split("-", 1)
@@ -576,16 +908,57 @@ def main() -> None:
     replay_start = window_start - timedelta(minutes=args.warmup_min)
 
     snap = load_snapshots(args.symbol_dir, replay_start, window_end)
+    first_snap, last_snap, duplicate_count, gaps = snapshot_timing_summary(
+        snap,
+        args.gap_threshold_sec,
+    )
 
-    engine = Engine()
+    engine = Engine(
+        band_build_z=args.band_build_z,
+        band_cluster_n=args.band_cluster_n,
+        band_cluster_ticks=args.band_cluster_ticks,
+        band_cluster_sec=args.band_cluster_sec,
+        band_price_through_buffer_ticks=args.band_price_through_buffer_ticks,
+    )
     for row in snap.iter_rows(named=True):
         engine.on_sample(build_sample(row))
 
     print(
         f"{args.date} {args.window}  rows={snap.height:,}  "
-        f"events={len(engine.book_events):,}"
+        f"events_total={len(engine.all_book_events):,}  "
+        f"events_retained={len(engine.book_events):,}"
     )
-    print("\nSpatial row mutations in window:")
+    if args.print_bands or args.bands_only:
+        print(
+            "band_params="
+            f"z>{engine.band_build_z:g}, "
+            f"n={engine.band_cluster_n}, "
+            f"ticks={engine.band_cluster_ticks}, "
+            f"sec={engine.band_cluster_sec}, "
+            f"through={engine.band_price_through_buffer_ticks}"
+        )
+    print(
+        f"snapshot_span={ny_hms(first_snap)}-{ny_hms(last_snap)}  "
+        f"duplicate_timestamps={duplicate_count:,}"
+    )
+    if gaps:
+        print(f"\nSnapshot gaps > {args.gap_threshold_sec:.1f}s:")
+        for prev, curr, delta_sec in gaps[:12]:
+            print(f"{ny_hms(prev)} -> {ny_hms(curr)}  {delta_sec:.1f}s")
+        if len(gaps) > 12:
+            print(f"... {len(gaps) - 12} more")
+    else:
+        print(f"\nSnapshot gaps > {args.gap_threshold_sec:.1f}s: none")
+
+    if args.summary_only:
+        return
+
+    if args.print_bands or args.bands_only:
+        print_build_bands(engine, window_start, window_end)
+        if args.bands_only:
+            return
+
+    print("\nLedger row mutations in window:")
     for mutation in engine.mutations:
         if mutation.action_ts < window_start or mutation.action_ts > window_end:
             continue
@@ -599,7 +972,7 @@ def main() -> None:
             f"updates={mutation.updates}{extra}"
         )
 
-    print("\nFinal non-superseded spatial rows:")
+    print("\nFinal non-superseded rows:")
     for row in engine.rows[-20:]:
         if row.superseded:
             continue

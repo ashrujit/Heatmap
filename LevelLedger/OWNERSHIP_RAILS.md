@@ -1,0 +1,145 @@
+# LevelLedger Ownership Rails
+
+## Purpose
+
+Ownership rails replace the old raw build-band overlay.
+
+The problem is not missing information. The LevelLedger panel already shows the
+right evidence. The problem is that, in real time, the trader has to parse panel
+rows, profile, ladder, and recent auction structure quickly enough to act before
+the clean decision point passes.
+
+Rails are a belief-conditioning layer. They make the current thesis, its
+falsification area, and the quality of follow-on business visible without adding
+panel text or turning LevelLedger into a buy/sell signal.
+
+## Core Distinction
+
+Raw book events are evidence. They are not rails.
+
+A rail appears only when an evidence cluster gets accepted by price:
+
+- Demand leaning in and price moving higher can become a demand rail.
+- Supply leaning in and price moving lower can become a supply rail.
+- Supply leaning in and then getting overrun can become demand through supply
+  consumption.
+- Demand leaning in and then getting overrun can become supply through demand
+  consumption.
+
+The strongest confirmation is follow-on business in the direction of
+consumption. Consumption without follow-on business remains provisional.
+
+## States
+
+- `owned`: price accepted away from the evidence area.
+- `tested`: price came back to the rail.
+- `failed`: price accepted through the wrong side of the rail.
+- `contested`: both demand and supply rails fail repeatedly inside the same
+  broad envelope.
+
+Failed rails should stay visible briefly because their failure often matters
+more than their formation.
+
+## Thesis Rail
+
+A thesis rail is the nearest accepted rail backed by prior same-side rails.
+
+It is not a trade instruction. It is a falsification point.
+
+The intended read is:
+
+- If the trader already believes the sequence, this is where size can be
+  defended because the wrong-location is close.
+- If this rail fails, belief in the active sequence should drop sharply.
+
+The rail should look more important, not describe itself with text.
+
+## Contested Envelopes
+
+When both sides fail inside the same area, internal rails should not keep asking
+for attention. They should collapse visually into an amber contested envelope.
+
+This preserves useful information while avoiding the false precision of many
+short-lived middle bands.
+
+The practical read is:
+
+- extremes may still be tradable;
+- the middle is a lower-confidence environment;
+- size and patience should adjust unless a new thesis rail appears.
+
+## 2026-05-28 Fixture
+
+The important handoff was not just that demand appeared. It was that supply got
+consumed and price kept leaving higher accepted demand behind it.
+
+Key rails:
+
+- `950.50-952` demand held from `09:51`.
+- `960.50-964` supply consumed into demand at `09:56`.
+- `006.25-007` supply consumed into demand at `10:07`.
+- `077.75-084.50` supply consumed into demand at `10:24`.
+- `137.50-139.50` and `145.25-149.50` converted into demand around
+  `10:50-10:52`.
+- The cleaner confirmation came when `175-176.75` supply failed upward around
+  `10:59`, then `184.25-186.50` and `222.50-224.75` became accepted demand.
+
+The `222.50-224.75` rail was psychologically important: if it failed, the
+breakout through `175` and the earlier `140` conversion would be questionable.
+It offered tight falsification and therefore a more defensible place to press
+size.
+
+## 2026-05-29 Fixture
+
+This was the inverted lesson.
+
+Early fragility near the high mattered:
+
+- VOD chaos around `525.50`.
+- Supply around `520-526`.
+- A p-shaped top with negative delta from profile context.
+
+But the decisive point was later:
+
+- Demand appeared around `499.50` and `500-502.25`.
+- Supply around `501.75-502.50` was briefly consumed into demand.
+- Then `501-502`, `499.50`, and `491-493` demand failed.
+
+Once the `491-499` demand stack failed, the long thesis was broken. If the
+trader was not flat or short by then, the clean decision point had passed.
+
+This is exactly why the overlay must show sequence, not rules:
+
+- upper fragility;
+- provisional demand stack;
+- thesis rail;
+- rail failure;
+- long-side belief collapse.
+
+## Visual Grammar
+
+- Active demand/supply rails: side-colored bands.
+- Tested rails: slightly stronger, because the wrong-location is in play.
+- Thesis rails: stronger edge/right-side cap.
+- Failed rails: faded and dotted.
+- Contested envelopes: amber, broad, and visually behind rails.
+
+No text belongs inside the panel for this layer. At most, tiny right-edge labels
+can be considered later if the bands alone are not readable enough.
+
+## Non-Goals
+
+- Do not classify trades as long/short/exit.
+- Do not couple to ContextMap or TapeLedger.
+- Do not duplicate the panel rows.
+- Do not show every true internal rail when a broader contested envelope is the
+  better decision object.
+
+## Open Tuning Questions
+
+- How many rails should survive on screen during a strong trend day?
+- How aggressively should failed non-thesis rails fade?
+- Should contested envelopes require VOD or high event density, or is repeated
+  two-sided rail failure enough?
+- Should a thesis rail require consumed evidence specifically, or can a clean
+  same-side lean qualify when backed by prior accepted rails?
