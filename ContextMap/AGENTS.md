@@ -38,5 +38,11 @@ adds, and exits.
   workflow, but less precise than true per-price L2 deltas.
 - There is no historical backfill. The indicator must run through ETH/preopen to
   build useful rails.
+- `NewLevel2` is a liveness heartbeat only; ignore Quantower's synthetic
+  `generated_from_level1` / NaN pseudo-L2 events so L1 changes cannot falsely
+  keep the book marked fresh.
+- The live tick callback queue is capped at 50k prints. Overflow drops newest
+  prints with throttled error logging; this preserves process health but is not
+  an auction filter.
 - Rail selection and leg-quality thresholds are intentionally fixed until the
   Python replay harness has more fixtures.

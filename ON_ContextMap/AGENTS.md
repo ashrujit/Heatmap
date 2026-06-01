@@ -21,6 +21,11 @@ to click.
 - Run on a separate chart from LevelLedger.
 - Keep visual priority low: passive bands plus a sparse panel.
 - Do not paint an all-day accepted/unaccepted heatmap.
+- `NewLevel2` is a liveness heartbeat only; ignore Quantower's synthetic
+  `generated_from_level1` / NaN pseudo-L2 events so L1 changes cannot falsely
+  keep the book marked fresh.
+- The live tick callback queue is capped at 50k prints. Overflow drops newest
+  prints with throttled error logging; this is overload protection only.
 - New zone creation is intended for ON and early IB only. Existing zones may
   update/fade after the creation cutoff.
 - Zone state changes are sparse. Do not emit rows for every L2 event.

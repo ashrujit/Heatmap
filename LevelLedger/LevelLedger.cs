@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Chart;
 using TradingPlatform.BusinessLayer.Native;
@@ -11,6 +12,7 @@ namespace LevelLedger
     {
         private const string IndicatorVersion = "0.3.0";
         private const int L1ToleranceTicks = 2;
+        private const int TradeQueueCap = 50000;
 
         // Detection
         [InputParameter("Sample Interval (ms)", sortIndex: 900,
@@ -188,6 +190,9 @@ namespace LevelLedger
         private bool _l2Stale;
         private DateTime _lastL2EventUtc = DateTime.MinValue;
         private DateTime _lastSampleUtc = DateTime.MinValue;
+        private DateTime _lastTradeDropLogUtc = DateTime.MinValue;
+        private int _queuedTradeCount;
+        private long _tradeQueueDrops;
         private IChart _subscribedChart;
 
         public LevelLedger() : base()
@@ -230,6 +235,8 @@ namespace LevelLedger
 
                 _tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
                 _tradeQueue = new ConcurrentQueue<Last>();
+                _queuedTradeCount = 0;
+                _tradeQueueDrops = 0;
                 _engine = new LevelLedgerEngine(
                     BookLookbackSeconds,
                     EventZThreshold,
@@ -284,11 +291,21 @@ namespace LevelLedger
         {
             if (last == null) return;
             if (!double.IsFinite(last.Price) || last.Price <= 0) return;
-            _tradeQueue?.Enqueue(last);
+            var queue = _tradeQueue;
+            if (queue == null) return;
+            if (Interlocked.Increment(ref _queuedTradeCount) > TradeQueueCap)
+            {
+                Interlocked.Decrement(ref _queuedTradeCount);
+                long dropped = Interlocked.Increment(ref _tradeQueueDrops);
+                MaybeLogTradeDrops(dropped);
+                return;
+            }
+            queue.Enqueue(last);
         }
 
         private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
+            if (IsSyntheticLevel1Quote(l2)) return;
             _lastL2EventUtc = DateTime.UtcNow;
         }
 
@@ -342,6 +359,7 @@ namespace LevelLedger
             if (_tradeQueue == null || _engine == null) return;
             while (_tradeQueue.TryDequeue(out var last))
             {
+                Interlocked.Decrement(ref _queuedTradeCount);
                 try
                 {
                     var t = NormalizeUtc(last.Time);
@@ -515,9 +533,26 @@ namespace LevelLedger
                     _subscribedChart = null;
                 }
                 _tradeQueue = null;
+                _queuedTradeCount = 0;
                 _engine = null;
                 _painter = null;
                 _domParams = null;
+            }
+            catch { }
+        }
+
+        private void MaybeLogTradeDrops(long dropped)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_lastTradeDropLogUtc != DateTime.MinValue
+                && (now - _lastTradeDropLogUtc).TotalSeconds < 30)
+                return;
+            _lastTradeDropLogUtc = now;
+            try
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(LevelLedger)}] trade queue overloaded; dropped_total={dropped} cap={TradeQueueCap}",
+                    LoggingLevel.Error);
             }
             catch { }
         }
@@ -550,6 +585,14 @@ namespace LevelLedger
                 if (double.IsFinite(p) && p > 0 && double.IsFinite(s) && s > 0) return p;
             }
             return double.NaN;
+        }
+
+        private static bool IsSyntheticLevel1Quote(Level2Quote l2)
+        {
+            if (l2 == null) return false;
+            if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
         }
 
         private bool L1Agrees(DepthOfMarketAggregatedCollections dom, double tickSize)

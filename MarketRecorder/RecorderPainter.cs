@@ -69,9 +69,9 @@ namespace MarketRecorder
             int rowY = y + headerH + 4;
             DrawRow(g, rowFont, "BOOK", status.BookState ?? "", x + 8, rowY, w - 16, BookColor(status));
             rowY += rowH;
-            DrawRow(g, rowFont, "TICK", StreamText(status.LastTickUtc, status.TickRowsWritten, status.TickQueueRows, status.TickFiles), x + 8, rowY, w - 16, status.TicksEnabled ? Good : Muted);
+            DrawRow(g, rowFont, "TICK", StreamText(status.LastTickUtc, status.TickRowsWritten, status.TickQueueRows, status.TickFiles, status.TickRowsDropped), x + 8, rowY, w - 16, TickColor(status));
             rowY += rowH;
-            DrawRow(g, rowFont, "SNAP", StreamText(status.LastSnapshotUtc, status.SnapshotRowsWritten, status.SnapshotQueueRows, status.SnapshotFiles), x + 8, rowY, w - 16, SnapshotColor(status));
+            DrawRow(g, rowFont, "SNAP", StreamText(status.LastSnapshotUtc, status.SnapshotRowsWritten, status.SnapshotQueueRows, status.SnapshotFiles, status.SnapshotRowsDropped), x + 8, rowY, w - 16, SnapshotColor(status));
             rowY += rowH;
             DrawRow(g, rowFont, "CFG", $"{status.LevelsPerSide}lv {status.ChunkSeconds}s chunks", x + 8, rowY, w - 16, Neutral);
             rowY += rowH;
@@ -92,15 +92,17 @@ namespace MarketRecorder
             g.DrawString(trimmed, font, textBrush, x + labelW, y);
         }
 
-        private static string StreamText(string lastUtc, long rowsWritten, int queuedRows, long files)
+        private static string StreamText(string lastUtc, long rowsWritten, int queuedRows, long files, long droppedRows)
         {
             string last = ShortTime(lastUtc);
-            return $"{last} rows={rowsWritten} q={queuedRows} files={files}";
+            string drops = droppedRows > 0 ? $" drop={droppedRows}" : "";
+            return $"{last} rows={rowsWritten} q={queuedRows} files={files}{drops}";
         }
 
         private static string Overall(RecorderStatusSnapshot s)
         {
             if (!string.IsNullOrWhiteSpace(s.LastError)) return "ERROR";
+            if (HasDrops(s)) return "DROP";
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return "OK";
             if ((s.BookState ?? "").IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0) return "OFF";
             return "WAIT";
@@ -109,10 +111,14 @@ namespace MarketRecorder
         private static Color OverallColor(RecorderStatusSnapshot s)
         {
             if (!string.IsNullOrWhiteSpace(s.LastError)) return Bad;
+            if (HasDrops(s)) return Bad;
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return Good;
             if ((s.BookState ?? "").IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0) return Muted;
             return Warning;
         }
+
+        private static bool HasDrops(RecorderStatusSnapshot s)
+            => s.TickRowsDropped > 0 || s.SnapshotRowsDropped > 0;
 
         private static Color BookColor(RecorderStatusSnapshot s)
         {
@@ -123,10 +129,17 @@ namespace MarketRecorder
             return Warning;
         }
 
+        private static Color TickColor(RecorderStatusSnapshot s)
+        {
+            if (!s.TicksEnabled) return Muted;
+            if (s.TickWriteFailures > 0 || s.TickRowsDropped > 0) return Bad;
+            return Good;
+        }
+
         private static Color SnapshotColor(RecorderStatusSnapshot s)
         {
             if (!s.SnapshotsEnabled) return Muted;
-            if (s.SnapshotWriteFailures > 0) return Bad;
+            if (s.SnapshotWriteFailures > 0 || s.SnapshotRowsDropped > 0) return Bad;
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return Good;
             return Warning;
         }

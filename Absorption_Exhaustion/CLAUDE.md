@@ -51,11 +51,12 @@ This is why the indicator stays truthful in trends: in the Python dry-run, the 2
 ## Architectural invariants
 
 1. **No blocking on UI thread.** `Symbol.NewLast` callback enqueues only. Drain + detection + registry update run on the UI thread inside `OnUpdate`. `OnPaintChart` is also UI-thread.
-2. **Tick-keyed price registry.** `(long)Math.Round(price / tickSize)` everywhere; never `double` keys. Float-equality across independently computed prices breaks `Dictionary` lookup.
-3. **Forward-only.** No historical replay, no warmup data. Detectors silently no-op until `LookbackSeconds`-worth of bars have accumulated.
-4. **Detection is bar-close, not per-tick.** Per-tick detection would be 50–100× more work for marginal real-time gain. The 5-second cadence is a deliberate compromise; the bar boundary is wall-clock-floored, not tick-count-aligned, so the detector evaluates on consistent windows regardless of trade rate.
-5. **Clearing runs on every price update, not on a timer.** Cleared bands are reactive to the auction, not to time. Quiet markets simply don't trigger clearings.
-6. **No bitmap caching.** Band layer is sparse (10s of bands, not 100k cells), so per-frame `FillRectangle` is fine. If band count ever blows up — would need to be hundreds of simultaneous unbroken bands, which would itself be a sign the clearing rule is too lenient — revisit then.
+2. **Bounded callback queue.** The live `NewLast` queue is capped at 50k prints. Overflow drops newest prints and logs at most every 30 seconds. This is overload protection only, not a detector-tuning mechanism.
+3. **Tick-keyed price registry.** `(long)Math.Round(price / tickSize)` everywhere; never `double` keys. Float-equality across independently computed prices breaks `Dictionary` lookup.
+4. **Forward-only.** No historical replay, no warmup data. Detectors silently no-op until `LookbackSeconds`-worth of bars have accumulated.
+5. **Detection is bar-close, not per-tick.** Per-tick detection would be 50–100× more work for marginal real-time gain. The 5-second cadence is a deliberate compromise; the bar boundary is wall-clock-floored, not tick-count-aligned, so the detector evaluates on consistent windows regardless of trade rate.
+6. **Clearing runs on every price update, not on a timer.** Cleared bands are reactive to the auction, not to time. Quiet markets simply don't trigger clearings.
+7. **No bitmap caching.** Band layer is sparse (10s of bands, not 100k cells), so per-frame `FillRectangle` is fine. If band count ever blows up — would need to be hundreds of simultaneous unbroken bands, which would itself be a sign the clearing rule is too lenient — revisit then.
 
 ## Build & deploy
 

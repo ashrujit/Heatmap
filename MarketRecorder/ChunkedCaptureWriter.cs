@@ -23,6 +23,7 @@ namespace MarketRecorder
         private readonly int _chunkSeconds;
         private readonly int _flushSeconds;
         private readonly int _retentionDays;
+        private readonly int _queueCap;
         private readonly bool _writeTicks;
         private readonly bool _writeSnapshots;
         private readonly TimeZoneInfo _nyZone;
@@ -47,6 +48,8 @@ namespace MarketRecorder
         private long _snapshotsWritten;
         private long _snapshotFiles;
         private long _snapshotSkips;
+        private long _tickRowsDropped;
+        private long _snapshotRowsDropped;
         private long _tickWriteFailures;
         private long _snapshotWriteFailures;
         private int _pendingTickRows;
@@ -66,6 +69,7 @@ namespace MarketRecorder
             int chunkSeconds,
             int flushSeconds,
             int retentionDays,
+            int queueCap,
             bool writeTicks,
             bool writeSnapshots)
         {
@@ -77,6 +81,7 @@ namespace MarketRecorder
             _chunkSeconds = Math.Max(60, Math.Min(1800, chunkSeconds));
             _flushSeconds = Math.Max(1, Math.Min(60, flushSeconds));
             _retentionDays = Math.Max(1, retentionDays);
+            _queueCap = Math.Max(1000, queueCap);
             _writeTicks = writeTicks;
             _writeSnapshots = writeSnapshots;
             try { _nyZone = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
@@ -107,6 +112,11 @@ namespace MarketRecorder
             var utc = timeUtc == default ? DateTime.UtcNow : timeUtc.ToUniversalTime();
             int sign = flag == AggressorFlag.Buy ? 1 : (flag == AggressorFlag.Sell ? -1 : 0);
             long tsUs = ToMicros(utc);
+            if (_tickQueue.Count + Volatile.Read(ref _pendingTickRows) >= _queueCap)
+            {
+                Interlocked.Increment(ref _tickRowsDropped);
+                return;
+            }
             _tickQueue.Enqueue(new TickRow
             {
                 TimestampUs = tsUs,
@@ -123,6 +133,11 @@ namespace MarketRecorder
             if (!_writeSnapshots || _disposed) return;
             var row = BuildSnapshotRow(timeUtc.ToUniversalTime(), dom, tickSize);
             if (row == null) return;
+            if (_snapshotQueue.Count + Volatile.Read(ref _pendingSnapshotRows) >= _queueCap)
+            {
+                Interlocked.Increment(ref _snapshotRowsDropped);
+                return;
+            }
             _snapshotQueue.Enqueue(row);
             Interlocked.Increment(ref _snapshotsEnqueued);
             Interlocked.Exchange(ref _lastSnapshotUs, row.TimestampUs);
@@ -163,6 +178,9 @@ namespace MarketRecorder
                     SnapshotSkips = Interlocked.Read(ref _snapshotSkips),
                     TickQueueRows = _tickQueue.Count + _pendingTickRows,
                     SnapshotQueueRows = _snapshotQueue.Count + _pendingSnapshotRows,
+                    TickRowsDropped = Interlocked.Read(ref _tickRowsDropped),
+                    SnapshotRowsDropped = Interlocked.Read(ref _snapshotRowsDropped),
+                    QueueCapRows = _queueCap,
                     LastTickUtc = IsoOrEmpty(Interlocked.Read(ref _lastTickUs)),
                     LastSnapshotUtc = IsoOrEmpty(Interlocked.Read(ref _lastSnapshotUs)),
                     LastTickFile = _lastTickFile,
@@ -748,6 +766,9 @@ namespace MarketRecorder
         public long SnapshotSkips { get; set; }
         public int TickQueueRows { get; set; }
         public int SnapshotQueueRows { get; set; }
+        public long TickRowsDropped { get; set; }
+        public long SnapshotRowsDropped { get; set; }
+        public int QueueCapRows { get; set; }
         public string LastTickUtc { get; set; }
         public string LastSnapshotUtc { get; set; }
         public string LastTickFile { get; set; }

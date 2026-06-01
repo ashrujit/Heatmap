@@ -33,6 +33,9 @@ captures/
 # from a QT install; no point bloating the repo. See root CLAUDE.md.
 api-recon/
 
+# External reference checkouts
+Skurry-Panel*/
+
 # OS detritus ─────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

@@ -137,6 +137,7 @@ namespace LevelLedger
             var cv = chart.MainWindow?.CoordinatesConverter;
             if (cv == null) return;
 
+            using var refillFont = new Font("Segoe UI", 8.0f, FontStyle.Bold);
             foreach (var band in bands)
             {
                 int xStart;
@@ -195,6 +196,7 @@ namespace LevelLedger
                 g.FillRectangle(railFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
                 g.DrawLine(edge, xLeft, yTop, xRight, yTop);
                 g.DrawLine(edge, xLeft, yBottom, xRight, yBottom);
+                DrawRefillBandBadge(g, rect, band, yTop, yBottom, sideColor, refillFont);
                 if (thesis)
                 {
                     int capW = 5;
@@ -351,8 +353,10 @@ namespace LevelLedger
             string arrow = row.Direction > 0 ? "\u2191" : row.Direction < 0 ? "\u2193" : "\u00B7";
             string marker = IsNewDominance(row) ? "+" : " ";
             string zBadge = ZBadge(row);
+            string refill = RefillBadge(row.Refill);
             string updates = row.Updates > 1 && row.Kind != RowKind.SpatialDominance ? $" x{row.Updates}" : "";
-            string text = $"{marker} {t} {price,7} {arrow} {row.Text}{zBadge}{updates}";
+            string prefix = $"{marker} {t} {price,7} {arrow} {row.Text}";
+            string suffix = $"{zBadge}{updates}";
 
             Color baseColor = RowColor(row);
             int alpha = row.Superseded ? 95 : RowAlpha(row);
@@ -364,7 +368,16 @@ namespace LevelLedger
                 g.DrawLine(strikePen, x, y + font.Height / 2 + 1, x + Math.Min(w, 235), y + font.Height / 2 + 1);
             }
 
-            g.DrawString(text, font, brush, x, y);
+            g.DrawString(prefix, font, brush, x, y);
+            float nextX = x + g.MeasureString(prefix, font).Width - 2;
+            if (!string.IsNullOrEmpty(refill))
+            {
+                using var refillBrush = new SolidBrush(Color.FromArgb(alpha, RefillColor(row.Refill, baseColor)));
+                g.DrawString(refill, font, refillBrush, nextX, y);
+                nextX += g.MeasureString(refill, font).Width - 2;
+            }
+            if (!string.IsNullOrEmpty(suffix))
+                g.DrawString(suffix, font, brush, nextX, y);
         }
 
         private static bool IsNewDominance(LedgerRow row)
@@ -383,6 +396,51 @@ namespace LevelLedger
 
             int bucket = Math.Max(1, (int)Math.Round(row.DisplayZ, MidpointRounding.AwayFromZero));
             return $" z{bucket}";
+        }
+
+        private static string RefillBadge(RefillState state)
+        {
+            switch (state)
+            {
+                case RefillState.Confirmed:
+                    return " R+";
+                case RefillState.Conflict:
+                    return " R-";
+                default:
+                    return "";
+            }
+        }
+
+        private static Color RefillColor(RefillState state, Color sideColor)
+            => state == RefillState.Conflict ? Chaos : sideColor;
+
+        private static void DrawRefillBandBadge(
+            Graphics g,
+            Rectangle rect,
+            BuildBandOverlay band,
+            int yTop,
+            int yBottom,
+            Color sideColor,
+            Font font)
+        {
+            string text = RefillBadge(band.Refill).TrimStart();
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            var size = g.MeasureString(text, font);
+            int padX = 3;
+            int padY = 1;
+            int w = (int)Math.Ceiling(size.Width) + padX * 2;
+            int h = (int)Math.Ceiling(size.Height) + padY * 2;
+            int x = rect.Right - w - 8;
+            int bandMid = yTop + (yBottom - yTop) / 2;
+            int y = Math.Max(rect.Top + 2, Math.Min(rect.Bottom - h - 2, bandMid - h / 2));
+            Color color = RefillColor(band.Refill, sideColor);
+
+            using var bg = new SolidBrush(Color.FromArgb(140, 18, 20, 24));
+            using var fg = new SolidBrush(Color.FromArgb(230, color));
+            g.FillRectangle(bg, x, y, w, h);
+            g.DrawString(text, font, fg, x + padX, y + padY - 1);
         }
 
         private static Color RowColor(LedgerRow row)

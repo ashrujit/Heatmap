@@ -13,6 +13,13 @@ The first design emitted mostly temporal evidence. The current design treats tho
 - Silent before activation: no evidence rows are shown before a panel click.
 - Left-click activates or re-anchors at the current timestamp; right-click deactivates.
 - Activation is timestamp-based, not chart-price based.
+- Tick callbacks enqueue only; the queue is bounded as a safety valve. If the UI
+  drain cannot keep up, new prints are dropped and logged rather than allowing
+  unbounded memory growth. This is overload behavior only and must not be used
+  as a detector-tuning mechanism.
+- Synthetic Quantower L1-derived pseudo-L2 callbacks
+  (`id="generated_from_level1"`, NaN price/size) do not count as a fresh L2
+  heartbeat. The ledger should show stale depth when only pseudo events arrive.
 - Rows are sparse. Inconclusive events are ignored.
 - The panel is not scrollable. It shows at most the configured visible row count.
 - Rows are shorthand: time, abbreviated price, arrow, phrase.
@@ -62,6 +69,12 @@ Color/saturation carries row class:
 - `VOD chaos` is amber/neutral and intentionally not side-colored. It is a warning/fragility marker, not a directional claim.
 - The chart VOD+BUILD overlay is different from the ledger `VOD chaos` row on purpose. Dots require stricter same-sample `VOD + BID/ASK_BUILD` confirmation, paint as amber circles, and use a bid/ask/mixed rim only to show which side of the book thrashed. The rim is a side-of-chaos hint, not a buy/sell signal.
 - Node rows are muted because they are contextual structure rather than an immediate warning.
+- `R+` / `R-` are delayed refill modifiers, not new event types. They wait for
+  the post-event book window before annotating an already-emitted spatial row or
+  ownership rail. `R+` means same-side depth refilled strongly enough to support
+  the row/rail. `R-` means opposite refill or missing same-side refill conflicts
+  with it. On a failed rail, the same badge reads as breach repair (`R+`) or
+  breach confirmation (`R-`).
 
 ## Quantower Settings Behavior
 
@@ -91,6 +104,9 @@ The second folded overlay is ownership rails:
 - Ownership candidates use the same side-aware L2 event grammar as the panel (`BID_BUILD`, `BID_IN`, `ASK_OUT`, `ASK_PULL` for demand; opposite events for supply). A candidate becomes a rail only after price accepts away from the area. If price moves through the evidence in the opposite direction, the rail side becomes the consumer of that evidence.
 - Rails can be owned, tested, failed, or part of a contested envelope. A consumed rail is promoted only after follow-on business appears in the direction of consumption; otherwise repeated two-sided failures collapse visually into an amber contested zone.
 - Thesis rails are the nearest accepted rails backed by a same-side stack. They are not signals; they are falsification points. Their visual job is to make "belief should increase here" or "belief should collapse here" obvious without adding panel text or hardcoded trade instructions.
+- Rails can receive the same delayed refill badge as panel rows. The badge is
+  intentionally secondary paint: rail creation, testing, failure, and thesis
+  selection do not depend on it.
 - `OWNERSHIP_RAILS.md` captures the 2026-05-28 and 2026-05-29 reasoning that led to this grammar. Keep future tuning notes there when they are about trader cognition, fixture reads, or visual semantics rather than code invariants.
 
 The third folded overlay is VOD stacks:

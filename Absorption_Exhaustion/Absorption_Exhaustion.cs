@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using TradingPlatform.BusinessLayer;
 
 namespace Absorption_Exhaustion
@@ -8,6 +9,7 @@ namespace Absorption_Exhaustion
     public class Absorption_Exhaustion : Indicator
     {
         private const string IndicatorVersion = "0.1.0";
+        private const int TradeQueueCap = 50000;
 
         // ── Bar/baseline ────────────────────────────────────────────────────
         [InputParameter("Bar Seconds", sortIndex: 800,
@@ -85,6 +87,9 @@ namespace Absorption_Exhaustion
         private bool _subscribed;
         private double _lastPrice = double.NaN;
         private DateTime _lastTradeTime = DateTime.MinValue;
+        private int _queuedTradeCount;
+        private long _queueDrops;
+        private DateTime _lastQueueDropLogUtc = DateTime.MinValue;
 
         public Absorption_Exhaustion() : base()
         {
@@ -151,6 +156,8 @@ namespace Absorption_Exhaustion
                     ClearedFadeSec = ClearedFadeSec,
                 };
                 _queue = new ConcurrentQueue<Last>();
+                _queuedTradeCount = 0;
+                _queueDrops = 0;
 
                 this.Symbol.NewLast += Symbol_NewLast;
                 _subscribed = true;
@@ -167,7 +174,31 @@ namespace Absorption_Exhaustion
         {
             if (last == null) return;
             if (double.IsNaN(last.Price) || last.Price <= 0) return;
-            _queue?.Enqueue(last);
+            var queue = _queue;
+            if (queue == null) return;
+            if (Interlocked.Increment(ref _queuedTradeCount) > TradeQueueCap)
+            {
+                Interlocked.Decrement(ref _queuedTradeCount);
+                Interlocked.Increment(ref _queueDrops);
+                MaybeLogTradeQueueDrops();
+                return;
+            }
+            queue.Enqueue(last);
+        }
+
+        private void MaybeLogTradeQueueDrops()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastQueueDropLogUtc).TotalSeconds < 30) return;
+            _lastQueueDropLogUtc = now;
+            long drops = Interlocked.Read(ref _queueDrops);
+            try
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(Absorption_Exhaustion)}] trade queue overloaded; dropped {drops} prints (cap={TradeQueueCap})",
+                    LoggingLevel.Error);
+            }
+            catch { }
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -189,6 +220,7 @@ namespace Absorption_Exhaustion
             if (_queue == null || _buffer == null) return;
             while (_queue.TryDequeue(out var last))
             {
+                Interlocked.Decrement(ref _queuedTradeCount);
                 try
                 {
                     int sign = AggressorSign(last.AggressorFlag);
@@ -258,6 +290,7 @@ namespace Absorption_Exhaustion
                 _detector = null;
                 _buffer = null;
                 _queue = null;
+                _queuedTradeCount = 0;
             }
             catch { }
         }

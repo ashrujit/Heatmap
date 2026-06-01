@@ -35,6 +35,7 @@ namespace L2_Heatmap
     {
         public const int LevelsPerSide = 200;
         private const int FlushPeriodSec = 10;
+        private const int QueueCapRows = 200000;
 
         private readonly string _captureRoot;
         private readonly string _symbolKey;
@@ -42,6 +43,12 @@ namespace L2_Heatmap
 
         private readonly ConcurrentQueue<SnapshotRow> _snapQueue = new();
         private readonly ConcurrentQueue<TickRow> _tickQueue = new();
+        private int _snapRowsQueued;
+        private int _tickRowsQueued;
+        private long _snapRowsDropped;
+        private long _tickRowsDropped;
+        private DateTime _lastSnapDropLogUtc = DateTime.MinValue;
+        private DateTime _lastTickDropLogUtc = DateTime.MinValue;
         private CancellationTokenSource _cts;
         private Task _writerTask;
         private readonly ParquetSchema _snapSchema;
@@ -68,11 +75,26 @@ namespace L2_Heatmap
         public void EnqueueSnapshot(DateTime nowUtc, DepthOfMarketAggregatedCollections dom, double tickSize)
         {
             var row = BuildSnapshotRow(nowUtc, dom, tickSize);
-            if (row != null) _snapQueue.Enqueue(row);
+            if (row == null) return;
+            if (Interlocked.Increment(ref _snapRowsQueued) > QueueCapRows)
+            {
+                Interlocked.Decrement(ref _snapRowsQueued);
+                Interlocked.Increment(ref _snapRowsDropped);
+                MaybeLogSnapshotDrops();
+                return;
+            }
+            _snapQueue.Enqueue(row);
         }
 
         public void EnqueueTick(DateTime timeUtc, double price, double size, AggressorFlag flag)
         {
+            if (Interlocked.Increment(ref _tickRowsQueued) > QueueCapRows)
+            {
+                Interlocked.Decrement(ref _tickRowsQueued);
+                Interlocked.Increment(ref _tickRowsDropped);
+                MaybeLogTickDrops();
+                return;
+            }
             int sign = flag == AggressorFlag.Buy ? 1 : (flag == AggressorFlag.Sell ? -1 : 0);
             _tickQueue.Enqueue(new TickRow
             {
@@ -81,6 +103,22 @@ namespace L2_Heatmap
                 Size = size,
                 AggressorSign = sign,
             });
+        }
+
+        private void MaybeLogSnapshotDrops()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastSnapDropLogUtc).TotalSeconds < 30) return;
+            _lastSnapDropLogUtc = now;
+            LogInfo($"snapshot queue overloaded; dropped {Interlocked.Read(ref _snapRowsDropped)} rows (cap={QueueCapRows})");
+        }
+
+        private void MaybeLogTickDrops()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastTickDropLogUtc).TotalSeconds < 30) return;
+            _lastTickDropLogUtc = now;
+            LogInfo($"tick queue overloaded; dropped {Interlocked.Read(ref _tickRowsDropped)} rows (cap={QueueCapRows})");
         }
 
         public void Dispose()
@@ -114,6 +152,7 @@ namespace L2_Heatmap
         private async Task FlushSnapshots()
         {
             var batch = DrainQueue(_snapQueue);
+            if (batch.Count > 0) Interlocked.Add(ref _snapRowsQueued, -batch.Count);
             if (batch.Count == 0) return;
             if (!_firstSnapFlushLogged)
             {
@@ -143,6 +182,7 @@ namespace L2_Heatmap
         private async Task FlushTicks()
         {
             var batch = DrainQueue(_tickQueue);
+            if (batch.Count > 0) Interlocked.Add(ref _tickRowsQueued, -batch.Count);
             if (batch.Count == 0) return;
             if (!_firstTickFlushLogged)
             {

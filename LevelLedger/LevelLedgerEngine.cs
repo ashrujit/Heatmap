@@ -44,6 +44,21 @@ namespace LevelLedger
         private const int VodStackEdgeMergeTicks = 12;
         private const int VodStackMaxLinesPerSide = 4;
         private const int VodStackUnconfirmedKeepSec = 10 * 60;
+        private const int RefillRowHalfWidthTicks = 8;
+        private const int RefillBandPadTicks = 2;
+        private const int RefillPreWindowSec = 20;
+        private const int RefillImpactWindowSec = 5;
+        private const int RefillPostStartSec = 5;
+        private const int RefillPostEndSec = 24;
+        private const int RefillSampleRetentionSec = RefillPreWindowSec + RefillPostEndSec + 5;
+        private const int RefillProbeMaxAgeSec = RefillPostEndSec + 60;
+        private const double RefillMinDepth = 18.0;
+        private const double RefillPreDepthRatio = 0.75;
+        private const double RefillMinRecoveryDepth = 8.0;
+        private const double RefillRecoveryRatio = 0.25;
+        private const double RefillOppSideRatio = 1.15;
+        private const double RefillMissingDepth = 8.0;
+        private const double RefillMissingRatio = 0.35;
 
         private int _bookLookbackSec;
         private double _eventZThreshold;
@@ -62,6 +77,7 @@ namespace LevelLedger
         private readonly LinkedList<VodStackOverlay> _vodStacks = new();
         private readonly LinkedList<TradeBar> _tradeBars = new();
         private readonly List<LedgerRow> _rows = new();
+        private readonly List<RefillProbe> _refillProbes = new();
 
         private TradeBar _currentBar;
         private int _nextRowId = 1;
@@ -191,7 +207,7 @@ namespace LevelLedger
             var sample = ComputeSample(nowUtc, dom, tickSize);
             LastKnownTick = sample.MidTick;
             _bookSamples.AddLast(sample);
-            EvictOlderThan(_bookSamples, nowUtc, _bookLookbackSec * 2);
+            EvictOlderThan(_bookSamples, nowUtc, Math.Max(_bookLookbackSec * 2, RefillSampleRetentionSec));
 
             if (_bookSamples.Count < 5) return;
 
@@ -216,6 +232,7 @@ namespace LevelLedger
             UpdateVodStackEdges(nowUtc, sample.MidTick, zBi, zAi, zBc, zAc);
             ApplyVodStackPriceThrough(nowUtc, sample.MidTick);
             EvaluateSpatialDominance(nowUtc, sample.MidTick);
+            ResolveRefillProbes(nowUtc);
             Prune(nowUtc);
         }
 
@@ -543,6 +560,7 @@ namespace LevelLedger
                 SourceSide = candidate.Side,
             };
             _buildBands.AddLast(band);
+            MarkBandRefillPending(band, nowUtc);
             candidate.State = BuildBandCandidateState.Confirmed;
         }
 
@@ -583,6 +601,7 @@ namespace LevelLedger
                         band.FailPriceTick = currentMidTick;
                         band.WasThesis = band.WasThesis || band.IsThesis;
                         band.LastStateUtc = nowUtc;
+                        MarkBandRefillPending(band, nowUtc);
                         RecordBuildBandFailure(band, nowUtc);
                     }
                     continue;
@@ -1115,6 +1134,7 @@ namespace LevelLedger
                 r.DisplayZ = Math.Max(r.DisplayZ, displayZ);
                 r.SignalRatio = signalRatio;
                 r.Updates++;
+                MarkRowRefillPending(r, timeUtc);
                 return;
             }
 
@@ -1131,7 +1151,7 @@ namespace LevelLedger
                 }
             }
 
-            _rows.Add(new LedgerRow
+            var row = new LedgerRow
             {
                 Id = _nextRowId++,
                 TimeUtc = timeUtc,
@@ -1144,7 +1164,181 @@ namespace LevelLedger
                 DisplayZ = displayZ,
                 SignalRatio = signalRatio,
                 Updates = 1,
+            };
+            _rows.Add(row);
+            MarkRowRefillPending(row, timeUtc);
+        }
+
+        private void MarkRowRefillPending(LedgerRow row, DateTime anchorUtc)
+        {
+            if (row.Kind != RowKind.SpatialDominance || row.Direction == 0)
+                return;
+
+            var side = row.Direction > 0 ? BuildBandSide.Demand : BuildBandSide.Supply;
+            row.Refill = RefillState.Pending;
+            row.RefillAnchorUtc = anchorUtc;
+            row.RefillResolvedUtc = null;
+            AddRefillProbe(new RefillProbe
+            {
+                Kind = RefillTargetKind.Row,
+                TargetId = row.Id,
+                AnchorUtc = anchorUtc,
+                Side = side,
+                MinTick = row.PriceTick - RefillRowHalfWidthTicks,
+                MaxTick = row.PriceTick + RefillRowHalfWidthTicks,
             });
+        }
+
+        private void MarkBandRefillPending(BuildBandOverlay band, DateTime anchorUtc)
+        {
+            if (band.Role != BuildBandRole.Rail)
+                return;
+
+            band.Refill = RefillState.Pending;
+            band.RefillAnchorUtc = anchorUtc;
+            band.RefillResolvedUtc = null;
+            AddRefillProbe(new RefillProbe
+            {
+                Kind = RefillTargetKind.BuildBand,
+                TargetId = band.Id,
+                AnchorUtc = anchorUtc,
+                Side = band.Side,
+                MinTick = band.MinTick - RefillBandPadTicks,
+                MaxTick = band.MaxTick + RefillBandPadTicks,
+            });
+        }
+
+        private void AddRefillProbe(RefillProbe probe)
+        {
+            _refillProbes.RemoveAll(p => p.Kind == probe.Kind && p.TargetId == probe.TargetId);
+            _refillProbes.Add(probe);
+        }
+
+        private void ResolveRefillProbes(DateTime nowUtc)
+        {
+            for (int i = _refillProbes.Count - 1; i >= 0; i--)
+            {
+                var probe = _refillProbes[i];
+                double ageSec = (nowUtc - probe.AnchorUtc).TotalSeconds;
+                if (ageSec < RefillPostEndSec)
+                    continue;
+
+                var result = AssessRefill(probe);
+                ApplyRefillResult(probe, result, nowUtc);
+                _refillProbes.RemoveAt(i);
+            }
+        }
+
+        private RefillState AssessRefill(RefillProbe probe)
+        {
+            var opposite = Opposite(probe.Side);
+
+            double preSame = MedianDepth(probe.Side, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc.AddSeconds(-RefillPreWindowSec), probe.AnchorUtc);
+            double impactSame = MinDepth(probe.Side, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc, probe.AnchorUtc.AddSeconds(RefillImpactWindowSec));
+            double postSame = MaxDepth(probe.Side, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc.AddSeconds(RefillPostStartSec), probe.AnchorUtc.AddSeconds(RefillPostEndSec));
+
+            double preOpp = MedianDepth(opposite, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc.AddSeconds(-RefillPreWindowSec), probe.AnchorUtc);
+            double impactOpp = MinDepth(opposite, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc, probe.AnchorUtc.AddSeconds(RefillImpactWindowSec));
+            double postOpp = MaxDepth(opposite, probe.MinTick, probe.MaxTick,
+                probe.AnchorUtc.AddSeconds(RefillPostStartSec), probe.AnchorUtc.AddSeconds(RefillPostEndSec));
+
+            if (preSame <= 0 && postSame <= 0 && postOpp <= 0)
+                return RefillState.None;
+
+            double sameRecovery = postSame - impactSame;
+            double oppRecovery = postOpp - impactOpp;
+            bool sameStrong = postSame >= Math.Max(RefillMinDepth, preSame * RefillPreDepthRatio)
+                && sameRecovery >= Math.Max(RefillMinRecoveryDepth, preSame * RefillRecoveryRatio)
+                && postSame >= postOpp * RefillOppSideRatio;
+            bool oppositeStrong = postOpp >= Math.Max(RefillMinDepth, preOpp * RefillPreDepthRatio)
+                && oppRecovery >= Math.Max(RefillMinRecoveryDepth, preOpp * RefillRecoveryRatio)
+                && postOpp >= postSame * RefillOppSideRatio;
+            bool sameMissing = postSame < Math.Max(RefillMissingDepth, preSame * RefillMissingRatio);
+
+            if (sameStrong)
+                return RefillState.Confirmed;
+            if (oppositeStrong || sameMissing)
+                return RefillState.Conflict;
+            return RefillState.None;
+        }
+
+        private void ApplyRefillResult(RefillProbe probe, RefillState result, DateTime nowUtc)
+        {
+            if (probe.Kind == RefillTargetKind.Row)
+            {
+                var row = _rows.FirstOrDefault(r => r.Id == probe.TargetId);
+                if (row == null)
+                    return;
+                row.Refill = result;
+                row.RefillResolvedUtc = result == RefillState.None ? null : nowUtc;
+                return;
+            }
+
+            foreach (var band in _buildBands)
+            {
+                if (band.Id != probe.TargetId)
+                    continue;
+                band.Refill = result;
+                band.RefillResolvedUtc = result == RefillState.None ? null : nowUtc;
+                return;
+            }
+        }
+
+        private double MedianDepth(BuildBandSide side, long minTick, long maxTick, DateTime startUtc, DateTime endUtc)
+            => DepthWindow(side, minTick, maxTick, startUtc, endUtc, RefillDepthAgg.Median);
+
+        private double MinDepth(BuildBandSide side, long minTick, long maxTick, DateTime startUtc, DateTime endUtc)
+            => DepthWindow(side, minTick, maxTick, startUtc, endUtc, RefillDepthAgg.Min);
+
+        private double MaxDepth(BuildBandSide side, long minTick, long maxTick, DateTime startUtc, DateTime endUtc)
+            => DepthWindow(side, minTick, maxTick, startUtc, endUtc, RefillDepthAgg.Max);
+
+        private double DepthWindow(
+            BuildBandSide side,
+            long minTick,
+            long maxTick,
+            DateTime startUtc,
+            DateTime endUtc,
+            RefillDepthAgg agg)
+        {
+            var values = new List<double>();
+            foreach (var sample in _bookSamples)
+            {
+                if (sample.TimeUtc < startUtc || sample.TimeUtc > endUtc)
+                    continue;
+                values.Add(DepthInBand(sample, side, minTick, maxTick));
+            }
+
+            if (values.Count == 0)
+                return 0.0;
+
+            if (agg == RefillDepthAgg.Min)
+                return values.Min();
+            if (agg == RefillDepthAgg.Max)
+                return values.Max();
+
+            values.Sort();
+            int mid = values.Count / 2;
+            return values.Count % 2 == 1
+                ? values[mid]
+                : (values[mid - 1] + values[mid]) * 0.5;
+        }
+
+        private static double DepthInBand(BookSample sample, BuildBandSide side, long minTick, long maxTick)
+        {
+            var levels = side == BuildBandSide.Demand ? sample.Bids : sample.Asks;
+            double total = 0.0;
+            foreach (var level in levels)
+            {
+                if (level.Tick >= minTick && level.Tick <= maxTick)
+                    total += level.Size;
+            }
+            return total;
         }
 
         private static bool ShouldUpdateSpatialRow(
@@ -1283,8 +1477,14 @@ namespace LevelLedger
             PruneBuildBandPending(nowUtc);
             PruneBuildBandCandidates(nowUtc);
             PruneVodStacks(nowUtc);
+            PruneRefillProbes(nowUtc);
             var cutoff = nowUtc.AddSeconds(-RowRetentionSec);
             _rows.RemoveAll(r => r.TimeUtc < cutoff);
+        }
+
+        private void PruneRefillProbes(DateTime nowUtc)
+        {
+            _refillProbes.RemoveAll(p => (nowUtc - p.AnchorUtc).TotalSeconds > RefillProbeMaxAgeSec);
         }
 
         private void PruneVodBuildDots(DateTime nowUtc)
@@ -1390,6 +1590,7 @@ namespace LevelLedger
                 double sz = bids[i].Size;
                 if (!double.IsFinite(p) || p <= 0 || !double.IsFinite(sz) || sz <= 0) continue;
                 long t = PriceToTicks(p, tickSize);
+                s.Bids.Add(new BookLevel { Tick = t, Size = sz });
                 bWsum += Math.Abs(t - s.MidTick) * sz;
                 bSize += sz;
                 taken++;
@@ -1403,6 +1604,7 @@ namespace LevelLedger
                 double sz = asks[i].Size;
                 if (!double.IsFinite(p) || p <= 0 || !double.IsFinite(sz) || sz <= 0) continue;
                 long t = PriceToTicks(p, tickSize);
+                s.Asks.Add(new BookLevel { Tick = t, Size = sz });
                 aWsum += Math.Abs(t - s.MidTick) * sz;
                 aSize += sz;
                 taken++;
@@ -1524,6 +1726,14 @@ namespace LevelLedger
             public double AskInner;
             public double BidCentroid;
             public double AskCentroid;
+            public List<BookLevel> Bids = new();
+            public List<BookLevel> Asks = new();
+        }
+
+        private sealed class BookLevel
+        {
+            public long Tick;
+            public double Size;
         }
 
         private sealed class BookEvent : ITimed
@@ -1601,6 +1811,16 @@ namespace LevelLedger
             public double DominantDensity;
             public DateTime LatestDominantUtc;
         }
+
+        private sealed class RefillProbe
+        {
+            public RefillTargetKind Kind;
+            public int TargetId;
+            public DateTime AnchorUtc;
+            public BuildBandSide Side;
+            public long MinTick;
+            public long MaxTick;
+        }
     }
 
     internal enum RowKind
@@ -1658,6 +1878,27 @@ namespace LevelLedger
         Adverse,
     }
 
+    internal enum RefillState
+    {
+        None,
+        Pending,
+        Confirmed,
+        Conflict,
+    }
+
+    internal enum RefillTargetKind
+    {
+        Row,
+        BuildBand,
+    }
+
+    internal enum RefillDepthAgg
+    {
+        Median,
+        Min,
+        Max,
+    }
+
     internal enum VodStackEdgeSide
     {
         Demand,
@@ -1706,6 +1947,9 @@ namespace LevelLedger
         public bool WasThesis;
         public int DemandFailCount;
         public int SupplyFailCount;
+        public RefillState Refill;
+        public DateTime? RefillAnchorUtc;
+        public DateTime? RefillResolvedUtc;
 
         public BuildBandOverlay Clone()
             => (BuildBandOverlay)MemberwiseClone();
@@ -1767,6 +2011,9 @@ namespace LevelLedger
         public bool Superseded;
         public DateTime SupersededUtc;
         public int Updates;
+        public RefillState Refill;
+        public DateTime? RefillAnchorUtc;
+        public DateTime? RefillResolvedUtc;
 
         public LedgerRow Clone()
             => (LedgerRow)MemberwiseClone();

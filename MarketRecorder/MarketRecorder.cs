@@ -40,6 +40,10 @@ namespace MarketRecorder
         [InputParameter("Capture Root Path", sortIndex: 1108)]
         public string CaptureRootPath = @"C:\Quantower\Settings\Scripts\Indicators\MarketRecorder\captures";
 
+        [InputParameter("Max Queued Rows Per Stream", sortIndex: 1109,
+            minimum: 1000, maximum: 1000000, increment: 1000, decimalPlaces: 0)]
+        public int MaxQueuedRowsPerStream = 200000;
+
         [InputParameter("Book Freshness (sec)", sortIndex: 1110,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
@@ -137,6 +141,7 @@ namespace MarketRecorder
                     ChunkSeconds,
                     FlushSeconds,
                     RetentionDays,
+                    MaxQueuedRowsPerStream,
                     WriteTicks,
                     WriteSnapshots);
                 _writer.Start();
@@ -164,6 +169,7 @@ namespace MarketRecorder
 
         private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
+            if (IsSyntheticLevel1Quote(l2)) return;
             _lastL2EventUtc = DateTime.UtcNow;
         }
 
@@ -313,6 +319,14 @@ namespace MarketRecorder
             return double.NaN;
         }
 
+        private static bool IsSyntheticLevel1Quote(Level2Quote l2)
+        {
+            if (l2 == null) return false;
+            if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
+        }
+
         private RecorderStatusSnapshot DisabledStatus()
         {
             return new RecorderStatusSnapshot
@@ -324,6 +338,7 @@ namespace MarketRecorder
                 SnapshotsEnabled = WriteSnapshots,
                 BookState = RecorderEnabled ? _lastBookState : "disabled",
                 LastError = RecorderEnabled ? "" : "recorder disabled",
+                QueueCapRows = Math.Max(1000, MaxQueuedRowsPerStream),
             };
         }
     }

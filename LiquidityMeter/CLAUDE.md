@@ -65,10 +65,11 @@ The anchor is set at the click instant, not at a clicked-bar timestamp. Backdati
 ## Architectural invariants
 
 1. **No blocking on UI thread.** `Symbol.NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
-2. **Read DOM, don't maintain state.** Each sample calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)`. QT maintains the canonical book; we don't. See RESEARCH_LOG 2026-05-08.
-3. **Tick-keyed math.** `(long)Math.Round(price / tickSize)` for any price-keyed dictionary.
-4. **Forward-only.** No history; meter warms up over the configured lookback (default 30s) before z-scores stabilize.
-5. **VOD events deliberately omitted.** Neutral-bias events would just inflate event count without affecting cum/ROC.
+2. **Heartbeat ignores pseudo-L2.** Quantower can emit `generated_from_level1` / NaN pseudo-L2 events from L1 best-bid/ask changes. These do not prove the book stream is fresh and must not reset the stale timer.
+3. **Read DOM, don't maintain state.** Each sample calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)`. QT maintains the canonical book; we don't. See RESEARCH_LOG 2026-05-08.
+4. **Tick-keyed math.** `(long)Math.Round(price / tickSize)` for any price-keyed dictionary.
+5. **Forward-only.** No history; meter warms up over the configured lookback (default 30s) before z-scores stabilize.
+6. **VOD events deliberately omitted.** Neutral-bias events would just inflate event count without affecting cum/ROC.
 
 ## Build & deploy
 

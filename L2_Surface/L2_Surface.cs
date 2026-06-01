@@ -288,7 +288,16 @@ namespace L2_Surface
         // the most recent L2 event for the IsFresh feed-paused detector.
         private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
+            if (IsSyntheticLevel1Quote(l2)) return;
             _lastL2EventUtc = DateTime.UtcNow;
+        }
+
+        private static bool IsSyntheticLevel1Quote(Level2Quote l2)
+        {
+            if (l2 == null) return false;
+            if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
         }
 
         protected override void OnUpdate(UpdateArgs args)

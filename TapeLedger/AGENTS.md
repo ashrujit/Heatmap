@@ -33,6 +33,9 @@ on the mostly-empty 5-minute chart.
 
 - Tick stream only. No L2 snapshots and no book-derived evidence.
 - No historical backfill. The indicator must be running during the session.
+- The live tick callback queue is capped at 50k prints. If Quantower falls
+  behind, newest prints are dropped and a throttled error is logged. That is
+  overload protection only; it must not be used as auction filtering.
 - RTH/OR5/IB times are NY-time configurable but default to NQ RTH.
 - Shelf zones use 4-point bins by default, matching the research harness.
 - The first version favors readable visual behavior over perfectly matching the

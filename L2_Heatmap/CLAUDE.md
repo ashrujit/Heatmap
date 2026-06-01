@@ -20,11 +20,12 @@ The indicator also writes captured snapshot rows + tick rows to parquet (indepen
 ## Architectural invariants (do not break without thinking hard)
 
 1. **No blocking on UI thread.** `Symbol_NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
-2. **Read DOM, don't maintain state.** `Symbol.DepthOfMarket` is the canonical book — eats every L2 delta and every `DOMQuote` full-snapshot itself. Reading from it makes orphan-level corruption (the 2026-05-08 ref_tick bug class) structurally impossible. See RESEARCH_LOG 2026-05-08 follow-up for the migration narrative.
-3. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently-computed prices breaks dictionary lookup otherwise.
-4. **Forward-only.** No historical L2 — heatmap warms up over ~10 s as live data accumulates.
-5. **Unsafe scope is exactly one method:** `ChartPainter.RebuildHeatmapBitmap`. LockBits + raw `int*` pixel writes give ~10× speedup vs per-cell `FillRectangle` (~30 ns/pixel vs ~300 ns/call). Don't extend unsafe further.
-6. **Per-frame bitmap cache.** Cache invalidates on snapshot count change (every 500 ms in steady state), pan/zoom (firstX/lastX drift > 1 px), or rect resize. Cache hits are a single `g.DrawImage` blit (~1 ms); misses do the LockBits rebuild (~8 ms for ~200k cells).
+2. **Heartbeat ignores pseudo-L2.** Quantower can emit `generated_from_level1` / NaN pseudo-L2 events from L1 best-bid/ask changes. These do not prove the book stream is fresh and must not reset the stale timer.
+3. **Read DOM, don't maintain state.** `Symbol.DepthOfMarket` is the canonical book — eats every L2 delta and every `DOMQuote` full-snapshot itself. Reading from it makes orphan-level corruption (the 2026-05-08 ref_tick bug class) structurally impossible. See RESEARCH_LOG 2026-05-08 follow-up for the migration narrative.
+4. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently-computed prices breaks dictionary lookup otherwise.
+5. **Forward-only.** No historical L2 — heatmap warms up over ~10 s as live data accumulates.
+6. **Unsafe scope is exactly one method:** `ChartPainter.RebuildHeatmapBitmap`. LockBits + raw `int*` pixel writes give ~10× speedup vs per-cell `FillRectangle` (~30 ns/pixel vs ~300 ns/call). Don't extend unsafe further.
+7. **Per-frame bitmap cache.** Cache invalidates on snapshot count change (every 500 ms in steady state), pan/zoom (firstX/lastX drift > 1 px), or rect resize. Cache hits are a single `g.DrawImage` blit (~1 ms); misses do the LockBits rebuild (~8 ms for ~200k cells).
 
 ## Two-regime alpha curve
 
@@ -90,6 +91,8 @@ Why the demotion: through three sessions of live use (2026-05-05 to 2026-05-07),
 ## Capture (L2 + Ticks → parquet)
 
 Opt-in via `Capture Enabled`. When on, every `NewLevel2` drain pass also evaluates whether `CaptureSnapshotIntervalMs` has elapsed since the last capture; if so, the current `BookState` is sampled to a `SnapshotRow` and enqueued. `NewLast` events are subscribed only when capture is on, and each tick enqueues a `TickRow`. A background `Task` (kicked off in `OnInit`) wakes every 10 s and flushes the queues — appending a row group to the day's parquet file, snappy compression, day-partitioned files per symbol.
+
+The capture queues are capped at 200k rows per stream. If the background writer falls behind, newest rows are dropped and a throttled log entry records the cumulative drop count. For primary research capture prefer `MarketRecorder`, which exposes drop counters in its on-chart status panel.
 
 ### File layout
 

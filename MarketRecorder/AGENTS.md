@@ -41,8 +41,14 @@ all day directories touched by that window.
 ## Operational Invariants
 
 - `NewLast` only enqueues ticks. Disk IO happens on the writer task.
+- Tick and snapshot producer queues are bounded. If the writer falls behind,
+  the recorder drops new rows and exposes monotone drop counters in
+  `status.json` and the panel instead of allowing unbounded memory growth.
 - L2 callbacks are heartbeat only; snapshots sample `Symbol.DepthOfMarket` on
   the indicator update loop.
+- Synthetic Quantower L1-derived pseudo-L2 callbacks
+  (`id="generated_from_level1"`, NaN price/size) do not count as a book
+  heartbeat. They are not proof that the depth stream is alive.
 - Tick and snapshot streams are independent in status and manifest records.
   One can be stale or errored without hiding the other.
 - Do not reintroduce append-to-existing Parquet for capture data.

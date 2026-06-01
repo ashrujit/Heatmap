@@ -48,11 +48,19 @@ Price is abbreviated to the last three integer digits plus fractional tick when 
 
 Paint priority is by row kind: spatial dominance uses the strongest side colors, trade impulses use separate quieter side colors, VOD uses amber, and node rows stay muted.
 
+Spatial dominance rows may later gain `R+` or `R-`. This is a delayed refill
+read from the post-event book, not a row trigger. `R+` says the same-side book
+refilled strongly after the row; `R-` says opposite refill or missing same-side
+refill weakened the row. Ownership rails use the same badge, including failed
+rails where it distinguishes breach repair from breach confirmation.
+
 ## Current Math
 
 Trade side:
 
 - `Symbol.NewLast` is drained through a queue on `OnUpdate`.
+- The trade queue is intentionally capped. Under overload, the callback drops
+  new prints and logs a throttled error instead of growing memory without bound.
 - Trades are bucketed into configurable bars, default 5 seconds.
 - Strong impulse row requires volume z-score and absolute delta/volume ratio thresholds.
 - Rolling price-volume POC over 5 minutes emits `node builds` and material POC migration emits `accepts higher/lower`.
@@ -60,6 +68,8 @@ Trade side:
 L2 side:
 
 - Polls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections` at 1 Hz.
+- `generated_from_level1` pseudo-L2 callbacks are ignored for freshness so the
+  stale-depth badge reflects the real depth stream, not synthesized L1 noise.
 - Uses top 10 levels for inner depth and top 30 for centroid distance, mirroring LiquidityMeter/L2_Surface.
 - Z-scores bid inner, ask inner, bid centroid, ask centroid against rolling baseline.
 - Applies the established side-aware bias map:

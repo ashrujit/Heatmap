@@ -113,13 +113,14 @@ The cost: this single project is larger (~1500 lines vs ~700 each) and the engin
 ## Architectural invariants (do not break without thinking hard)
 
 1. **No blocking on UI thread.** `Symbol.NewLevel2` heartbeat handler does only a timestamp write; sample + paint run on UI thread.
-2. **Read DOM, don't maintain state.** `OnSample` calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` to get `Level2Item[]` for each side. QT maintains the canonical book; orphan-level corruption is structurally impossible (see RESEARCH_LOG 2026-05-08).
-3. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently computed prices breaks `Dictionary` lookup.
-4. **Forward-only.** No history; engine warms up over the configured lookback (default 30s) before z-scores stabilize. After ~5 samples the baselines have enough data to fire.
-5. **Engine computes all layers regardless of enabled flags.** Toggle gates rendering only. Flipping a layer on mid-session shows accumulated state immediately, not an empty warmup.
-6. **One sample loop.** Don't add a second sample timer for any layer's "extra" computation. Cost of the unified loop is O(events_in_5min) ≈ few µs/sample.
-7. **Persistence is a feature.** Default no auto-clear on Events dots (the 2026-05-07 28744 cascade story). Auto-Clear is opt-in via `Events: Auto-Clear After (min)`. Build Bands, Climax lines, and Inflection lines clear on price-through which IS the right semantics for them.
-8. **No labels, no halos, no count badges anywhere.** Density-via-alpha and color-coding-by-side carry the entire information load. Adding visual annotations breaks the eyes-on-the-road posture.
+2. **Heartbeat ignores pseudo-L2.** Quantower can emit `generated_from_level1` / NaN pseudo-L2 events from L1 best-bid/ask changes. These do not prove the book stream is fresh and must not reset the stale timer.
+3. **Read DOM, don't maintain state.** `OnSample` calls `Symbol.DepthOfMarket.GetDepthOfMarketAggregatedCollections(...)` to get `Level2Item[]` for each side. QT maintains the canonical book; orphan-level corruption is structurally impossible (see RESEARCH_LOG 2026-05-08).
+4. **Tick-keyed math.** Convert `Level2Item.Price` → `long` ticks via `(long)Math.Round(price / tickSize)` whenever you key by price. Float-equality across independently computed prices breaks `Dictionary` lookup.
+5. **Forward-only.** No history; engine warms up over the configured lookback (default 30s) before z-scores stabilize. After ~5 samples the baselines have enough data to fire.
+6. **Engine computes all layers regardless of enabled flags.** Toggle gates rendering only. Flipping a layer on mid-session shows accumulated state immediately, not an empty warmup.
+7. **One sample loop.** Don't add a second sample timer for any layer's "extra" computation. Cost of the unified loop is O(events_in_5min) ≈ few µs/sample.
+8. **Persistence is a feature.** Default no auto-clear on Events dots (the 2026-05-07 28744 cascade story). Auto-Clear is opt-in via `Events: Auto-Clear After (min)`. Build Bands, Climax lines, and Inflection lines clear on price-through which IS the right semantics for them.
+9. **No labels, no halos, no count badges anywhere.** Density-via-alpha and color-coding-by-side carry the entire information load. Adding visual annotations breaks the eyes-on-the-road posture.
 
 ## Performance
 

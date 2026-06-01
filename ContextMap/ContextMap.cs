@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Chart;
 
@@ -9,6 +10,7 @@ namespace ContextMap
     public class ContextMap : Indicator
     {
         private const int L1ToleranceTicks = 2;
+        private const int TradeQueueCap = 50000;
 
         [InputParameter("Sample Interval (ms)", sortIndex: 1000,
             minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
@@ -102,6 +104,9 @@ namespace ContextMap
         private bool _l2Stale = true;
         private DateTime _lastL2EventUtc = DateTime.MinValue;
         private DateTime _lastSampleUtc = DateTime.MinValue;
+        private int _queuedTradeCount;
+        private long _tradeQueueDrops;
+        private DateTime _lastTradeDropLogUtc = DateTime.MinValue;
 
         public ContextMap() : base()
         {
@@ -146,6 +151,8 @@ namespace ContextMap
 
                 _tickSize = this.Symbol.TickSize > 0 ? this.Symbol.TickSize : 0.25;
                 _tradeQueue = new ConcurrentQueue<Last>();
+                _queuedTradeCount = 0;
+                _tradeQueueDrops = 0;
                 _engine = new ContextEngine(_tickSize);
                 _painter = new ContextPainter(_tickSize);
                 _domParams = new GetDepthOfMarketParameters
@@ -172,12 +179,45 @@ namespace ContextMap
         {
             if (last == null) return;
             if (!double.IsFinite(last.Price) || last.Price <= 0) return;
-            _tradeQueue?.Enqueue(last);
+            var queue = _tradeQueue;
+            if (queue == null) return;
+            if (Interlocked.Increment(ref _queuedTradeCount) > TradeQueueCap)
+            {
+                Interlocked.Decrement(ref _queuedTradeCount);
+                Interlocked.Increment(ref _tradeQueueDrops);
+                MaybeLogTradeQueueDrops();
+                return;
+            }
+            queue.Enqueue(last);
         }
 
         private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
+            if (IsSyntheticLevel1Quote(l2)) return;
             _lastL2EventUtc = DateTime.UtcNow;
+        }
+
+        private void MaybeLogTradeQueueDrops()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastTradeDropLogUtc).TotalSeconds < 30) return;
+            _lastTradeDropLogUtc = now;
+            long drops = Interlocked.Read(ref _tradeQueueDrops);
+            try
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(ContextMap)}] trade queue overloaded; dropped {drops} prints (cap={TradeQueueCap})",
+                    LoggingLevel.Error);
+            }
+            catch { }
+        }
+
+        private static bool IsSyntheticLevel1Quote(Level2Quote l2)
+        {
+            if (l2 == null) return false;
+            if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -261,6 +301,7 @@ namespace ContextMap
                     _l2Subscribed = false;
                 }
                 _tradeQueue = null;
+                _queuedTradeCount = 0;
                 _engine = null;
                 _painter = null;
                 _domParams = null;
@@ -289,6 +330,7 @@ namespace ContextMap
             ApplyEngineConfig();
             while (_tradeQueue.TryDequeue(out var last))
             {
+                Interlocked.Decrement(ref _queuedTradeCount);
                 try
                 {
                     _engine.OnTrade(NormalizeUtc(last.Time), last.Price, last.Size, AggressorSign(last.AggressorFlag));

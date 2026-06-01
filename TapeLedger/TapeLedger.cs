@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Chart;
 
@@ -8,6 +9,8 @@ namespace TapeLedger
 {
     public class TapeLedger : Indicator
     {
+        private const int TradeQueueCap = 50000;
+
         [InputParameter("RTH Start HHmm", sortIndex: 1200,
             minimum: 0, maximum: 2359, increment: 1, decimalPlaces: 0)]
         public int RthStartHHmm = 930;
@@ -153,6 +156,9 @@ namespace TapeLedger
         private TapeLedgerPainter _painter;
         private double _tickSize = 0.25;
         private bool _subscribed;
+        private int _queuedTradeCount;
+        private long _tradeQueueDrops;
+        private DateTime _lastTradeDropLogUtc = DateTime.MinValue;
 
         public TapeLedger() : base()
         {
@@ -200,6 +206,8 @@ namespace TapeLedger
                 _tickSize = Symbol.TickSize > 0 ? Symbol.TickSize : 0.25;
                 _engine = new TapeLedgerEngine(_tickSize);
                 _painter = new TapeLedgerPainter(_tickSize);
+                _queuedTradeCount = 0;
+                _tradeQueueDrops = 0;
                 ApplySettings();
                 Symbol.NewLast += Symbol_NewLast;
                 _subscribed = true;
@@ -214,7 +222,29 @@ namespace TapeLedger
         {
             if (last == null) return;
             if (!double.IsFinite(last.Price) || last.Price <= 0) return;
+            if (Interlocked.Increment(ref _queuedTradeCount) > TradeQueueCap)
+            {
+                Interlocked.Decrement(ref _queuedTradeCount);
+                Interlocked.Increment(ref _tradeQueueDrops);
+                MaybeLogTradeQueueDrops();
+                return;
+            }
             _tradeQueue.Enqueue(last);
+        }
+
+        private void MaybeLogTradeQueueDrops()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _lastTradeDropLogUtc).TotalSeconds < 30) return;
+            _lastTradeDropLogUtc = now;
+            long drops = Interlocked.Read(ref _tradeQueueDrops);
+            try
+            {
+                Core.Instance.Loggers.Log(
+                    $"[{nameof(TapeLedger)}] trade queue overloaded; dropped {drops} prints (cap={TradeQueueCap})",
+                    LoggingLevel.Error);
+            }
+            catch { }
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -224,6 +254,7 @@ namespace TapeLedger
             int drained = 0;
             while (drained < 20000 && _tradeQueue.TryDequeue(out var last))
             {
+                Interlocked.Decrement(ref _queuedTradeCount);
                 try
                 {
                     _engine.OnTrade(NormalizeUtc(last.Time), last.Price, last.Size, AggressorSign(last.AggressorFlag));
@@ -275,6 +306,7 @@ namespace TapeLedger
                     try { Symbol.NewLast -= Symbol_NewLast; } catch { }
                     _subscribed = false;
                 }
+                _queuedTradeCount = 0;
             }
             catch { }
             base.OnClear();
