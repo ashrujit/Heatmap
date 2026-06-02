@@ -937,6 +937,29 @@ short hold window.
 
 ---
 
+## 2026-06-02 - LevelLedger Bands As Primary Trade Language
+
+Added [`LEVELLEDGER_2026-06-02_TRADE_READ.md`](LEVELLEDGER_2026-06-02_TRADE_READ.md).
+
+The session validated the current LevelLedger chart/panel split. The trader used
+the bands as the primary decision surface and the panel only as an occasional
+audit of strength/timing. The important trade-process distinction was that the
+`30538` long was a small probe at a meaningful VWAP/lower-demand test, not full
+trade intent. Full leverage waited until `30556-30558` supply failed and flipped
+into demand, then added as ownership stepped higher through `30578`, `30607`,
+and `30614`.
+
+Replay supported the read: the early `30572-30628` area was no-man's land, the
+`30534-30540` demand test held, `30556-30558` converted, and the later exit into
+the prior-day-high area around `30694` was consistent with mixed supply/demand
+and lack of clean demand consumption.
+
+Design takeaway: the chart layer should answer "where is ownership, where is it
+invalid, and where is nobody in control?" The panel should answer "how strong
+was the evidence, and what exactly caused the band?"
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.
