@@ -103,7 +103,9 @@ The second folded overlay is ownership rails:
 - The old raw `BID_BUILD`/`ASK_BUILD` build-band layer was retired after 2026-05-28 and 2026-05-29 replay. It was either too sparse at default settings or too noisy when relaxed; the useful object was not a raw cluster, but a rail that answers who owns the current leg and where that ownership is wrong.
 - Ownership candidates use the same side-aware L2 event grammar as the panel (`BID_BUILD`, `BID_IN`, `ASK_OUT`, `ASK_PULL` for demand; opposite events for supply). A candidate becomes a rail only after price accepts away from the area. If price moves through the evidence in the opposite direction, the rail side becomes the consumer of that evidence.
 - Rails can be owned, tested, failed, or part of a contested envelope. A consumed rail is promoted only after follow-on business appears in the direction of consumption; otherwise repeated two-sided failures collapse visually into an amber contested zone.
+- Failed rails are allowed to fail in their own time, but neighboring failed rails collapse into a light-grey no-owner envelope once enough nearby failures accumulate. The decision meaning is "nobody owns this; do not infer clean continuation from price moving through it quickly."
 - Thesis rails are the nearest accepted rails backed by a same-side stack. They are not signals; they are falsification points. Their visual job is to make "belief should increase here" or "belief should collapse here" obvious without adding panel text or hardcoded trade instructions.
+- Consumed rails show a small `C` badge before any R+/R- badge. This is a visual memory aid for "opposite-side evidence was consumed into this rail's side"; the rail color still carries the resulting owner.
 - Rails can receive the same delayed refill badge as panel rows. The badge is
   intentionally secondary paint: rail creation, testing, failure, and thesis
   selection do not depend on it.

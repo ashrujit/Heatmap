@@ -37,6 +37,7 @@ namespace LevelLedger
         private const int OwnershipContestedProximityTicks = 80;
         private const int OwnershipContestedSpanTicks = 240;
         private const int OwnershipContestedMinFails = 4;
+        private const int OwnershipNoOwnerMinFails = 2;
         private const int OwnershipThesisBackingTicks = 260;
         private const int OwnershipThesisMinStack = 2;
         private const int VodStackClusterMergeSec = 75;
@@ -602,6 +603,7 @@ namespace LevelLedger
                         band.WasThesis = band.WasThesis || band.IsThesis;
                         band.LastStateUtc = nowUtc;
                         MarkBandRefillPending(band, nowUtc);
+                        RecordNoOwnerZone(band, nowUtc);
                         RecordBuildBandFailure(band, nowUtc);
                     }
                     continue;
@@ -661,11 +663,17 @@ namespace LevelLedger
                 : currentMidTick <= band.MinTick - OwnershipHoldConfirmTicks;
 
         private void RecordBuildBandFailure(BuildBandOverlay failedBand, DateTime nowUtc)
+            => RecordFailureZone(failedBand, nowUtc, BuildBandRole.Contested);
+
+        private void RecordNoOwnerZone(BuildBandOverlay failedBand, DateTime nowUtc)
+            => RecordFailureZone(failedBand, nowUtc, BuildBandRole.NoOwner);
+
+        private void RecordFailureZone(BuildBandOverlay failedBand, DateTime nowUtc, BuildBandRole role)
         {
             BuildBandOverlay matched = null;
             foreach (var zone in _buildBands)
             {
-                if (zone.Role != BuildBandRole.Contested)
+                if (zone.Role != role)
                     continue;
                 if ((nowUtc - zone.LastUpdateUtc).TotalSeconds > OwnershipContestedSec)
                     continue;
@@ -688,8 +696,8 @@ namespace LevelLedger
                 matched = new BuildBandOverlay
                 {
                     Id = _nextBuildBandId++,
-                    Role = BuildBandRole.Contested,
-                    State = BuildBandState.Contested,
+                    Role = role,
+                    State = role == BuildBandRole.NoOwner ? BuildBandState.NoOwner : BuildBandState.Contested,
                     Side = failedBand.Side,
                     MinTick = failedBand.MinTick,
                     MaxTick = failedBand.MaxTick,
@@ -1368,10 +1376,20 @@ namespace LevelLedger
         private IEnumerable<BuildBandOverlay> SelectBuildBandsForDisplay(DateTime nowUtc, long currentTick)
         {
             int maxRails = Math.Max(1, ChartBuildBandMaxRails);
-            var zones = _buildBands
-                .Where(IsVisibleContestedZone)
+            var noOwnerZones = _buildBands
+                .Where(IsVisibleNoOwnerZone)
                 .OrderByDescending(z => z.LastUpdateUtc)
-                .Take(3);
+                .Take(4)
+                .ToList();
+
+            var contestedZones = _buildBands
+                .Where(IsVisibleContestedZone)
+                .Where(z => !noOwnerZones.Any(noOwner => CoversFailureEnvelope(noOwner, z)))
+                .OrderByDescending(z => z.LastUpdateUtc)
+                .Take(Math.Max(0, 4 - noOwnerZones.Count))
+                .ToList();
+
+            var zones = noOwnerZones.Concat(contestedZones);
 
             var activeRails = _buildBands
                 .Where(b => b.Role == BuildBandRole.Rail && b.State != BuildBandState.Failed)
@@ -1381,6 +1399,7 @@ namespace LevelLedger
             var failedRails = _buildBands
                 .Where(b => b.Role == BuildBandRole.Rail
                     && b.State == BuildBandState.Failed
+                    && !noOwnerZones.Any(zone => CoversFailureEnvelope(zone, b))
                     && b.FailedUtc.HasValue
                     && ((nowUtc - b.FailedUtc.Value).TotalMinutes <= 20.0 || b.WasThesis))
                 .OrderByDescending(b => BuildBandRelevance(b, nowUtc, currentTick))
@@ -1389,15 +1408,23 @@ namespace LevelLedger
             return zones.Concat(activeRails).Concat(failedRails)
                 .GroupBy(b => b.Id)
                 .Select(g => g.First())
-                .OrderBy(b => b.Role == BuildBandRole.Contested ? 0 : 1)
+                .OrderBy(b => b.Role == BuildBandRole.NoOwner ? 0 : b.Role == BuildBandRole.Contested ? 1 : 2)
                 .ThenBy(b => b.MinTick);
         }
+
+        private static bool IsVisibleNoOwnerZone(BuildBandOverlay zone)
+            => zone.Role == BuildBandRole.NoOwner
+                && zone.EventCount >= OwnershipNoOwnerMinFails;
 
         private static bool IsVisibleContestedZone(BuildBandOverlay zone)
             => zone.Role == BuildBandRole.Contested
                 && zone.DemandFailCount > 0
                 && zone.SupplyFailCount > 0
                 && zone.EventCount >= OwnershipContestedMinFails;
+
+        private static bool CoversFailureEnvelope(BuildBandOverlay zone, BuildBandOverlay band)
+            => band.MinTick >= zone.MinTick - OwnershipTestBufferTicks
+                && band.MaxTick <= zone.MaxTick + OwnershipTestBufferTicks;
 
         private static double BuildBandRelevance(BuildBandOverlay band, DateTime nowUtc, long currentTick)
         {
@@ -1849,6 +1876,7 @@ namespace LevelLedger
     {
         Rail,
         Contested,
+        NoOwner,
     }
 
     internal enum BuildBandSource
@@ -1863,6 +1891,7 @@ namespace LevelLedger
         Tested,
         Failed,
         Contested,
+        NoOwner,
     }
 
     internal enum BuildBandCandidateState

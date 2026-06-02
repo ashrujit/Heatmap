@@ -38,6 +38,7 @@ namespace LevelLedger
         private static readonly Color BuyImpulse = Color.FromArgb(115, 190, 235);
         private static readonly Color SellImpulse = Color.FromArgb(235, 135, 95);
         private static readonly Color Neutral = Color.FromArgb(190, 185, 175);
+        private static readonly Color NoOwnerZone = Color.FromArgb(178, 184, 190);
         private static readonly Color Chaos = Color.FromArgb(245, 190, 70);
         private static readonly Color BidChaos = Color.FromArgb(95, 165, 235);
         private static readonly Color AskChaos = Color.FromArgb(238, 132, 72);
@@ -161,14 +162,16 @@ namespace LevelLedger
                 yBottom = Math.Min(rect.Bottom, yBottom);
                 if (yBottom <= yTop) yBottom = yTop + 1;
 
-                if (band.Role == BuildBandRole.Contested)
+                if (band.Role == BuildBandRole.Contested || band.Role == BuildBandRole.NoOwner)
                 {
-                    int contestedFillAlpha = Clamp(BuildBandContestedAlpha, 1, 255);
-                    int contestedEdgeAlpha = Clamp(contestedFillAlpha + 70, 1, 255);
-                    using var contestedFill = new SolidBrush(Color.FromArgb(contestedFillAlpha, Chaos));
-                    using var contestedEdge = new Pen(Color.FromArgb(contestedEdgeAlpha, Chaos), 1.2f)
+                    bool noOwner = band.Role == BuildBandRole.NoOwner;
+                    Color zoneColor = noOwner ? NoOwnerZone : Chaos;
+                    int zoneFillAlpha = Clamp(noOwner ? Math.Max(6, BuildBandContestedAlpha - 8) : BuildBandContestedAlpha, 1, 255);
+                    int zoneEdgeAlpha = Clamp(zoneFillAlpha + (noOwner ? 42 : 70), 1, 255);
+                    using var contestedFill = new SolidBrush(Color.FromArgb(zoneFillAlpha, zoneColor));
+                    using var contestedEdge = new Pen(Color.FromArgb(zoneEdgeAlpha, zoneColor), noOwner ? 1.0f : 1.2f)
                     {
-                        DashStyle = DashStyle.Dash,
+                        DashStyle = noOwner ? DashStyle.Dot : DashStyle.Dash,
                     };
                     g.FillRectangle(contestedFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
                     g.DrawLine(contestedEdge, xLeft, yTop, xRight, yTop);
@@ -196,7 +199,7 @@ namespace LevelLedger
                 g.FillRectangle(railFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
                 g.DrawLine(edge, xLeft, yTop, xRight, yTop);
                 g.DrawLine(edge, xLeft, yBottom, xRight, yBottom);
-                DrawRefillBandBadge(g, rect, band, yTop, yBottom, sideColor, refillFont);
+                DrawBandBadges(g, rect, band, yTop, yBottom, sideColor, refillFont);
                 if (thesis)
                 {
                     int capW = 5;
@@ -414,7 +417,7 @@ namespace LevelLedger
         private static Color RefillColor(RefillState state, Color sideColor)
             => state == RefillState.Conflict ? Chaos : sideColor;
 
-        private static void DrawRefillBandBadge(
+        private static void DrawBandBadges(
             Graphics g,
             Rectangle rect,
             BuildBandOverlay band,
@@ -423,7 +426,7 @@ namespace LevelLedger
             Color sideColor,
             Font font)
         {
-            string text = RefillBadge(band.Refill).TrimStart();
+            string text = BandBadgeText(band);
             if (string.IsNullOrEmpty(text))
                 return;
 
@@ -441,6 +444,14 @@ namespace LevelLedger
             using var fg = new SolidBrush(Color.FromArgb(230, color));
             g.FillRectangle(bg, x, y, w, h);
             g.DrawString(text, font, fg, x + padX, y + padY - 1);
+        }
+
+        private static string BandBadgeText(BuildBandOverlay band)
+        {
+            string refill = RefillBadge(band.Refill).TrimStart();
+            if (band.Source != BuildBandSource.Consumed)
+                return refill;
+            return string.IsNullOrEmpty(refill) ? "C" : "C " + refill;
         }
 
         private static Color RowColor(LedgerRow row)

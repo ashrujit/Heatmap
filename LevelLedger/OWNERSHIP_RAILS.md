@@ -36,9 +36,15 @@ consumption. Consumption without follow-on business remains provisional.
 - `failed`: price accepted through the wrong side of the rail.
 - `contested`: both demand and supply rails fail repeatedly inside the same
   broad envelope.
+- `no-owner`: multiple nearby rails failed in the same area, so the area no
+  longer deserves directional interpretation. These are not supply or demand.
+  They are churn / stop-run interaction zones where price moving through
+  quickly argues against latching onto continuation.
 
 Failed rails should stay visible briefly because their failure often matters
-more than their formation.
+more than their formation. Failed rails that join a nearby failure stack are the
+exception: they collapse into neutral no-owner context so they stop competing as
+false precision.
 
 ## Thesis Rail
 
@@ -123,6 +129,11 @@ This is exactly why the overlay must show sequence, not rules:
 - Thesis rails: stronger edge/right-side cap.
 - Failed rails: faded and dotted.
 - Contested envelopes: amber, broad, and visually behind rails.
+- No-owner envelopes from adjacent failed rails: light grey, low-priority, and
+  visually behind rails.
+- Consumed rails get a small `C` badge before any refill badge. `C R+` means
+  opposite-side evidence was consumed and same-side depth refilled behind the
+  conversion. The rail color still carries the resulting side.
 
 No text belongs inside the panel for this layer. At most, tiny right-edge labels
 can be considered later if the bands alone are not readable enough.
