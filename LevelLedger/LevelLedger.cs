@@ -157,6 +157,20 @@ namespace LevelLedger
             minimum: 0, maximum: 480, increment: 5, decimalPlaces: 0)]
         public int BuildBandRetentionMinutes = 0;
 
+        [InputParameter("Failure Zones: Enabled", sortIndex: 965)]
+        public bool FailureZonesEnabled = true;
+
+        [InputParameter("REV-FAIL: Enabled", sortIndex: 967)]
+        public bool ReversalFailsEnabled = true;
+
+        [InputParameter("REV-FAIL: Tail Range (ticks)", sortIndex: 968,
+            minimum: 20, maximum: 400, increment: 10, decimalPlaces: 0)]
+        public int ReversalFailTailTicks = 96;
+
+        [InputParameter("REV-FAIL: Repair Move (ticks)", sortIndex: 969,
+            minimum: 4, maximum: 120, increment: 1, decimalPlaces: 0)]
+        public int ReversalFailRepairTicks = 24;
+
         [InputParameter("VOD Stacks: Enabled", sortIndex: 970)]
         public bool VodStacksEnabled = true;
 
@@ -444,6 +458,10 @@ namespace LevelLedger
             _engine.ChartBuildBandFailureSec = BuildBandFailureSec;
             _engine.ChartBuildBandMaxRails = BuildBandMaxRails;
             _engine.ChartBuildBandRetentionMinutes = BuildBandRetentionMinutes;
+            _engine.ChartFailureZonesEnabled = FailureZonesEnabled;
+            _engine.ChartReversalFailsEnabled = ReversalFailsEnabled;
+            _engine.ChartReversalFailExtremeTicks = ReversalFailTailTicks;
+            _engine.ChartReversalFailRepairTicks = ReversalFailRepairTicks;
             _engine.ChartVodStackVodZ = VodStackVodZ;
             _engine.ChartVodStackEdgeZ = VodStackEdgeZ;
             _engine.ChartVodStackConfirmMoveTicks = VodStackConfirmMoveTicks;

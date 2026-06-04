@@ -44,6 +44,8 @@ namespace LevelLedger
         private static readonly Color AskChaos = Color.FromArgb(238, 132, 72);
         private static readonly Color StackDemand = Color.FromArgb(75, 185, 225);
         private static readonly Color StackSupply = Color.FromArgb(238, 132, 72);
+        private static readonly Color FailureZoneColor = Color.FromArgb(174, 118, 255);
+        private static readonly Color ReversalFailColor = Color.FromArgb(232, 105, 210);
 
         public LevelLedgerPainter(double tickSize)
         {
@@ -176,6 +178,27 @@ namespace LevelLedger
                     g.FillRectangle(contestedFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
                     g.DrawLine(contestedEdge, xLeft, yTop, xRight, yTop);
                     g.DrawLine(contestedEdge, xLeft, yBottom, xRight, yBottom);
+                    continue;
+                }
+
+                if (band.Role == BuildBandRole.FailureZone || band.Role == BuildBandRole.ReversalFail)
+                {
+                    bool revFail = band.Role == BuildBandRole.ReversalFail;
+                    bool held = band.State == BuildBandState.Held;
+                    Color failureColor = revFail ? ReversalFailColor : FailureZoneColor;
+                    int failureFillAlpha = revFail ? 8 : held ? 34 : 14;
+                    int failureEdgeAlpha = revFail ? 125 : held ? 175 : 88;
+                    float width = revFail ? 1.1f : held ? 2.0f : 1.2f;
+
+                    using var failureFill = new SolidBrush(Color.FromArgb(Clamp(failureFillAlpha, 1, 255), failureColor));
+                    using var failureEdge = new Pen(Color.FromArgb(Clamp(failureEdgeAlpha, 1, 255), failureColor), width)
+                    {
+                        DashStyle = revFail ? DashStyle.Dot : held ? DashStyle.Solid : DashStyle.Dash,
+                    };
+                    g.FillRectangle(failureFill, xLeft, yTop, xRight - xLeft, yBottom - yTop);
+                    g.DrawLine(failureEdge, xLeft, yTop, xRight, yTop);
+                    g.DrawLine(failureEdge, xLeft, yBottom, xRight, yBottom);
+                    DrawBandBadges(g, rect, band, yTop, yBottom, failureColor, refillFont);
                     continue;
                 }
 
@@ -448,6 +471,11 @@ namespace LevelLedger
 
         private static string BandBadgeText(BuildBandOverlay band)
         {
+            if (band.Role == BuildBandRole.FailureZone)
+                return band.Side == BuildBandSide.Demand ? "LF" : "HF";
+            if (band.Role == BuildBandRole.ReversalFail)
+                return "RF";
+
             string refill = RefillBadge(band.Refill).TrimStart();
             if (band.Source != BuildBandSource.Consumed)
                 return refill;

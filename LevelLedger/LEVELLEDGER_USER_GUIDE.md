@@ -72,6 +72,39 @@ If a fresh demand or supply band appears inside a grey area, that is useful
 information. It tells you where the auction is trying to resolve, but it still
 needs confirmation from price, profile, VWAP, prior levels, and the ladder.
 
+### Failure Zone
+
+An `LF` or `HF` badge marks an auction failure zone outside grey/no-owner
+business.
+
+Read it as:
+
+```text
+Continuation may have failed outside the messy area. If this zone holds, it can
+become exit or thesis-quality structure.
+```
+
+The first paint is intentionally muted. It becomes stronger only after price
+leaves and holds away from the zone. If price invalidates through it, the band
+is removed. Failure zones use a separate purple visual language because they
+are auction-state objects, not normal demand/supply ownership bands.
+
+### Reversal Failure
+
+An `RF` badge marks consumed continuation-side evidence at an extreme. It is
+quieter than a failure zone and should be read only as an extreme repair object.
+
+Read it as:
+
+```text
+Continuation-side supply or demand appeared at an extreme and was consumed into
+the opposite side.
+```
+
+Inside normal accepted business, the same mechanical conversion is just a
+consumed band, not a reversal failure. Reversal failures use a quiet
+magenta-violet visual language to keep them distinct from ordinary ownership.
+
 ### Consumed Or Failed Band
 
 A prior band can change meaning. Supply can fail and become demand. Demand can
@@ -281,6 +314,139 @@ The panel still mattered. It was useful for checking strength, timing, and
 ferocity when a band or transition needed verification. But it was not the main
 decision surface.
 
+## Example: NQM6, 2026-06-03
+
+This example uses the June 3 NQM6 session. Prices below use the trader's
+shortened last-three-digits shorthand.
+
+The day was different from June 2. June 2 was a cleaner post-IB extension after
+the auction failed lower, rotated through the open/VWAP area, and rejected
+sustained trade back below. June 3 was an open-drive liquidation day with a
+large IB, no early IB extension, and repeated failures to continue at extremes.
+
+The important lesson was not entry. The early short near `724` after the open
+drive had already shown intent was valid, and the later leverage around `713`
+and `596` was also structurally sound. The harder problem was exit recognition:
+on a large drive day, if the auction reaches a fragile lower area and the first
+opposite-side evidence does not get consumed immediately, that fragility is
+information.
+
+### IB Short: Exit Into First Real Fragility
+
+The early short worked because supply appeared after the drive and price kept
+accepting lower. The trade became vulnerable when the lower area stopped
+behaving like clean continuation.
+
+The relevant failure region was roughly:
+
+```text
+545-568
+```
+
+The point was not that this was a magic target. The point was that outside the
+messy grey/no-owner area, lower continuation stopped proving itself. When
+demand/supply confusion appears at a fresh extreme and same-side continuation
+does not immediately consume it, an IB drive trade should become easier to
+flatten.
+
+For an IB trade, the useful exit instruction is:
+
+```text
+If the first meaningful failure or opposite-side demand appears outside grey,
+take it seriously. The IB drive has already paid; do not require a perfect
+reversal signal.
+```
+
+This is the use case for `LF` / `HF` failure-zone visibility. The badge is not
+a trade signal. It is a warning that continuation has reached a burden-of-proof
+point outside the contested area.
+
+### Post-IB Short: Add Only After Supply Survives A Retest
+
+The later short sequence was cleaner after the auction had time to advertise
+ownership transfer.
+
+Around `718`, price tested into a prior demand-consumed-supply area from the
+open-drive sequence. That was not a clean, held `HF`. The research harness saw
+an upper failure candidate around `713.75-723`, but that object was later
+invalidated, which is correct: the first poke was still part of a broad
+contested upper area.
+
+The better add-on clue came afterward:
+
+```text
+grey zone forming
+demand consumed as price travels lower
+new supply appears overhead
+overhead supply survives the next test
+```
+
+That pattern changed the risk quality of the add. The add was no longer just
+"price is lower, sell more." It was:
+
+```text
+The auction is repeatedly proving that attempts to rebuild demand are being
+converted into overhead supply.
+```
+
+Research replay supported that read. After the upper poke, supply kept
+appearing lower and demand attempts kept failing:
+
+```text
+10:34  711-713 demand converted into supply, repaired lower
+10:49  687 supply appeared after demand was consumed
+10:55  681-682 supply appeared and repaired lower
+11:14  696-697 supply held and was still active into 11:30
+11:17  687-692 supply held and was still active into 11:30
+```
+
+Temporary demand did appear during the sequence, but it did not survive enough
+to reverse the auction. The useful read was that the surviving structure into
+the break below `680` was supply, not demand.
+
+### Why Retested Adds Matter
+
+This is the main execution improvement from the bands.
+
+The NQ ladder can show pause, sweep, hesitation, refill, absorption, and panic,
+but it is often too fast to answer who actually owns the price. The bands slow
+that down into a structural object:
+
+```text
+where inventory changed hands
+whether the first owner survived a retest
+whether demand became supply or supply became demand
+where the next add is wrong
+```
+
+Adds taken only after a supply band retests and survives have independent risk.
+They are not just blended average-price risk. Each add has its own reason to
+exist and its own nearby failure condition.
+
+That is the practical solution LevelLedger is meant to provide. It is not an
+entry machine. It is an execution-confidence layer that helps prevent one good
+trade idea from becoming one oversized blended position.
+
+### Review Discipline
+
+The goal is not to avoid failed reads. The goal is to make each failure useful.
+
+The daily review process should keep bringing specific execution examples into
+the guide:
+
+```text
+What was the day type?
+Where could the auction reasonably fail?
+Which band sequence made leverage safer?
+Which band sequence said to stop pressing or exit?
+Did a failure zone confirm, invalidate, or merely warn?
+```
+
+After enough examples, the user should have seen normal days, open auctions,
+open drives, open-test-drives, clean IB extensions, failed IB extensions, and
+lunch/PM repair sequences at least once. That is how the visual language becomes
+execution memory rather than another indicator to interpret under stress.
+
 ## Common Mistakes
 
 Do not treat every colored band as an instruction.
@@ -308,4 +474,3 @@ Use the panel to audit strength and cause.
 
 Use profile, VWAP, prior levels, and the ladder to decide whether the visual
 evidence matters.
-

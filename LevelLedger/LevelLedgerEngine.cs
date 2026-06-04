@@ -40,6 +40,18 @@ namespace LevelLedger
         private const int OwnershipNoOwnerMinFails = 2;
         private const int OwnershipThesisBackingTicks = 260;
         private const int OwnershipThesisMinStack = 2;
+        private const int FailureZoneGreyTtlSec = 25 * 60;
+        private const int FailureZoneMergeSec = 12 * 60;
+        private const int FailureZoneMergeTicks = 96;
+        private const int FailureZoneSplitExtensionTicks = 96;
+        private const int FailureZoneConfirmTicks = 24;
+        private const int FailureZoneConfirmSec = 10;
+        private const int FailureZoneInvalidateTicks = 8;
+        private const int FailureZoneCandidateTtlSec = 30 * 60;
+        private const int ReversalFailInvalidateTicks = 8;
+        private const int ReversalFailMergeSec = 12 * 60;
+        private const int ReversalFailMergeTicks = 48;
+        private const int ReversalFailTtlSec = 90 * 60;
         private const int VodStackClusterMergeSec = 75;
         private const int VodStackClusterMergeTicks = 36;
         private const int VodStackEdgeMergeTicks = 12;
@@ -90,6 +102,9 @@ namespace LevelLedger
         private long? _lastNodeTick;
         private DateTime _lastNodeRowUtc = DateTime.MinValue;
         private DateTime _lastDominanceEvalUtc = DateTime.MinValue;
+        private DateTime _rangeSessionStartUtc = DateTime.MinValue;
+        private long? _sessionLowTick;
+        private long? _sessionHighTick;
 
         private readonly LinkedList<TimedDouble> _innerDeltas = new();
         private readonly LinkedList<TimedDouble> _vodValues = new();
@@ -149,6 +164,10 @@ namespace LevelLedger
         public int ChartBuildBandFailureSec { get; set; } = 20;
         public int ChartBuildBandMaxRails { get; set; } = 12;
         public int ChartBuildBandRetentionMinutes { get; set; } = 0;
+        public bool ChartFailureZonesEnabled { get; set; } = true;
+        public bool ChartReversalFailsEnabled { get; set; } = true;
+        public int ChartReversalFailExtremeTicks { get; set; } = 96;
+        public int ChartReversalFailRepairTicks { get; set; } = 24;
         public double ChartVodStackVodZ { get; set; } = 4.0;
         public double ChartVodStackEdgeZ { get; set; } = 2.5;
         public int ChartVodStackConfirmMoveTicks { get; set; } = 24;
@@ -207,6 +226,7 @@ namespace LevelLedger
 
             var sample = ComputeSample(nowUtc, dom, tickSize);
             LastKnownTick = sample.MidTick;
+            UpdateSessionRange(nowUtc, sample.MidTick);
             _bookSamples.AddLast(sample);
             EvictOlderThan(_bookSamples, nowUtc, Math.Max(_bookLookbackSec * 2, RefillSampleRetentionSec));
 
@@ -229,6 +249,7 @@ namespace LevelLedger
 
             UpdateBuildBandCandidates(nowUtc, sample.MidTick);
             UpdateBuildBandStates(nowUtc, sample.MidTick);
+            UpdateFailureObjectStates(nowUtc, sample.MidTick);
             UpdateVod(nowUtc, sample, zBi, zAi);
             UpdateVodStackEdges(nowUtc, sample.MidTick, zBi, zAi, zBc, zAc);
             ApplyVodStackPriceThrough(nowUtc, sample.MidTick);
@@ -562,6 +583,7 @@ namespace LevelLedger
             };
             _buildBands.AddLast(band);
             MarkBandRefillPending(band, nowUtc);
+            RecordFailureObjectsFromRail(band, nowUtc, currentMidTick);
             candidate.State = BuildBandCandidateState.Confirmed;
         }
 
@@ -661,6 +683,328 @@ namespace LevelLedger
             => band.Side == BuildBandSide.Demand
                 ? currentMidTick >= band.MaxTick + OwnershipHoldConfirmTicks
                 : currentMidTick <= band.MinTick - OwnershipHoldConfirmTicks;
+
+        private void UpdateSessionRange(DateTime nowUtc, long currentMidTick)
+        {
+            DateTime startUtc = CurrentRangeSessionStartUtc(nowUtc);
+            if (startUtc != _rangeSessionStartUtc)
+            {
+                _rangeSessionStartUtc = startUtc;
+                _sessionLowTick = currentMidTick;
+                _sessionHighTick = currentMidTick;
+                return;
+            }
+
+            _sessionLowTick = _sessionLowTick.HasValue
+                ? Math.Min(_sessionLowTick.Value, currentMidTick)
+                : currentMidTick;
+            _sessionHighTick = _sessionHighTick.HasValue
+                ? Math.Max(_sessionHighTick.Value, currentMidTick)
+                : currentMidTick;
+        }
+
+        private static DateTime CurrentRangeSessionStartUtc(DateTime nowUtc)
+        {
+            try
+            {
+                var ny = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+                var utc = DateTime.SpecifyKind(nowUtc, DateTimeKind.Utc);
+                DateTime nowNy = TimeZoneInfo.ConvertTimeFromUtc(utc, ny);
+                DateTime startNy = nowNy.Date.AddHours(9).AddMinutes(30);
+                if (nowNy < startNy)
+                    startNy = nowNy.Date;
+                return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(startNy, DateTimeKind.Unspecified), ny);
+            }
+            catch
+            {
+                return nowUtc.Date;
+            }
+        }
+
+        private void RecordFailureObjectsFromRail(BuildBandOverlay rail, DateTime nowUtc, long currentMidTick)
+        {
+            if (rail == null || rail.Role != BuildBandRole.Rail)
+                return;
+
+            if (ChartReversalFailsEnabled && rail.Source == BuildBandSource.Consumed)
+                TryRecordReversalFail(rail, nowUtc, currentMidTick);
+
+            if (ChartFailureZonesEnabled)
+                TryRecordAuctionFailureZone(rail, nowUtc, currentMidTick);
+        }
+
+        private void TryRecordAuctionFailureZone(BuildBandOverlay rail, DateTime nowUtc, long currentMidTick)
+        {
+            var (minTick, maxTick) = FailureZoneBounds(rail, currentMidTick);
+            if (!TryFindOutsideGrey(rail.Side, minTick, maxTick, nowUtc, out var grey))
+                return;
+
+            var existing = FindMergeableFailureObject(
+                BuildBandRole.FailureZone,
+                rail.Side,
+                minTick,
+                maxTick,
+                nowUtc,
+                FailureZoneMergeSec,
+                FailureZoneMergeTicks,
+                FailureZoneSplitExtensionTicks);
+
+            if (existing != null)
+            {
+                MergeFailureObject(existing, rail, minTick, maxTick, nowUtc, currentMidTick);
+                return;
+            }
+
+            var zone = new BuildBandOverlay
+            {
+                Id = _nextBuildBandId++,
+                Role = BuildBandRole.FailureZone,
+                Side = rail.Side,
+                SourceSide = rail.SourceSide,
+                Source = rail.Source,
+                State = BuildBandState.Candidate,
+                MinTick = minTick,
+                MaxTick = maxTick,
+                StartUtc = nowUtc,
+                FormedUtc = nowUtc,
+                OwnedUtc = nowUtc,
+                LastUpdateUtc = nowUtc,
+                LastStateUtc = nowUtc,
+                EventCount = rail.EventCount,
+                Score = rail.Score,
+                MaxAbsZ = rail.MaxAbsZ,
+                BreachPriceTick = currentMidTick,
+                GreyMinTick = grey.MinTick,
+                GreyMaxTick = grey.MaxTick,
+            };
+            _buildBands.AddLast(zone);
+        }
+
+        private void TryRecordReversalFail(BuildBandOverlay rail, DateTime nowUtc, long currentMidTick)
+        {
+            int extremeTicks = Math.Max(1, ChartReversalFailExtremeTicks);
+            int repairTicks = Math.Max(1, ChartReversalFailRepairTicks);
+            if (!IsNearSessionExtreme(rail.Side, rail.MinTick, rail.MaxTick, extremeTicks))
+                return;
+            if (!ReversalRepairConfirmed(rail, currentMidTick, repairTicks))
+                return;
+            if (!TryFindNearestGrey(rail.Side, rail.MinTick, rail.MaxTick, nowUtc, out var grey))
+                return;
+
+            var existing = FindMergeableFailureObject(
+                BuildBandRole.ReversalFail,
+                rail.Side,
+                rail.MinTick,
+                rail.MaxTick,
+                nowUtc,
+                ReversalFailMergeSec,
+                ReversalFailMergeTicks,
+                splitExtensionTicks: ReversalFailMergeTicks);
+
+            if (existing != null)
+            {
+                MergeFailureObject(existing, rail, rail.MinTick, rail.MaxTick, nowUtc, currentMidTick);
+                existing.State = BuildBandState.Held;
+                return;
+            }
+
+            var rev = new BuildBandOverlay
+            {
+                Id = _nextBuildBandId++,
+                Role = BuildBandRole.ReversalFail,
+                Side = rail.Side,
+                SourceSide = rail.SourceSide,
+                Source = BuildBandSource.Consumed,
+                State = BuildBandState.Held,
+                MinTick = rail.MinTick,
+                MaxTick = rail.MaxTick,
+                StartUtc = nowUtc,
+                FormedUtc = nowUtc,
+                OwnedUtc = nowUtc,
+                LastUpdateUtc = nowUtc,
+                LastStateUtc = nowUtc,
+                HeldUtc = nowUtc,
+                EventCount = rail.EventCount,
+                Score = rail.Score,
+                MaxAbsZ = rail.MaxAbsZ,
+                BreachPriceTick = currentMidTick,
+                GreyMinTick = grey.MinTick,
+                GreyMaxTick = grey.MaxTick,
+            };
+            _buildBands.AddLast(rev);
+        }
+
+        private (long minTick, long maxTick) FailureZoneBounds(BuildBandOverlay rail, long currentMidTick)
+        {
+            if (rail.Source != BuildBandSource.Consumed)
+                return (rail.MinTick, rail.MaxTick);
+            return rail.Side == BuildBandSide.Demand
+                ? (rail.MinTick, Math.Max(rail.MaxTick, currentMidTick))
+                : (Math.Min(rail.MinTick, currentMidTick), rail.MaxTick);
+        }
+
+        private bool ReversalRepairConfirmed(BuildBandOverlay rail, long currentMidTick, int repairTicks)
+            => rail.Side == BuildBandSide.Demand
+                ? currentMidTick >= rail.MaxTick + repairTicks
+                : currentMidTick <= rail.MinTick - repairTicks;
+
+        private bool IsNearSessionExtreme(BuildBandSide side, long minTick, long maxTick, int bufferTicks)
+        {
+            if (!_sessionLowTick.HasValue || !_sessionHighTick.HasValue)
+                return false;
+            return side == BuildBandSide.Demand
+                ? minTick <= _sessionLowTick.Value + bufferTicks
+                : maxTick >= _sessionHighTick.Value - bufferTicks;
+        }
+
+        private bool TryFindOutsideGrey(
+            BuildBandSide side,
+            long minTick,
+            long maxTick,
+            DateTime nowUtc,
+            out BuildBandOverlay grey)
+        {
+            grey = null;
+            var greys = ActiveGreyZones(nowUtc);
+            if (side == BuildBandSide.Demand)
+            {
+                grey = greys
+                    .Where(g => maxTick < g.MinTick)
+                    .OrderBy(g => g.MinTick - maxTick)
+                    .FirstOrDefault();
+            }
+            else
+            {
+                grey = greys
+                    .Where(g => minTick > g.MaxTick)
+                    .OrderBy(g => minTick - g.MaxTick)
+                    .FirstOrDefault();
+            }
+            return grey != null;
+        }
+
+        private bool TryFindNearestGrey(
+            BuildBandSide side,
+            long minTick,
+            long maxTick,
+            DateTime nowUtc,
+            out BuildBandOverlay grey)
+        {
+            grey = ActiveGreyZones(nowUtc)
+                .OrderBy(g =>
+                {
+                    if (maxTick < g.MinTick) return g.MinTick - maxTick;
+                    if (minTick > g.MaxTick) return minTick - g.MaxTick;
+                    return 0;
+                })
+                .ThenByDescending(g => g.LastUpdateUtc)
+                .FirstOrDefault();
+            return grey != null;
+        }
+
+        private List<BuildBandOverlay> ActiveGreyZones(DateTime nowUtc)
+            => _buildBands
+                .Where(b => (IsVisibleNoOwnerZone(b) || IsVisibleContestedZone(b))
+                    && (nowUtc - b.LastUpdateUtc).TotalSeconds <= FailureZoneGreyTtlSec)
+                .ToList();
+
+        private BuildBandOverlay FindMergeableFailureObject(
+            BuildBandRole role,
+            BuildBandSide side,
+            long minTick,
+            long maxTick,
+            DateTime nowUtc,
+            int mergeSec,
+            int mergeTicks,
+            int splitExtensionTicks)
+        {
+            foreach (var band in _buildBands.Reverse())
+            {
+                if (band.Role != role || band.Side != side)
+                    continue;
+                if ((nowUtc - band.LastUpdateUtc).TotalSeconds > mergeSec)
+                    continue;
+                if (side == BuildBandSide.Demand && minTick < band.MinTick - splitExtensionTicks)
+                    continue;
+                if (side == BuildBandSide.Supply && maxTick > band.MaxTick + splitExtensionTicks)
+                    continue;
+                if (maxTick < band.MinTick - mergeTicks || minTick > band.MaxTick + mergeTicks)
+                    continue;
+                return band;
+            }
+            return null;
+        }
+
+        private static void MergeFailureObject(
+            BuildBandOverlay target,
+            BuildBandOverlay rail,
+            long minTick,
+            long maxTick,
+            DateTime nowUtc,
+            long currentMidTick)
+        {
+            target.MinTick = Math.Min(target.MinTick, minTick);
+            target.MaxTick = Math.Max(target.MaxTick, maxTick);
+            target.LastUpdateUtc = nowUtc;
+            target.LastStateUtc = nowUtc;
+            target.EventCount += rail.EventCount;
+            target.Score += rail.Score;
+            target.MaxAbsZ = Math.Max(target.MaxAbsZ, rail.MaxAbsZ);
+            target.BreachPriceTick = currentMidTick;
+            if (rail.Source == BuildBandSource.Consumed)
+                target.Source = BuildBandSource.Consumed;
+        }
+
+        private void UpdateFailureObjectStates(DateTime nowUtc, long currentMidTick)
+        {
+            var node = _buildBands.First;
+            while (node != null)
+            {
+                var next = node.Next;
+                var band = node.Value;
+                if (band.Role == BuildBandRole.FailureZone)
+                {
+                    if (FailureObjectInvalidated(band, currentMidTick, FailureZoneInvalidateTicks))
+                    {
+                        _buildBands.Remove(node);
+                    }
+                    else if (band.State == BuildBandState.Candidate)
+                    {
+                        double ageSec = (nowUtc - band.OwnedUtc).TotalSeconds;
+                        if (ageSec > FailureZoneCandidateTtlSec)
+                        {
+                            _buildBands.Remove(node);
+                        }
+                        else if (ageSec >= FailureZoneConfirmSec
+                            && FailureObjectMovedAway(band, currentMidTick, FailureZoneConfirmTicks))
+                        {
+                            band.State = BuildBandState.Held;
+                            band.HeldUtc = nowUtc;
+                            band.LastStateUtc = nowUtc;
+                        }
+                    }
+                }
+                else if (band.Role == BuildBandRole.ReversalFail)
+                {
+                    if (FailureObjectInvalidated(band, currentMidTick, ReversalFailInvalidateTicks)
+                        || (nowUtc - band.LastUpdateUtc).TotalSeconds > ReversalFailTtlSec)
+                    {
+                        _buildBands.Remove(node);
+                    }
+                }
+                node = next;
+            }
+        }
+
+        private static bool FailureObjectInvalidated(BuildBandOverlay band, long currentMidTick, int invalidateTicks)
+            => band.Side == BuildBandSide.Demand
+                ? currentMidTick <= band.MinTick - Math.Max(1, invalidateTicks)
+                : currentMidTick >= band.MaxTick + Math.Max(1, invalidateTicks);
+
+        private static bool FailureObjectMovedAway(BuildBandOverlay band, long currentMidTick, int awayTicks)
+            => band.Side == BuildBandSide.Demand
+                ? currentMidTick >= band.MaxTick + Math.Max(1, awayTicks)
+                : currentMidTick <= band.MinTick - Math.Max(1, awayTicks);
 
         private void RecordBuildBandFailure(BuildBandOverlay failedBand, DateTime nowUtc)
             => RecordFailureZone(failedBand, nowUtc, BuildBandRole.Contested);
@@ -1391,6 +1735,16 @@ namespace LevelLedger
 
             var zones = noOwnerZones.Concat(contestedZones);
 
+            var failureZones = _buildBands
+                .Where(b => b.Role == BuildBandRole.FailureZone)
+                .OrderByDescending(b => FailureObjectRelevance(b, nowUtc, currentTick))
+                .Take(4);
+
+            var reversalFails = _buildBands
+                .Where(b => b.Role == BuildBandRole.ReversalFail)
+                .OrderByDescending(b => FailureObjectRelevance(b, nowUtc, currentTick))
+                .Take(3);
+
             var activeRails = _buildBands
                 .Where(b => b.Role == BuildBandRole.Rail && b.State != BuildBandState.Failed)
                 .OrderByDescending(b => BuildBandRelevance(b, nowUtc, currentTick))
@@ -1405,10 +1759,14 @@ namespace LevelLedger
                 .OrderByDescending(b => BuildBandRelevance(b, nowUtc, currentTick))
                 .Take(6);
 
-            return zones.Concat(activeRails).Concat(failedRails)
+            return zones.Concat(failureZones).Concat(reversalFails).Concat(activeRails).Concat(failedRails)
                 .GroupBy(b => b.Id)
                 .Select(g => g.First())
-                .OrderBy(b => b.Role == BuildBandRole.NoOwner ? 0 : b.Role == BuildBandRole.Contested ? 1 : 2)
+                .OrderBy(b => b.Role == BuildBandRole.NoOwner ? 0
+                    : b.Role == BuildBandRole.Contested ? 1
+                    : b.Role == BuildBandRole.FailureZone ? 2
+                    : b.Role == BuildBandRole.ReversalFail ? 3
+                    : 4)
                 .ThenBy(b => b.MinTick);
         }
 
@@ -1436,6 +1794,16 @@ namespace LevelLedger
             double failedPenalty = band.State == BuildBandState.Failed ? 20.0 : 0.0;
             double sourceBoost = band.Source == BuildBandSource.Consumed ? 5.0 : 0.0;
             return band.Score + stateBoost + thesisBoost + sourceBoost - failedPenalty - distance * 0.10 - ageMin * 0.05;
+        }
+
+        private static double FailureObjectRelevance(BuildBandOverlay band, DateTime nowUtc, long currentTick)
+        {
+            double center = (band.MinTick + band.MaxTick) / 2.0;
+            double distance = Math.Abs(currentTick - center);
+            double ageMin = Math.Max(0.0, (nowUtc - band.LastUpdateUtc).TotalMinutes);
+            double heldBoost = band.State == BuildBandState.Held ? 30.0 : 0.0;
+            double roleBoost = band.Role == BuildBandRole.ReversalFail ? 10.0 : 0.0;
+            return band.Score + heldBoost + roleBoost - distance * 0.08 - ageMin * 0.12;
         }
 
         private void MarkThesisRails(long currentTick)
@@ -1877,6 +2245,8 @@ namespace LevelLedger
         Rail,
         Contested,
         NoOwner,
+        FailureZone,
+        ReversalFail,
     }
 
     internal enum BuildBandSource
@@ -1887,7 +2257,9 @@ namespace LevelLedger
 
     internal enum BuildBandState
     {
+        Candidate,
         Owned,
+        Held,
         Tested,
         Failed,
         Contested,
@@ -1972,6 +2344,8 @@ namespace LevelLedger
         public DateTime? FailedUtc;
         public long? FailPriceTick;
         public DateTime? PendingFailureUtc;
+        public long? GreyMinTick;
+        public long? GreyMaxTick;
         public bool IsThesis;
         public bool WasThesis;
         public int DemandFailCount;

@@ -159,6 +159,37 @@ Its summary options bucket ownership/failure churn and list durable bands
 because print count alone is misleading on two-sided range days; the useful
 question is which rails survived, not how often a candidate appeared.
 
+`research/failure_zone_probe.py` layers one more review object on top of
+ownership rails: a failure zone outside a grey/no-owner envelope. This stays
+research-only because the zone is not a trade instruction. The purpose is to
+surface places where continuation at a drive/tail extreme was repaired by
+opposite ownership outside the contested envelope, so the trader can decide
+whether that matches the current playbook (IB exit, objective failure,
+non-IB target repair, etc.). The detector warms up on pre-window data for book
+statistics, but its rolling extreme gate resets at the validation window start
+by default; otherwise RTH open/IB failure zones get incorrectly compared to
+pre-open extremes.
+The same harness can also print `REV-FAIL` objects. Those are consumed-only
+reversal failures: continuation-side evidence at an extreme is consumed into
+the opposite side, often repairing back into a grey envelope. Keep this
+taxonomy separate from outside-grey failure zones. The 2026-06-02 `446-449`
+IB-low repair is the clean example of REV-FAIL; it was not an outside-grey
+failure zone because the repair moved back into the active grey/no-owner area.
+
+The live overlay now carries both objects through the ownership-rail pipeline:
+
+- `FAIL-ZONE` (`LF` / `HF` badge) starts as a muted purple candidate when an
+  ownership rail forms outside an active grey/no-owner envelope. It is not
+  tail-gated; failure can occur after a fresh extension anywhere outside the
+  contested envelope. If price leaves and holds away, it promotes visually; if
+  price invalidates through the failed extreme, the object is removed rather
+  than dimmed.
+- `REV-FAIL` (`RF` badge) is quieter and consumed-only. It requires
+  continuation-side evidence to be consumed at an RTH extreme with a repair
+  move away from the evidence. It paints as quiet magenta-violet and is for
+  extreme reversal failure, not ordinary supply/demand conversion inside
+  accepted business.
+
 Useful commands from repo root:
 
 ```powershell
