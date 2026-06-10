@@ -22,6 +22,9 @@ The useful question is not "what event just fired?" The useful question is:
 
 The chart bands are the primary read. The panel is an audit layer.
 
+For a shorter pre-market reminder page, open
+[`LEVELLEDGER_CHEATSHEET.html`](LEVELLEDGER_CHEATSHEET.html).
+
 ## Band Language
 
 Use the bands as a visual shorthand for auction state.
@@ -118,8 +121,48 @@ The old owner was challenged. The opposite side has either accepted through it
 or forced that area to change meaning.
 ```
 
+The rail color also carries this distinction. Fresh/lean rails use a separate
+blue/orange palette. Consumed rails keep the stronger green/red side colors and
+the `C` badge. The point is to make "new claim" versus "old owner lost here"
+visible without decoding small text under stress.
+
 This is especially useful for add-on decisions after a probe has already
 started working.
+
+### Repair, Reaffirmation, And Failure
+
+A fresh band is a claim, not proof. A new demand band above a low does not
+automatically confirm the low, and a new supply band below a high does not
+automatically confirm the high. The fresh band can still be consumed and used
+against the idea.
+
+The stronger read comes from the sequence around the band:
+
+```text
+old area is tested
+one side tries to repair the auction
+that repair is tested
+the repair either holds, fails, or is consumed
+```
+
+If demand forms under an old supply test and then fails, the seller case gains
+credibility. Buyers tried to create support for the test and could not defend
+it. You do not need a brand-new supply band afterward to know that sellers have
+evidence.
+
+If demand holds at a low and supply above it fails, the buyer case gains
+credibility. Sellers had a chance to defend higher prices and could not. That
+is stronger confirmation than simply seeing another green band appear higher,
+because a fresh higher demand band can still be converted into supply.
+
+Useful shorthand:
+
+```text
+new demand above       = buyers appeared, still unproven
+new demand above fails = lower demand is vulnerable
+supply above fails     = sellers lost a defense point
+last buyer repair fails under old supply = sellers can press
+```
 
 ### VOD / Chaos Marks
 
@@ -427,7 +470,146 @@ That is the practical solution LevelLedger is meant to provide. It is not an
 entry machine. It is an execution-confidence layer that helps prevent one good
 trade idea from becoming one oversized blended position.
 
-### Review Discipline
+## Example: NQM6, 2026-06-09
+
+This example uses the June 9 NQM6 session. Prices use the trader's shortened
+last-three-digits shorthand.
+
+The day was a fast pre-news positioning auction. After the open was reclaimed
+by sellers, the auction often traveled through thin prints without building
+normal value. Many local bands formed and failed quickly. The lesson was not to
+tune the detector faster. The lesson was to distinguish structure that offers
+location from flow that only describes momentum.
+
+### Fast Short: Last Buyer Repair Fails
+
+Around `490`, the short was not based on a fresh supply band alone. The useful
+object was the last buyer repair underneath an old supply test.
+
+Replay sequence:
+
+```text
+10:13:44  511.75-513.50 demand candidate
+10:14:00  511.75-513.50 consumed into supply as price moved to 505
+10:14:06  511.75-513.50 supply tested
+10:14:08  held
+10:15:34  tested again
+10:15:35  held
+
+10:25:05  489.25-490.50 supply candidate
+10:25:23  489.25-491 consumed into demand as price moved to 500.75
+10:25:47  511.75-513.50 supply tested
+10:25:50  511.75-513.50 supply failed
+10:26:10  489.25-491 demand tested
+10:26:11  held
+10:26:40  tested again
+10:26:43  held
+10:26:46  489.25-491 demand failed
+```
+
+The important read was not simply that price pushed above old supply. The
+important read was:
+
+```text
+buyers created a repair under the old supply test, then sellers broke that
+repair.
+```
+
+That failure was enough seller commitment. If the trade was short near `490`,
+the nearby failure condition was a reclaim and rebuild above the failed repair,
+not the appearance of another supply band. The target logic was the next
+downside objective, then look for actual auction failure or durable new demand
+underneath.
+
+The later `385` VOD chaos was only instability. Replay did not show a surviving
+demand repair after it. VOD at a target can justify attention or partial
+management, but it is not auction failure by itself.
+
+### Held Low: Demand Holds And Supply Above Fails
+
+Around `330`, the first local repair did not work. That is important because it
+keeps the read honest:
+
+```text
+12:47:54  346.25-347.75 supply consumed into demand
+12:48:03  tested
+12:48:06  held
+12:48:10  tested
+12:48:12  held
+12:48:14  failed
+```
+
+The later low was different:
+
+```text
+12:57:07  336.75-337.75 demand candidate
+12:57:16  336 demand dominance row
+12:57:43  336.75-337.75 demand owned
+12:58:01  tested
+12:58:03  held
+```
+
+The confirmation was not just another green band above the low. The stronger
+confirmation was that supply above the held low failed:
+
+```text
+12:58:37  401.75-403.50 supply tested
+12:58:38  failed
+13:00:00  491-493.50 supply tested
+13:00:01  failed
+```
+
+That sequence says sellers had chances to defend above the low and could not.
+It is different from a new higher demand band, which can still be consumed into
+supply and used to retest the low.
+
+Useful shorthand:
+
+```text
+probe the first low only if risk is tiny
+believe the low only after demand holds
+upgrade the read when overhead supply fails
+do not upgrade merely because fresh higher demand appears
+```
+
+### Old Supply That Does Not Hold
+
+The same day had a useful contrast after `14:15`. Price approached the old
+upper supply area around `980-020`, but the approach did not have the same
+structure as the `490` short.
+
+Replay showed fast VOD arrival and no nearby failed buyer repair underneath the
+old supply test:
+
+```text
+14:30:09-14:30:17  VOD chaos from 992 toward 023
+14:30:22           991.50-993 demand owned while price was already 013.50
+14:32:48           998.25-999 supply owned
+14:33:15           that supply failed
+14:34-14:37        999-013 became two-sided failure/grey
+```
+
+Later supply attempts did not hold either:
+
+```text
+14:43  967.50-969.50 supply, failed by 14:47
+14:51  964.50-967.25 supply, failed by 14:51
+14:59  075.50-078.50 supply, failed by 15:03
+```
+
+In a more normal auction, supply forming after an old supply test should at
+least push price into a meaningful test of the leg that created the move. Here
+it did not. Sellers who tried to defend the upper idea had to give up as their
+supply attempts failed.
+
+This is the mirror of the `490` short:
+
+```text
+490  buyer repair fails under old supply -> sellers can press
+020  seller repair fails around old supply -> shorts lose the claim
+```
+
+## Review Discipline
 
 The goal is not to avoid failed reads. The goal is to make each failure useful.
 
@@ -456,8 +638,14 @@ Do not keep long bias inside grey just because price is moving upward.
 Do not short every supply band or buy every demand band. Ask what larger
 structure the band is testing.
 
+Do not upgrade a low just because fresh higher demand appears. Ask whether the
+low demand held and whether supply above it failed.
+
 Do not ignore failed bands. A failed band often contains more information than a
 fresh untouched band.
+
+Do not flatten a working trade on VOD alone. VOD is instability; auction failure
+requires repair, opposing ownership, or failure of same-side continuation.
 
 Do not use the panel as a scrolling signal feed. Use it to audit what the chart
 has already made visually obvious.
@@ -469,6 +657,12 @@ Use the chart bands to see ownership.
 Use grey areas to avoid false certainty.
 
 Use fresh bands inside grey to see attempted resolution.
+
+Treat first LF/HF or first demand/supply as a probe only. Upgrade it after a
+held test and failed opposite-side structure.
+
+When the last repair under an old level fails, the other side may already have
+enough proof to press.
 
 Use the panel to audit strength and cause.
 

@@ -122,6 +122,48 @@ This is exactly why the overlay must show sequence, not rules:
 - rail failure;
 - long-side belief collapse.
 
+## 2026-06-04 Fixture
+
+This session clarified the difference between failure evidence, leverage
+permission, and the actual place to press size.
+
+The open was a double-distribution ETH / open-auction problem. The important
+early object was the `277-278` low-failure area. It did not mean "add here" by
+itself. It meant the downside auction had failed in the wrong location and the
+long thesis now had a clear falsification line. The cleaner leverage point came
+after follow-on ownership: `291-293` supply failed, `297-304` converted, and
+`308-310` established as accepted demand.
+
+The same distinction appeared after the first responsive selloff. The
+`365-376` repair was the first place where the short auction failed, but it was
+not proof that the full upside auction had resumed. The `391-398` repair attempt
+was noisy and failed quickly. The stronger confirmation came when `415-417`
+supply failed upward, then `419-424` and the `437-443` / `444` area rebuilt as
+demand. In review language:
+
+- `LF` / `HF` / `RF` gives permission and defines risk.
+- The next accepted shelf is the better size point.
+- If the first repair cannot reclaim the reversal origin, the reversal case
+  strengthens.
+- If the repair rebuilds above the first opposing shelf, the reversal case is
+  probably only a temporary auction failure.
+
+The `468-469` rotation is the useful reversal template from this day. Supply
+appeared near the high, buyers briefly consumed it, and then top demand failed:
+`457-458` demand failed, `455` demand failed, and `458.75-462.50` flipped into
+supply. The first sequence still had to be managed tightly because that supply
+failed upward at `11:24:51`. The cleaner seller control came later as
+`447.75-453.50` and `442-445.75` flipped into supply. The correct short target
+was not open or IBL by default; it was the first lower `LF` / repair, which
+appeared around `364.75-366.25` repairing to `376.50`.
+
+The planned exit near the prior-day-low area was also clarified. The
+`494-500` region was a target and a contested continuation area, not a reason to
+manage an original long indefinitely. Later upward resolution through that area
+was a fresh auction question, not proof that exiting the planned long was wrong.
+Once local supply resolved higher, new longs still had to be judged against the
+next prior-day value/supply context.
+
 ## Visual Grammar
 
 - Active demand/supply rails: side-colored bands.

@@ -106,6 +106,12 @@ The second folded overlay is ownership rails:
 - Failed rails are allowed to fail in their own time, but neighboring failed rails collapse into a light-grey no-owner envelope once enough nearby failures accumulate. The decision meaning is "nobody owns this; do not infer clean continuation from price moving through it quickly."
 - Thesis rails are the nearest accepted rails backed by a same-side stack. They are not signals; they are falsification points. Their visual job is to make "belief should increase here" or "belief should collapse here" obvious without adding panel text or hardcoded trade instructions.
 - Consumed rails show a small `C` badge before any R+/R- badge. This is a visual memory aid for "opposite-side evidence was consumed into this rail's side"; the rail color still carries the resulting owner.
+- Fresh/lean ownership rails and consumed ownership rails deliberately use
+  different color families. Fresh demand/supply are blue/orange because they
+  are new claims. Consumed demand/supply keep the stronger green/red side
+  colors plus the `C` badge because the old owner has already lost that area.
+  Do not collapse these back to side-only coloring; the trader should not need
+  to decode a small badge to distinguish first claim from repair/conversion.
 - Rails can receive the same delayed refill badge as panel rows. The badge is
   intentionally secondary paint: rail creation, testing, failure, and thesis
   selection do not depend on it.

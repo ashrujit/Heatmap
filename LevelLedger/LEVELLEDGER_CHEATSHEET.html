@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LevelLedger Morning Cheatsheet</title>
+  <style>
+    :root {
+      --bg: #f5f7f6;
+      --ink: #1b2320;
+      --muted: #65726d;
+      --paper: #ffffff;
+      --line: #dbe3df;
+      --demand: #16826a;
+      --demand-soft: #dff3ec;
+      --supply: #b94040;
+      --supply-soft: #f8e3e1;
+      --fresh-demand: #5fb9f5;
+      --fresh-demand-soft: #e0f1fd;
+      --fresh-supply: #f59641;
+      --fresh-supply-soft: #fff0df;
+      --chaos: #b6821e;
+      --chaos-soft: #fff3d0;
+      --grey: #7c8680;
+      --grey-soft: #e8ece9;
+      --fail: #7b5ca8;
+      --fail-soft: #eee8f6;
+      --focus: #2e6f9e;
+      --focus-soft: #e2eff7;
+      --shadow: 0 8px 24px rgba(30, 42, 38, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.45;
+    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 18px 44px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 18px;
+    }
+
+    h1, h2, h3, p {
+      margin-top: 0;
+    }
+
+    h1 {
+      margin-bottom: 8px;
+      font-size: 34px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin-bottom: 12px;
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin-bottom: 8px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin-bottom: 10px;
+    }
+
+    .lead {
+      color: var(--muted);
+      max-width: 760px;
+      font-size: 16px;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .plain {
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      padding: 0;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .grid.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .section {
+      margin-top: 18px;
+    }
+
+    .kicker {
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .tagline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fafcfb;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .rule-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .rule-list li {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .mark {
+      width: 9px;
+      height: 9px;
+      margin-top: 7px;
+      border-radius: 2px;
+      background: var(--focus);
+    }
+
+    .mark.demand {
+      background: var(--demand);
+    }
+
+    .mark.supply {
+      background: var(--supply);
+    }
+
+    .mark.chaos {
+      background: var(--chaos);
+    }
+
+    .mark.fail {
+      background: var(--fail);
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .callout {
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fbfcfc;
+    }
+
+    .callout.good {
+      border-color: #b8ded1;
+      background: var(--demand-soft);
+    }
+
+    .callout.bad {
+      border-color: #edc4c0;
+      background: var(--supply-soft);
+    }
+
+    .callout.warn {
+      border-color: #eed797;
+      background: var(--chaos-soft);
+    }
+
+    .callout.neutral {
+      border-color: #d1d8d4;
+      background: var(--grey-soft);
+    }
+
+    .callout.fail {
+      border-color: #d5c8e9;
+      background: var(--fail-soft);
+    }
+
+    .token-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .token {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--grey);
+    }
+
+    .dot.demand {
+      background: var(--demand);
+    }
+
+    .dot.supply {
+      background: var(--supply);
+    }
+
+    .dot.fresh-demand {
+      background: var(--fresh-demand);
+    }
+
+    .dot.fresh-supply {
+      background: var(--fresh-supply);
+    }
+
+    .dot.chaos {
+      background: var(--chaos);
+    }
+
+    .dot.fail {
+      background: var(--fail);
+    }
+
+    .ladder {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff, #f8faf9);
+    }
+
+    .price-row {
+      display: grid;
+      grid-template-columns: 56px 1fr 92px;
+      gap: 8px;
+      align-items: center;
+      min-height: 28px;
+      font-size: 12px;
+    }
+
+    .price-row .price {
+      color: var(--muted);
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .band {
+      position: relative;
+      min-height: 24px;
+      border-radius: 5px;
+      border: 1px solid var(--line);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .band::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.9;
+    }
+
+    .band.demand::before {
+      background: var(--demand-soft);
+      border-left: 5px solid var(--demand);
+    }
+
+    .band.supply::before {
+      background: var(--supply-soft);
+      border-left: 5px solid var(--supply);
+    }
+
+    .band.fresh-demand::before {
+      background: var(--fresh-demand-soft);
+      border-left: 5px solid var(--fresh-demand);
+    }
+
+    .band.fresh-supply::before {
+      background: var(--fresh-supply-soft);
+      border-left: 5px solid var(--fresh-supply);
+    }
+
+    .band.grey::before {
+      background: var(--grey-soft);
+      border-left: 5px solid var(--grey);
+    }
+
+    .band.chaos::before {
+      background: repeating-linear-gradient(
+        90deg,
+        var(--chaos-soft),
+        var(--chaos-soft) 8px,
+        #fff8e3 8px,
+        #fff8e3 14px
+      );
+      border-left: 5px solid var(--chaos);
+    }
+
+    .band.fail::before {
+      background: var(--fail-soft);
+      border-left: 5px solid var(--fail);
+    }
+
+    .band-label {
+      position: relative;
+      z-index: 1;
+      padding: 4px 8px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .state {
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .path {
+      position: relative;
+      height: 126px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, transparent 24%, rgba(124, 134, 128, 0.16) 24%, rgba(124, 134, 128, 0.16) 25%, transparent 25%),
+        linear-gradient(180deg, transparent 49%, rgba(124, 134, 128, 0.16) 49%, rgba(124, 134, 128, 0.16) 50%, transparent 50%),
+        linear-gradient(180deg, transparent 74%, rgba(124, 134, 128, 0.16) 74%, rgba(124, 134, 128, 0.16) 75%, transparent 75%),
+        #fff;
+      overflow: hidden;
+    }
+
+    .path svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .caption {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .decision .yes {
+      border-color: #b8ded1;
+      background: var(--demand-soft);
+    }
+
+    .decision .no {
+      border-color: #edc4c0;
+      background: var(--supply-soft);
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 5px;
+      background: #eef3f0;
+      color: #24302b;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    .morning {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .morning .step {
+      min-height: 118px;
+    }
+
+    .number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 25px;
+      height: 25px;
+      margin-bottom: 8px;
+      border-radius: 50%;
+      background: var(--focus);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .footer-note {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 920px) {
+      header,
+      .grid.two,
+      .grid.three,
+      .grid.four,
+      .morning,
+      .decision {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .wrap {
+        max-width: none;
+        padding: 10px;
+      }
+
+      .panel {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+
+      .section {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <section class="panel">
+        <div class="kicker">LevelLedger morning read</div>
+        <h1>Structure first. Bands are claims, not permission.</h1>
+        <p class="lead">
+          Read this before the open to stay with auction language instead of
+          old habits. The job is to identify location, invalidation, and proof.
+          LevelLedger reduces evidence; it does not issue trades.
+        </p>
+        <div class="token-row" aria-label="Legend">
+          <span class="token"><span class="dot fresh-demand"></span>fresh demand</span>
+          <span class="token"><span class="dot fresh-supply"></span>fresh supply</span>
+          <span class="token"><span class="dot demand"></span>C demand</span>
+          <span class="token"><span class="dot supply"></span>C supply</span>
+          <span class="token"><span class="dot fail"></span>LF/HF/RF failure object</span>
+          <span class="token"><span class="dot chaos"></span>VOD chaos</span>
+          <span class="token"><span class="dot"></span>grey/no owner</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="kicker">Today before trading</div>
+        <ul class="rule-list">
+          <li><span class="mark"></span><span>What is the day type so far: normal auction, trend, open drive, fast repricing?</span></li>
+          <li><span class="mark"></span><span>Where is the trade wrong? If that answer is vague, size must be tiny or zero.</span></li>
+          <li><span class="mark"></span><span>Am I trading a tested structure or reacting to fresh color?</span></li>
+          <li><span class="mark"></span><span>Is VOD showing instability, or did actual repair/failure follow it?</span></li>
+          <li><span class="mark"></span><span>Is this inside grey? If yes, wait for resolution outside or keep it only as a probe.</span></li>
+        </ul>
+      </section>
+    </header>
+
+    <section class="section grid five">
+      <div class="morning">
+        <article class="panel step">
+          <span class="number">1</span>
+          <h3>Start With Context</h3>
+          <p class="small">Open, VWAP, IB, value, prior levels, profile. LL only answers whether live ownership agrees.</p>
+        </article>
+        <article class="panel step">
+          <span class="number">2</span>
+          <h3>Locate Grey</h3>
+          <p class="small">Grey/no-owner means too much conflict. Do not infer continuation just because price crosses it.</p>
+        </article>
+        <article class="panel step">
+          <span class="number">3</span>
+          <h3>Wait For Test</h3>
+          <p class="small">First contact is a test. A fresh band is only a claim until it survives or fails.</p>
+        </article>
+        <article class="panel step">
+          <span class="number">4</span>
+          <h3>Find Proof</h3>
+          <p class="small">Held demand plus failed supply above. Held supply plus failed demand below. Last repair failure.</p>
+        </article>
+        <article class="panel step">
+          <span class="number">5</span>
+          <h3>Manage By Repair</h3>
+          <p class="small">At targets, VOD is attention. Exit requires repair, opposing ownership, or same-side failure.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section grid two">
+      <article class="panel">
+        <div class="kicker">Core distinction</div>
+        <h2>New Band Vs Failed Opposite Structure</h2>
+        <p class="small">
+          Color carries origin: blue/orange means a fresh lean claim; green/red
+          with `C` means the opposite side was consumed into this side.
+        </p>
+        <div class="decision">
+          <div class="callout no">
+            <h3>Weaker: fresh same-side band</h3>
+            <p>A new demand band above a low only says buyers appeared. It can be consumed into supply and used to retest the low.</p>
+            <p class="mono">new demand above = unproven</p>
+          </div>
+          <div class="callout good">
+            <h3>Stronger: opposite side fails</h3>
+            <p>Supply failing above a held low says sellers had a defense point and lost it. That upgrades the low.</p>
+            <p class="mono">held demand + failed supply = credibility</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="kicker">Do not confuse these</div>
+        <h2>VOD Is Not Auction Failure</h2>
+        <div class="callout warn">
+          <p><strong>VOD chaos:</strong> the book is unstable. It can precede failure, continuation, exhaustion, or repair.</p>
+          <p><strong>Action:</strong> raise attention, maybe partial at target, but wait for structure before declaring failure.</p>
+        </div>
+        <ul class="rule-list" style="margin-top: 12px">
+          <li><span class="mark chaos"></span><span>VOD plus no repair = do not force exit from a working trade.</span></li>
+          <li><span class="mark fail"></span><span>VOD followed by LF/HF/RF or consumed opposite ownership = real decision point.</span></li>
+          <li><span class="mark"></span><span>At objective: ask whether same-side continuation fails, not whether the tape looked scary.</span></li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section panel">
+      <div class="kicker">Visual grammar</div>
+      <h2>Morning Legend</h2>
+      <div class="grid four">
+        <div class="ladder">
+          <div class="price-row">
+            <span class="price">higher</span>
+            <div class="band fresh-supply"><div class="band-label">Fresh supply claim</div></div>
+            <span class="state">test it</span>
+          </div>
+          <div class="price-row">
+            <span class="price">mid</span>
+            <div class="band grey"><div class="band-label">Grey / no owner</div></div>
+            <span class="state">avoid</span>
+          </div>
+          <div class="price-row">
+            <span class="price">lower</span>
+            <div class="band fresh-demand"><div class="band-label">Fresh demand claim</div></div>
+            <span class="state">test it</span>
+          </div>
+        </div>
+
+        <div class="ladder">
+          <div class="price-row">
+            <span class="price">target</span>
+            <div class="band chaos"><div class="band-label">VOD chaos</div></div>
+            <span class="state">attention</span>
+          </div>
+          <div class="price-row">
+            <span class="price">repair</span>
+            <div class="band demand"><div class="band-label">C demand repair</div></div>
+            <span class="state">prove</span>
+          </div>
+          <div class="price-row">
+            <span class="price">fail</span>
+            <div class="band fail"><div class="band-label">LF / HF / RF</div></div>
+            <span class="state">decide</span>
+          </div>
+        </div>
+
+        <div class="callout neutral">
+          <h3>First Paint</h3>
+          <p>Useful information, not a trade. The first band tells you where to watch whether the claim holds.</p>
+        </div>
+
+        <div class="callout good">
+          <h3>Retested Structure</h3>
+          <p>A band that gets tested and holds gives you a nearby invalidation point. This is where confidence can increase.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section grid two">
+      <article class="panel">
+        <div class="kicker">Pattern 1</div>
+        <h2>Last Buyer Repair Fails Under Old Supply</h2>
+        <div class="path" aria-label="Schematic of last buyer repair failing under old supply">
+          <svg viewBox="0 0 600 126" role="img">
+            <defs>
+              <marker id="arrow-supply" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#b94040"></path>
+              </marker>
+            </defs>
+            <rect x="350" y="18" width="178" height="18" rx="5" fill="#f8e3e1" stroke="#b94040"></rect>
+            <text x="361" y="31" font-size="12" fill="#1b2320">old supply test</text>
+            <rect x="180" y="78" width="172" height="18" rx="5" fill="#dff3ec" stroke="#16826a"></rect>
+            <text x="191" y="91" font-size="12" fill="#1b2320">buyer repair</text>
+            <path d="M45,104 C110,74 155,91 210,85 C280,77 284,37 392,28 C436,24 462,27 486,34" fill="none" stroke="#2e6f9e" stroke-width="4"></path>
+            <path d="M486,34 C430,53 384,75 310,84 C247,91 220,96 178,111" fill="none" stroke="#b94040" stroke-width="4" marker-end="url(#arrow-supply)"></path>
+            <line x1="176" y1="80" x2="356" y2="98" stroke="#b94040" stroke-width="2" stroke-dasharray="5 5"></line>
+            <text x="374" y="101" font-size="12" fill="#b94040">repair fails</text>
+          </svg>
+        </div>
+        <p class="caption">Read: buyers created support for the test and could not defend it. Sellers may already have enough proof to press.</p>
+        <div class="callout bad">
+          <p class="mono">490 example: C demand 489-491 held briefly, then failed. No new supply was required for seller credibility.</p>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="kicker">Pattern 2</div>
+        <h2>Held Low Plus Failed Supply Above</h2>
+        <div class="path" aria-label="Schematic of held low followed by failed supply">
+          <svg viewBox="0 0 600 126" role="img">
+            <defs>
+              <marker id="arrow-demand" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L8,4 L0,8 Z" fill="#16826a"></path>
+              </marker>
+            </defs>
+            <rect x="80" y="88" width="168" height="18" rx="5" fill="#dff3ec" stroke="#16826a"></rect>
+            <text x="91" y="101" font-size="12" fill="#1b2320">demand holds</text>
+            <rect x="282" y="52" width="156" height="18" rx="5" fill="#f8e3e1" stroke="#b94040"></rect>
+            <text x="293" y="65" font-size="12" fill="#1b2320">supply fails</text>
+            <rect x="405" y="26" width="138" height="18" rx="5" fill="#f8e3e1" stroke="#b94040"></rect>
+            <text x="416" y="39" font-size="12" fill="#1b2320">next supply fails</text>
+            <path d="M42,105 C85,84 124,90 161,95 C205,102 225,93 237,89" fill="none" stroke="#16826a" stroke-width="4"></path>
+            <path d="M237,89 C279,69 317,60 360,61 C402,62 422,53 454,35 C486,17 519,22 560,31" fill="none" stroke="#16826a" stroke-width="4" marker-end="url(#arrow-demand)"></path>
+            <line x1="284" y1="70" x2="440" y2="52" stroke="#16826a" stroke-width="2" stroke-dasharray="5 5"></line>
+            <text x="300" y="86" font-size="12" fill="#16826a">seller defense lost</text>
+          </svg>
+        </div>
+        <p class="caption">Read: the low is not upgraded by fresh higher demand alone. It is upgraded when sellers fail above it.</p>
+        <div class="callout good">
+          <p class="mono">336 example: demand held, then 401 and 491 supply failed. That confirmed more than a fresh green band would.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="section grid two">
+      <article class="panel">
+        <div class="kicker">Pattern 3</div>
+        <h2>Old Supply That Does Not Hold</h2>
+        <div class="ladder">
+          <div class="price-row">
+            <span class="price">020</span>
+            <div class="band supply"><div class="band-label">old supply area</div></div>
+            <span class="state">target</span>
+          </div>
+          <div class="price-row">
+            <span class="price">999</span>
+            <div class="band supply"><div class="band-label">new supply fails</div></div>
+            <span class="state">weak</span>
+          </div>
+          <div class="price-row">
+            <span class="price">967</span>
+            <div class="band supply"><div class="band-label">supply fails again</div></div>
+            <span class="state">give up</span>
+          </div>
+          <div class="price-row">
+            <span class="price">810</span>
+            <div class="band demand"><div class="band-label">leg origin not tested</div></div>
+            <span class="state">no sell proof</span>
+          </div>
+        </div>
+        <p class="caption">If sellers defend old supply, price should test the leg that created the move. If their supply fails instead, shorts lose the claim.</p>
+      </article>
+
+      <article class="panel">
+        <div class="kicker">Pattern 4</div>
+        <h2>Fast Auction: Direction Clear, Permission Missing</h2>
+        <div class="callout warn">
+          <p>When price travels thinly and temporary demand/supply is run over, the direction can be obvious while the trade location is poor.</p>
+        </div>
+        <ul class="rule-list" style="margin-top: 12px">
+          <li><span class="mark supply"></span><span>Acceptable: initial open reclaim, failed repair, or tested edge with nearby invalidation.</span></li>
+          <li><span class="mark chaos"></span><span>Not enough: "sellers are selling" after price is already away from structure.</span></li>
+          <li><span class="mark"></span><span>If the only plan is "probe and abandon on first trouble", location must be close enough for tiny risk.</span></li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section grid three">
+      <article class="panel">
+        <div class="kicker">Probe Rules</div>
+        <h2>First LF/HF Or First Band</h2>
+        <ul class="rule-list">
+          <li><span class="mark fail"></span><span>Probe only when invalidation is close enough, often 4-8 ticks.</span></li>
+          <li><span class="mark"></span><span>Do not call it confirmation until the band is tested and holds.</span></li>
+          <li><span class="mark"></span><span>Ask what opposite structure failed after the hold.</span></li>
+        </ul>
+      </article>
+
+      <article class="panel">
+        <div class="kicker">Add Rules</div>
+        <h2>Do Not Average A Feeling</h2>
+        <ul class="rule-list">
+          <li><span class="mark supply"></span><span>Add short after supply retests and survives, or after buyer repair fails.</span></li>
+          <li><span class="mark demand"></span><span>Add long after demand retests and survives, or after seller repair fails.</span></li>
+          <li><span class="mark"></span><span>Each add needs its own nearby wrong-location.</span></li>
+        </ul>
+      </article>
+
+      <article class="panel">
+        <div class="kicker">Exit Rules</div>
+        <h2>Target Is A Question</h2>
+        <ul class="rule-list">
+          <li><span class="mark chaos"></span><span>VOD near target means watch closely, not automatic exit.</span></li>
+          <li><span class="mark fail"></span><span>Exit if opposite repair holds or same-side continuation fails.</span></li>
+          <li><span class="mark"></span><span>If no repair appears and no demand/supply survives against you, trailing is valid.</span></li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section panel">
+      <div class="kicker">Language to say out loud</div>
+      <h2>Pre-Trade Script</h2>
+      <div class="grid two">
+        <div class="callout neutral">
+          <h3>Before entry</h3>
+          <p class="mono">"This is a claim, not permission. What test am I trading? Where is it wrong?"</p>
+          <p class="mono">"Am I inside grey, or outside with a clean edge?"</p>
+          <p class="mono">"If I need first trouble to exit, is the risk tiny enough?"</p>
+        </div>
+        <div class="callout neutral">
+          <h3>Before exit</h3>
+          <p class="mono">"Is this VOD only, or did repair/failure follow?"</p>
+          <p class="mono">"Did the last repair fail, or did it hold?"</p>
+          <p class="mono">"Did opposite supply/demand fail above/below my area?"</p>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer-note">
+      Maintained from LevelLedger replay reviews. Update this page when a new repeated distinction changes morning behavior.
+    </p>
+  </main>
+</body>
+</html>

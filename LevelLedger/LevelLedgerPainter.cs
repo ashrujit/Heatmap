@@ -35,6 +35,8 @@ namespace LevelLedger
         private static readonly Color Muted = Color.FromArgb(165, 175, 175, 175);
         private static readonly Color BullDominance = Color.FromArgb(90, 225, 135);
         private static readonly Color BearDominance = Color.FromArgb(245, 90, 75);
+        private static readonly Color FreshDemandRail = Color.FromArgb(95, 185, 245);
+        private static readonly Color FreshSupplyRail = Color.FromArgb(245, 150, 65);
         private static readonly Color BuyImpulse = Color.FromArgb(115, 190, 235);
         private static readonly Color SellImpulse = Color.FromArgb(235, 135, 95);
         private static readonly Color Neutral = Color.FromArgb(190, 185, 175);
@@ -212,7 +214,7 @@ namespace LevelLedger
 
                 int fillAlpha = Clamp(baseAlpha, 1, 255);
                 int edgeAlpha = Clamp(fillAlpha + (failed ? 28 : thesis ? 105 : 65), 1, 255);
-                Color sideColor = band.Side == BuildBandSide.Supply ? BearDominance : BullDominance;
+                Color sideColor = RailColor(band);
 
                 using var railFill = new SolidBrush(Color.FromArgb(fillAlpha, sideColor));
                 using var edge = new Pen(Color.FromArgb(edgeAlpha, sideColor), thesis ? 2.2f : failed ? 1f : 1.4f);
@@ -439,6 +441,13 @@ namespace LevelLedger
 
         private static Color RefillColor(RefillState state, Color sideColor)
             => state == RefillState.Conflict ? Chaos : sideColor;
+
+        private static Color RailColor(BuildBandOverlay band)
+        {
+            if (band.Source == BuildBandSource.Consumed)
+                return band.Side == BuildBandSide.Supply ? BearDominance : BullDominance;
+            return band.Side == BuildBandSide.Supply ? FreshSupplyRail : FreshDemandRail;
+        }
 
         private static void DrawBandBadges(
             Graphics g,
