@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Journal"
+  short_description: "Synthesize trading decisions into journals"
+  default_prompt: "Use $session-journal to write today's trading decision journal."

@@ -17,11 +17,13 @@ __pycache__/
 *.pyc
 .venv/
 .python-version
+skills/dost/uv.lock
 
 # Research outputs ────────────────────────────────────────────────────
 # Generated CSVs from research/liq_events.py and similar — large,
 # regenerable from captures, no value in version-controlling.
 research/out/
+journal-out/
 
 # Captures ────────────────────────────────────────────────────────────
 # Should never land in the repo (they live under Quantower's deploy
@@ -40,6 +42,7 @@ Skurry-Panel*/
 .DS_Store
 Thumbs.db
 desktop.ini
+Skurry-Vault.lnk
 
 # Logs ────────────────────────────────────────────────────────────────
 *.log
