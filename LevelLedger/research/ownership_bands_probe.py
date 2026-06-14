@@ -124,6 +124,7 @@ class OwnershipProbe:
         fail_confirm_ticks: int,
         fail_sec: int,
         hold_confirm_ticks: int,
+        book_lookback_sec: int = BOOK_LOOKBACK_SEC,
     ) -> None:
         self.event_z = max(1.0, event_z)
         self.cluster_min_events = max(2, cluster_min_events)
@@ -137,6 +138,7 @@ class OwnershipProbe:
         self.fail_confirm_ticks = max(1, fail_confirm_ticks)
         self.fail_sec = max(0, fail_sec)
         self.hold_confirm_ticks = max(1, hold_confirm_ticks)
+        self.book_lookback_sec = max(5, book_lookback_sec)
 
         self.samples: deque[BookSample] = deque()
         self.pending_events: deque[OwnershipEvent] = deque()
@@ -150,7 +152,7 @@ class OwnershipProbe:
         now = sample.ts
         self.current_mid_tick = sample.mid_tick
         self.samples.append(sample)
-        self.evict_samples(now, BOOK_LOOKBACK_SEC * 2)
+        self.evict_samples(now, self.book_lookback_sec * 2)
         self.evict_pending_events(now)
 
         if len(self.samples) >= 5:
@@ -187,7 +189,7 @@ class OwnershipProbe:
             self.pending_events.popleft()
 
     def mean_std(self, now: datetime, selector) -> tuple[float, float]:
-        cutoff = now - timedelta(seconds=BOOK_LOOKBACK_SEC)
+        cutoff = now - timedelta(seconds=self.book_lookback_sec)
         vals = [selector(s) for s in self.samples if s.ts >= cutoff]
         if len(vals) < 2:
             return 0.0, 0.0
@@ -710,6 +712,7 @@ def main() -> None:
     parser.add_argument("--window", default="09:30-10:20")
     parser.add_argument("--warmup-min", type=int, default=90)
     parser.add_argument("--event-z", type=float, default=EVENT_Z_THRESHOLD)
+    parser.add_argument("--book-lookback-sec", type=int, default=BOOK_LOOKBACK_SEC)
     parser.add_argument("--cluster-min-events", type=int, default=3)
     parser.add_argument("--cluster-ticks", type=int, default=10)
     parser.add_argument("--cluster-sec", type=int, default=90)
@@ -757,6 +760,7 @@ def main() -> None:
         fail_confirm_ticks=args.fail_confirm_ticks,
         fail_sec=args.fail_sec,
         hold_confirm_ticks=args.hold_confirm_ticks,
+        book_lookback_sec=args.book_lookback_sec,
     )
 
     for row in snap.iter_rows(named=True):

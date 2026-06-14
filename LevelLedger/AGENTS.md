@@ -151,6 +151,15 @@ These are research defaults, not final truths.
 
 ## Research Harness
 
+## Instrument Context
+
+Do not assume NQ when reviewing a session or using the Dost/LL MCP tools. If
+the user says they are primarily watching ES, combine Dost/LL's capture-folder
+form (`symbol_dir` such as `ESM6`) with Skurry's normalized symbol form
+(`symbol=ES`) to pull the same day's details from both MCPs. If the active
+instrument is ambiguous, confirm it first; this keeps the workflow extensible
+as more instruments are added.
+
 `research/spatial_dominance_replay.py` replays existing `research/out/liq_events_YYYY-MM-DD.csv` files and prints the same style of zone dominance rows for known fixture windows.
 
 `research/replay_levelledger.py` is the closer live-engine replay. It reads captured L2 parquet snapshots and mirrors the C# sample loop, event detection, current-auction gate, and freshness gate. Use it when debugging whether a live row should or should not have printed.

@@ -28,6 +28,10 @@ Use whatever live or local context is available, with this precedence:
 
 If MCP tools exist, use them for current data. Load `references/mcp-tools.md` when you need server names, launch commands, or tool selection guidance.
 
+Resolve the instrument before querying. Do not assume NQ if the user says they
+are mainly watching ES, and confirm the instrument when the day/context is
+ambiguous.
+
 The Dost LevelLedger MCP wrapper exposes `ll_ownership_bands`, which returns structured LevelLedger ownership JSON.
 
 Canonical launch from `C:\Heatmap\skills\dost`:

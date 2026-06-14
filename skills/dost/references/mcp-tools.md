@@ -2,6 +2,15 @@
 
 Dost uses two MCP servers when available.
 
+## Instrument Selection
+
+Confirm the active instrument when the user has not made it clear. Dost/LL uses
+MarketRecorder capture folders in `symbol_dir` form, such as `NQM6` or `ESM6`;
+Skurry uses normalized symbols such as `NQ` or `ES`. If the user says they are
+primarily watching ES, query Dost/LL with the ES capture folder and Skurry with
+`symbol=ES`. Skurry is already enabled for ES in this setup; use
+`market_symbols` if the active symbol set is uncertain.
+
 ## dost-levelledger
 
 Purpose: LevelLedger ownership and L2 survival evidence.

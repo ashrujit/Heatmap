@@ -36,6 +36,7 @@ class Query:
     window: str = "09:30-10:30"
     warmup_min: int = 90
     event_z: float = ob.EVENT_Z_THRESHOLD
+    book_lookback_sec: int = ob.BOOK_LOOKBACK_SEC
     cluster_min_events: int = 3
     cluster_ticks: int = 10
     cluster_sec: int = 90
@@ -266,6 +267,7 @@ def run_query(query: Query) -> dict[str, Any]:
 
     probe = ob.OwnershipProbe(
         event_z=query.event_z,
+        book_lookback_sec=query.book_lookback_sec,
         cluster_min_events=query.cluster_min_events,
         cluster_ticks=query.cluster_ticks,
         cluster_sec=query.cluster_sec,
@@ -420,6 +422,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window", default="09:30-10:30")
     parser.add_argument("--warmup-min", type=int, default=90)
     parser.add_argument("--event-z", type=float, default=ob.EVENT_Z_THRESHOLD)
+    parser.add_argument("--book-lookback-sec", type=int, default=ob.BOOK_LOOKBACK_SEC)
     parser.add_argument("--cluster-min-events", type=int, default=3)
     parser.add_argument("--cluster-ticks", type=int, default=10)
     parser.add_argument("--cluster-sec", type=int, default=90)
@@ -450,6 +453,7 @@ def query_from_args(args: argparse.Namespace) -> Query:
         window=args.window,
         warmup_min=args.warmup_min,
         event_z=args.event_z,
+        book_lookback_sec=args.book_lookback_sec,
         cluster_min_events=args.cluster_min_events,
         cluster_ticks=args.cluster_ticks,
         cluster_sec=args.cluster_sec,
