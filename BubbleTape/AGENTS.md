@@ -35,6 +35,12 @@ truth is a time bar plus nearby price band with one-sided aggressive volume.
 - Historical warmup uses `Symbol.GetTickHistory(HistoryType.Last, from, to)` on
   a background task. Live ticks are subscribed first and queued until warmup is
   applied so the handoff does not leave a gap.
+- Lookback is calendar-day based, not trading-session based. This keeps weekend
+  handling predictable without adding exchange-calendar assumptions; the default
+  is three days so Sunday/Monday startup can still see Friday context.
+- The raw warmup tick list is a transient load buffer. Once it has been folded
+  into candidate bars and frozen bubbles, the completed task/result is released
+  so a chart left open all week retains only the bounded lookback state.
 
 ## Current Constraints
 

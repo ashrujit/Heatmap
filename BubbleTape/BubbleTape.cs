@@ -24,9 +24,9 @@ namespace BubbleTape
             minimum: 0, maximum: 2, increment: 1, decimalPlaces: 0)]
         public int Detail = 1;
 
-        [InputParameter("Lookback Hours", sortIndex: 1303,
-            minimum: 1, maximum: 72, increment: 1, decimalPlaces: 0)]
-        public int LookbackHours = 24;
+        [InputParameter("Lookback Days", sortIndex: 1303,
+            minimum: 1, maximum: 7, increment: 1, decimalPlaces: 0)]
+        public int LookbackDays = 3;
 
         [InputParameter("Min Cell Volume", sortIndex: 1310,
             minimum: 0, maximum: 1000, increment: 1, decimalPlaces: 0)]
@@ -178,8 +178,8 @@ namespace BubbleTape
                 _warmupCts = new CancellationTokenSource();
                 _warmupPending = true;
                 _engine.SetStatus("warming history");
-                int lookback = Math.Max(1, LookbackHours);
-                DateTime fromUtc = boundaryUtc.AddHours(-lookback);
+                int lookback = Math.Max(1, LookbackDays);
+                DateTime fromUtc = boundaryUtc.AddDays(-lookback);
                 var token = _warmupCts.Token;
                 _warmupTask = Task.Run(() => LoadWarmup(symbol, fromUtc, boundaryUtc, token), token);
             }
@@ -254,13 +254,17 @@ namespace BubbleTape
                 return;
 
             _warmupPending = false;
+            var task = _warmupTask;
+            _warmupTask = null;
             try
             {
-                WarmupResult result = _warmupTask.Result;
+                WarmupResult result = task.Result;
                 if (result.Success)
                 {
+                    int warmupTradeCount = result.Trades.Count;
                     _engine.ResetAndWarm(result.Trades, _warmupBoundaryUtc);
-                    _engine.SetStatus($"warm {result.Trades.Count} ticks");
+                    result.Trades.Clear();
+                    _engine.SetStatus($"warm {warmupTradeCount} ticks");
                     _warmupApplied = true;
                 }
                 else
@@ -274,6 +278,11 @@ namespace BubbleTape
                 _engine.SetStatus("warmup failed");
                 try { Core.Instance.Loggers.Log($"[{nameof(BubbleTape)}] warmup apply failed: {ex.Message}", LoggingLevel.Error); }
                 catch { }
+            }
+            finally
+            {
+                try { _warmupCts?.Dispose(); } catch { }
+                _warmupCts = null;
             }
         }
 
@@ -356,7 +365,7 @@ namespace BubbleTape
                     BarMinutes = BarMinutes,
                     PriceBandTicks = PriceBandTicks,
                     Detail = Detail,
-                    LookbackHours = LookbackHours,
+                    LookbackDays = LookbackDays,
                     MinCellVolume = MinCellVolume,
                     MinDeltaShare = MinDeltaShare,
                     MinClusterDelta = MinClusterDelta,
@@ -419,7 +428,7 @@ namespace BubbleTape
                 BarMinutes,
                 PriceBandTicks,
                 Detail,
-                LookbackHours,
+                LookbackDays,
                 MinCellVolume.ToString("0.####"),
                 MinDeltaShare.ToString("0.####"),
                 MinClusterDelta.ToString("0.####"),

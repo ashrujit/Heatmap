@@ -33,7 +33,7 @@ namespace BubbleTape
         public int BarMinutes = 5;
         public int PriceBandTicks = 8;
         public int Detail = 1;
-        public int LookbackHours = 24;
+        public int LookbackDays = 3;
         public double MinCellVolume = 12.0;
         public double MinDeltaShare = 0.25;
         public double MinClusterDelta = 30.0;
@@ -204,15 +204,16 @@ namespace BubbleTape
         private void FinalizeBar(BarState bar, DateTime nowUtc)
         {
             var clusters = BuildClusters(bar).ToList();
-            _candidateBars.Add(new CandidateBar
+            var candidate = new CandidateBar
             {
                 StartUtc = bar.StartUtc,
                 DisplayUtc = bar.StartUtc.AddTicks(TimeSpan.FromMinutes(_settings.BarMinutes).Ticks / 2),
                 Clusters = clusters,
-            });
+            };
+            _candidateBars.Add(candidate);
             Prune(nowUtc);
-            if (!_suppressSelection)
-                AddFrozenBubblesForBar(_candidateBars[_candidateBars.Count - 1]);
+            if (!_suppressSelection && _candidateBars.Contains(candidate))
+                AddFrozenBubblesForBar(candidate);
         }
 
         private IEnumerable<Cluster> BuildClusters(BarState bar)
@@ -395,7 +396,7 @@ namespace BubbleTape
 
         private void Prune(DateTime nowUtc)
         {
-            DateTime cutoff = NormalizeUtc(nowUtc).AddHours(-Math.Max(1, _settings.LookbackHours));
+            DateTime cutoff = NormalizeUtc(nowUtc).AddDays(-Math.Max(1, _settings.LookbackDays));
             _candidateBars.RemoveAll(b => b.StartUtc < cutoff);
             _bubbles.RemoveAll(b => b.TimeUtc < cutoff);
         }
@@ -435,7 +436,7 @@ namespace BubbleTape
                 BarMinutes = Clamp(settings.BarMinutes, 1, 60),
                 PriceBandTicks = Clamp(settings.PriceBandTicks, 1, 400),
                 Detail = Clamp(settings.Detail, 0, 2),
-                LookbackHours = Clamp(settings.LookbackHours, 1, 168),
+                LookbackDays = Clamp(settings.LookbackDays, 1, 7),
                 MinCellVolume = Math.Max(0.0, settings.MinCellVolume),
                 MinDeltaShare = Math.Max(0.01, Math.Min(0.99, settings.MinDeltaShare)),
                 MinClusterDelta = Math.Max(0.0, settings.MinClusterDelta),
@@ -450,7 +451,7 @@ namespace BubbleTape
             return a.BarMinutes != b.BarMinutes
                 || a.PriceBandTicks != b.PriceBandTicks
                 || a.Detail != b.Detail
-                || a.LookbackHours != b.LookbackHours
+                || a.LookbackDays != b.LookbackDays
                 || Math.Abs(a.MinCellVolume - b.MinCellVolume) > 0.0001
                 || Math.Abs(a.MinDeltaShare - b.MinDeltaShare) > 0.0001
                 || Math.Abs(a.MinClusterDelta - b.MinClusterDelta) > 0.0001
