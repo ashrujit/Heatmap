@@ -20,19 +20,19 @@ The user trades and thinks in New York time.
 
 ## Output Paths
 
-Stage locally first:
+Stage locally first. Use the actual weekday name in the filename, not the literal word `Day`:
 
 ```text
-C:\Heatmap\journal-out\YYYY\MM\YYYY-MM-DD-Day.md
+C:\Heatmap\journal-out\YYYY\MM\YYYY-MM-DD-{Weekday}.md
 ```
 
 Then export, with approval if required by the environment:
 
 ```text
-W:\Skurry-Vault\Journals\YYYY\MM\YYYY-MM-DD-Day.md
+W:\Skurry-Vault\Journals\YYYY\MM\YYYY-MM-DD-{Weekday}.md
 ```
 
-If `W:` is unavailable or approval is denied, leave the staged file in `C:\Heatmap\journal-out` and report that export is pending.
+After a successful export, verify the vault copy exists and then remove the staged local copy. The local staging file is a temporary export artifact, not a second archive. If `W:` is unavailable or approval is denied, leave the staged file in `C:\Heatmap\journal-out` and report that export is pending.
 
 Note: in the default Codex sandbox, `W:` may appear missing even when the user's normal PowerShell can access it. The mapped drive lives outside the workspace sandbox and may not be mounted as a `PSDrive` inside the managed shell. Stage the journal locally first, then request elevated filesystem access for the final copy to `W:`, or tell the user to copy/export the staged file from their normal desktop shell.
 
@@ -44,6 +44,7 @@ Note: in the default Codex sandbox, `W:` may appear missing even when the user's
 - If the conversation spans multiple sessions or the date is unclear, ask one concise question before writing.
 - Read recent journal examples from `W:\Skurry-Vault\Journals` only if the style is uncertain.
 - Ask for a session rating only if the user has not already given one. If the user does not want to rate it, use `rating: null`.
+- Choose session-specific tags from the discussion. Prefer news/event context (`fomc`, `cpi`, `ppi`, `nfp`), day type, auction regime, rollover/contract context, or the main decision theme. Do not add generic tags like `dost`, `levelledger`, or `nq` by default.
 
 ### 2. Build The Decision Timeline
 
@@ -65,7 +66,7 @@ For each key moment, capture:
 **Evidence available then:** ownership, failures, references, context, and uncertainty known at the time.
 **Decision:** what the user did or did not do.
 **Outcome:** what happened next.
-**Classification:** clean execution / emotional override / hesitation / valid caution / skill gap / ambiguous auction.
+**Classification:** aligned execution / emotion-led action / hesitation / valid caution / evidence gap / ambiguous auction.
 ```
 
 Do not force every moment into every field. Keep the entry readable.
@@ -80,8 +81,8 @@ date: 'YYYY-MM-DD'
 day_type: [short label]
 rating: [number or null]
 tags:
-- tag-one
-- tag-two
+- session-specific-tag
+- another-specific-tag
 type: journal
 source: dost-session-journal
 ---
@@ -106,7 +107,13 @@ Key moments using the structure above.
 
 ## Trades And Risk
 
-Entries, exits, scratches, adds, no-trades, and whether the risk/target logic was clear.
+Start with a compact table when trades or explicit no-trade decisions were discussed:
+
+| Time | Action | Entry / Area | Size | Exit / Result | Thesis | Invalidation / Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| HH:MM | long / short / flat / no-trade | price or zone | size or unknown | price, result, or unknown | short reason | stop, structural failure, or unknown |
+
+Then add brief prose covering entries, exits, scratches, adds, no-trades, and whether the risk/target logic was clear. Omit the table only when there was no concrete trade or no-trade decision to summarize.
 
 ---
 
@@ -119,6 +126,17 @@ Where emotion helped, hurt, or stayed contained. Separate emotion from genuine a
 ## Dost / User Read Alignment
 
 Where Dost agreed, challenged, missed nuance, or helped reframe the user's read.
+
+---
+
+## Reflection
+
+Non-punitive audit of what could have been clearer or better:
+
+- what evidence would have improved the user's decision process,
+- what Dost could have asked, flagged, or framed better,
+- where the discussion had unresolved uncertainty or needed a cleaner evidence distinction,
+- what should remain unresolved uncertainty rather than being converted into a lesson.
 
 ---
 
@@ -140,6 +158,7 @@ What to watch, review, or practice next session.
 - Do not judge by P&L. Judge by quality of read, risk definition, execution, and adaptation.
 - Include successes and failures with the same tone.
 - Keep Dost's arguments as arguments, not as authority. The goal is later review of the interaction, not proving who was right.
+- Keep reflection non-punitive. Avoid loaded labels like `stupid`, `bad`, `weak`, or `obvious mistake` unless quoting the user is essential; translate them into neutral process language.
 - If the user took no trades, still record the decision logic and no-trade discipline.
 - If the day produced one important lesson, make the journal shorter and sharper rather than filling sections.
 
@@ -149,7 +168,14 @@ After writing the local staged journal, copy it to the vault path. Use a normal 
 
 ```powershell
 New-Item -ItemType Directory -Force -Path "W:\Skurry-Vault\Journals\YYYY\MM"
-Copy-Item -LiteralPath "C:\Heatmap\journal-out\YYYY\MM\YYYY-MM-DD-Day.md" -Destination "W:\Skurry-Vault\Journals\YYYY\MM\YYYY-MM-DD-Day.md" -Force
+$staged = "C:\Heatmap\journal-out\YYYY\MM\YYYY-MM-DD-{Weekday}.md"
+$exported = "W:\Skurry-Vault\Journals\YYYY\MM\YYYY-MM-DD-{Weekday}.md"
+Copy-Item -LiteralPath $staged -Destination $exported -Force
+if (Test-Path -LiteralPath $exported) {
+    Remove-Item -LiteralPath $staged
+} else {
+    Write-Error "Export verification failed; staged journal left at $staged"
+}
 ```
 
 If the shell requires elevated access for `W:`, request approval for the copy. Do not silently skip export.
