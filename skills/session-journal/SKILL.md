@@ -1,6 +1,6 @@
 ---
 name: session-journal
-description: End-of-day trading journal synthesis for Dost / LevelLedger sessions. Use when the user asks to end the day, synthesize the session, write a journal, capture decision evolution, review how trades and reads developed, or preserve what was discussed with Dost for later review.
+description: End-of-day trading journal synthesis for Dost / LevelLedger sessions. Use when the user asks to end the day, synthesize the session, write a journal, capture decision evolution, review open-type expectations and scenario prep quality, review how trades and reads developed, or preserve what was discussed with Dost for later review.
 ---
 
 # Session Journal
@@ -16,6 +16,7 @@ The user trades and thinks in New York time.
 - Pull LevelLedger / Skurry context only when it clarifies a key decision or disputed read.
 - Include Dost's reasoning alongside the user's reasoning at key moments.
 - Preserve uncertainty. Do not rewrite ambiguity as hindsight certainty.
+- Review expectation-building quality explicitly: what open/day branches were prepared, what proof would have reduced them, and whether missing or wrong prep pulled the user into fast moves, repair assumptions, or insufficiently proven reversals.
 - Skip screenshots, playbook updates, antipattern updates, scratchpad systems, and Git lifecycle.
 
 ## Output Paths
@@ -50,9 +51,12 @@ Note: in the default Codex sandbox, `W:` may appear missing even when the user's
 
 Extract only moments that changed or tested the user's decision process:
 
+- pre-open expectation setting, including which open/day scenarios were considered and which were missing,
+- first-drive and first-return windows where a scenario's burden of proof should have been tested,
 - entries, exits, adds, scratches, or deliberate no-trades,
 - points where the user considered a trade and declined,
 - moments where Dost challenged or refined the read,
+- critical branch-reduction moments where one scenario gained/failed validity,
 - shifts from probe to campaign, campaign to runner-only, or stand aside,
 - emotional friction such as hope mode, FOMO, hesitation, revenge, over-fading, or over-aggression,
 - genuinely ambiguous auction locations where neither the user nor Dost had a clean answer.
@@ -64,6 +68,7 @@ For each key moment, capture:
 **User read:** what the user believed or was considering.
 **Dost audit:** what Dost argued or warned, if applicable.
 **Evidence available then:** ownership, failures, references, context, and uncertainty known at the time.
+**Scenario state:** which open/day branch was live, what proof it still needed, and what would have reduced or invalidated it.
 **Decision:** what the user did or did not do.
 **Outcome:** what happened next.
 **Classification:** aligned execution / emotion-led action / hesitation / valid caution / evidence gap / ambiguous auction.
@@ -96,6 +101,28 @@ source: dost-session-journal
 ## Session Arc
 
 Chronological auction story focused on what mattered for decisions.
+
+---
+
+## Scenario Prep And Branch Reduction
+
+Audit whether the user and Dost had the right conditional map before the auction
+forced decisions. Keep this section honest about what was known in real time,
+not what became easy after the day unfolded.
+
+- **Pre-open branches:** open/day types or campaign paths that were considered.
+- **Missing branch:** scenario that should have been loaded but was not, if any.
+- **Burden of proof:** what each branch needed to prove around ETH/ON value,
+  PM nodes, VWAP/open, prior value, IB, or major shelves.
+- **Critical reductions:** moments where a branch should have been promoted,
+  downgraded, or left unresolved.
+- **Prep-quality effect:** whether expectation building helped navigation, or
+  whether wrong/missing scenarios caused overcommitment to a fast move, an
+  assumption that repair would sustain direction, or reversal hunting without
+  sufficient counter-proof.
+- **Reinforcement quality:** whether the day should reinforce prepared branch
+  reduction, or whether PnL came mainly from smart local improvisation that
+  should not become the primary process.
 
 ---
 
@@ -133,6 +160,8 @@ Where Dost agreed, challenged, missed nuance, or helped reframe the user's read.
 
 Non-punitive audit of what could have been clearer or better:
 
+- whether pre-open or transition prep loaded the right scenarios,
+- whether branch reduction happened early enough to preserve decision rhythm,
 - what evidence would have improved the user's decision process,
 - what Dost could have asked, flagged, or framed better,
 - where the discussion had unresolved uncertainty or needed a cleaner evidence distinction,
@@ -156,6 +185,7 @@ What to watch, review, or practice next session.
 - Prefer decision-quality over completeness.
 - Do not invent trades, prices, emotions, or motives. Mark unknowns plainly.
 - Do not judge by P&L. Judge by quality of read, risk definition, execution, and adaptation.
+- Separate professional process from outcome. A profitable improvisational day can be a weaker process day than a small-loss prepared day if the branch map was missing.
 - Include successes and failures with the same tone.
 - Keep Dost's arguments as arguments, not as authority. The goal is later review of the interaction, not proving who was right.
 - Keep reflection non-punitive. Avoid loaded labels like `stupid`, `bad`, `weak`, or `obvious mistake` unless quoting the user is essential; translate them into neutral process language.

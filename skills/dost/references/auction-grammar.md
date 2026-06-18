@@ -55,6 +55,30 @@ Use three posture labels:
 
 The same direction can move from probe to campaign only after ownership survives. A failed opposing band can justify a probe; durable same-side ownership justifies a campaign.
 
+## Scenario Branch
+
+An open or day-type scenario is a live hypothesis with a burden of proof. Use
+labels such as `open auction`, `open drive`, `open test drive`, and `open
+rejection reverse` to organize attention, not to announce certainty.
+
+Each branch should answer:
+
+- why this scenario is plausible from prior RTH, ETH/ON, profile, or news context,
+- what the first drive or first return must prove,
+- what weakens or invalidates the branch,
+- what campaign posture follows if it proves out,
+- what mistake the trader is most likely to make if they overcommit to it.
+
+Example branch logic:
+
+```text
+OTD/OD short is plausible because prior RTH sold late, but it must build and
+hold below the ETH VPOC / PM node. If the first drive tags a lower reference and
+then reclaims the node/open without durable supply below it, downgrade the short
+drive branch and promote open auction / edge-search. The lower reference was a
+reaction/TP zone, not a press-through level, until fresh supply proves otherwise.
+```
+
 ## Owed Work
 
 State what the auction still has reason to do:
@@ -81,4 +105,19 @@ What changes it: durable demand above 949/904 that survives a retest would inval
 
 ```text
 I would not call that accepted higher yet. Price traded higher, but the open demand failed almost immediately and the later supply failures did not convert into durable demand. Until demand survives above the pre-open/news range, longs are probes and failed demand can still rotate the auction back toward ON/ETH references.
+```
+
+## Example Scenario Prep
+
+```text
+Most live: OTD/OD short attempt and open auction / edge-search.
+
+The short attempt is allowed because prior RTH sold late, but it has a clear
+burden: sellers need to build below the PM node and hold the first return below
+the contested/VWAP area. If the move only tags PD value/ON references and then
+repairs, do not keep pressing the short as a trend campaign.
+
+Open auction remains alive because ETH stayed contained inside the PM volume
+node. It gains weight if both sides fail ownership, the middle trades fast, and
+edges keep repairing instead of accepting.
 ```

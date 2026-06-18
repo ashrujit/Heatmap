@@ -1,4 +1,4 @@
 interface:
   display_name: "Dost"
   short_description: "Auction companion for LevelLedger and Skurry reads"
-  default_prompt: "Use Dost to audit the current auction: what must be true, who has durable ownership, what failed, and what trade direction is only a probe."
+  default_prompt: "Use Dost to prepare and audit the current auction: live open/day scenarios, what each must prove, who has durable ownership, what failed, and what trade direction is only a probe."
