@@ -30,9 +30,6 @@ namespace ExecAssistantRuntime
             if (string.IsNullOrWhiteSpace(_path))
                 throw new ArgumentException("Event log path is empty.", nameof(path));
             _errorSink = errorSink;
-            string directory = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
             _thread = new Thread(WriteLoop)
             {
                 IsBackground = true,
@@ -59,7 +56,10 @@ namespace ExecAssistantRuntime
                 foreach ((string key, object value) in fields)
                 {
                     if (!string.IsNullOrWhiteSpace(key))
-                        payload[key] = value;
+                    {
+                        string normalizedKey = JsonNamingPolicy.SnakeCaseLower.ConvertName(key);
+                        payload[normalizedKey] = NormalizeValue(value);
+                    }
                 }
             }
 
@@ -102,6 +102,9 @@ namespace ExecAssistantRuntime
         {
             try
             {
+                string directory = Path.GetDirectoryName(_path);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
                 using var stream = new FileStream(
                     _path,
                     FileMode.Append,
@@ -130,6 +133,14 @@ namespace ExecAssistantRuntime
                 _errorSink?.Invoke($"Event log writer failed: {ex.Message}");
             }
         }
+
+        private static object NormalizeValue(object value)
+            => value switch
+            {
+                double number when !double.IsFinite(number) => null,
+                float number when !float.IsFinite(number) => null,
+                _ => value,
+            };
 
         private static readonly JsonSerializerOptions SerializerOptions = new()
         {

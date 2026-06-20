@@ -54,6 +54,10 @@ Safety:
 - `Trading Enabled=true` permits actual broker operations;
 - startup self-tests should remain enabled.
 
+`Trading Enabled` is captured when the strategy starts so the runtime and order
+gateway cannot disagree about mode. Stop and restart the strategy after changing
+it; changing the setting on a running instance has no effect until restart.
+
 The LL-prefixed settings intentionally mirror LevelLedger's current ownership
 defaults. Do not tune them casually. Runtime and visual behavior may diverge if
 one copy changes without an explicit research decision.
@@ -138,6 +142,16 @@ LF/HF baselines.
   then enter `RECOVERY_PROTECTED`; no adds or evidence management resume.
 - Shadow mode plus an existing broker position: do not touch it; log
   `recovery_action_required` and reject directives until the pair is flat.
+  Worker processing pauses before control-file polling, so `FLAT` is not
+  available in this state. Flatten the position in Quantower, then let the
+  shadow instance resume.
+
+`entry_order_unresolved` and `entry_cancel_reconciliation_timeout` require
+operator attention. Inspect the bound pair in Quantower and confirm that no
+entry order remains working. The runtime latches `ERROR`, continues attempting
+to cancel the tagged entry every five seconds, rejects new directives until the
+submission reconciles, and safety-flattens any late fill. The broker DOM is
+authoritative when cancellation acknowledgement is lost.
 
 Stopping the strategy cancels runtime entry/add orders. It intentionally leaves
 accepted target/breakeven protection attached to an open position.

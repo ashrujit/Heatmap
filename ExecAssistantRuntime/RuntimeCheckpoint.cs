@@ -29,9 +29,6 @@ namespace ExecAssistantRuntime
             _path = Environment.ExpandEnvironmentVariables(path ?? string.Empty);
             if (string.IsNullOrWhiteSpace(_path))
                 throw new ArgumentException("Checkpoint path is empty.", nameof(path));
-            string directory = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
         }
 
         public RuntimeCheckpointData Load()
@@ -56,6 +53,11 @@ namespace ExecAssistantRuntime
             data.UpdatedUtc = DateTime.UtcNow.ToString("O");
             string json = JsonSerializer.Serialize(data, SerializerOptions);
             string temporary = _path + ".tmp";
+            string directory = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            if (File.Exists(temporary))
+                File.Delete(temporary);
             File.WriteAllText(temporary, json);
             File.Move(temporary, _path, overwrite: true);
         }

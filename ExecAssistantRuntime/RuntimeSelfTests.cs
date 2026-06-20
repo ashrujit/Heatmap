@@ -43,6 +43,37 @@ namespace ExecAssistantRuntime
                 .Any(t => t.Kind == EvidenceTransitionKind.RailFailed
                     && t.Band?.Side == EvidenceSide.Demand);
             Require(failed, "demand rail failure creates grey memory safely");
+
+            var consumedEngine = new ExecutionEvidenceEngine(0.25);
+            for (int second = 0; second < 35; second++)
+                consumedEngine.Process(Book(start.AddMinutes(2).AddSeconds(second),
+                    30000, bidSize: 1, askSize: 1));
+
+            int supplyCandidateId = 0;
+            for (int second = 35; second < 38; second++)
+            {
+                EvidenceTransition formedSupply = consumedEngine.Process(
+                        Book(start.AddMinutes(2).AddSeconds(second),
+                            30000, bidSize: 1, askSize: 20))
+                    .FirstOrDefault(t => t.Kind == EvidenceTransitionKind.CandidateFormed
+                        && t.Candidate?.Side == EvidenceSide.Supply);
+                if (formedSupply != null)
+                    supplyCandidateId = formedSupply.Candidate.Id;
+            }
+            Require(supplyCandidateId > 0, "supply candidate formation");
+
+            EvidenceTransition consumed = null;
+            for (int second = 38; second <= 50; second++)
+            {
+                consumed ??= consumedEngine.Process(
+                        Book(start.AddMinutes(2).AddSeconds(second),
+                            30002.25, bidSize: 1, askSize: 1))
+                    .FirstOrDefault(t => t.Kind == EvidenceTransitionKind.RailOwned
+                        && t.Band?.Side == EvidenceSide.Demand
+                        && t.Band.Source == EvidenceSource.Consumed);
+            }
+            Require(consumed?.Band.Id == supplyCandidateId,
+                "consumed rail preserves candidate lineage id");
         }
 
         private static void ContractTests()
@@ -189,6 +220,46 @@ namespace ExecAssistantRuntime
                 basePosition,
                 evidence).SingleOrDefault();
             Require(flatten?.Kind == OrderIntentKind.Flatten, "HF flatten");
+
+            var candidateEntry = new ResolutionContext { SupportObjectId = 77 };
+            var consumedOpposite = new EvidenceBandView
+            {
+                Id = 77,
+                Side = EvidenceSide.Supply,
+                Source = EvidenceSource.Consumed,
+            };
+            Require(ExecutionCoordinator.IsCandidateSupportConsumed(
+                    candidateEntry, consumedOpposite),
+                "candidate-backed reclaim immediate reverse lineage");
+            Require(!ExecutionCoordinator.PendingIntentMatchesState(
+                    true,
+                    RuntimeExecutionState.Armed,
+                    RuntimePosition.Flat),
+                "pending add is invalid after base position becomes flat");
+
+            var retryCoordinator = new ExecutionCoordinator(0.25);
+            retryCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            for (int attempt = 0; attempt <= directive.MaxBaseReentries; attempt++)
+            {
+                DateTime triggerUtc = now.AddSeconds(20 + attempt * 10);
+                EvidenceTransition retryTransition = ConsumedDemand(
+                    id: 200 + attempt,
+                    formedUtc: triggerUtc.AddSeconds(-1),
+                    eventUtc: triggerUtc,
+                    lower: 30500,
+                    upper: 30501);
+                OrderIntent retry = retryCoordinator.ProcessEvidence(
+                    new[] { retryTransition },
+                    triggerUtc,
+                    market,
+                    RuntimePosition.Flat,
+                    evidence).SingleOrDefault();
+                Require(retry?.Kind == OrderIntentKind.EnterBase,
+                    $"base submit attempt {attempt + 1}");
+                retryCoordinator.OnOrderAttemptResult(retry, accepted: false);
+            }
+            Require(retryCoordinator.State == RuntimeExecutionState.Completed,
+                "submitted base attempts exhaust retry allowance");
         }
 
         private static EvidenceTransition ConsumedDemand(
@@ -221,7 +292,7 @@ namespace ExecAssistantRuntime
             };
 
         private static BookDepthSnapshot Book(DateTime timeUtc, double bid,
-            double bidSize)
+            double bidSize, double askSize = 1)
         {
             const double tick = 0.25;
             DepthLevelSnapshot[] bids = Enumerable.Range(0, 30)
@@ -235,7 +306,7 @@ namespace ExecAssistantRuntime
                 .Select(i => new DepthLevelSnapshot
                 {
                     Price = bid + tick + i * tick,
-                    Size = 1,
+                    Size = askSize,
                 })
                 .ToArray();
             return new BookDepthSnapshot

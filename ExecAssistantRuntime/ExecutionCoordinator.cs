@@ -241,6 +241,20 @@ namespace ExecAssistantRuntime
             }
 
             position ??= RuntimePosition.Flat;
+            nowUtc = NormalizeUtc(nowUtc);
+            if (position.IsFlat && nowUtc > _directive.ExpiresAt.UtcDateTime
+                && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.Waiting))
+            {
+                State = RuntimeExecutionState.Expired;
+                return intents;
+            }
+            if (position.IsFlat && State == RuntimeExecutionState.Armed
+                && PreEntryInvalidated(market))
+            {
+                State = RuntimeExecutionState.Invalidated;
+                return intents;
+            }
             foreach (EvidenceTransition transition in transitions)
             {
                 if (transition == null)
@@ -339,7 +353,6 @@ namespace ExecAssistantRuntime
                 _entryAnchorFailed = false;
                 if (filledIntent.Kind == OrderIntentKind.EnterBase)
                 {
-                    _baseAttempts++;
                     _entryContext = filledIntent.Resolution;
                     State = RuntimeExecutionState.BaseOnly;
                 }
@@ -436,7 +449,14 @@ namespace ExecAssistantRuntime
             if (intent.Kind == OrderIntentKind.EnterBase || intent.Kind == OrderIntentKind.Add)
             {
                 if (!accepted && ReferenceEquals(_pendingEntryIntent, intent))
+                {
                     _pendingEntryIntent = null;
+                    if (intent.Kind == OrderIntentKind.EnterBase
+                        && _baseAttempts > _directive.MaxBaseReentries)
+                    {
+                        State = RuntimeExecutionState.Completed;
+                    }
+                }
             }
         }
 
@@ -445,9 +465,6 @@ namespace ExecAssistantRuntime
             _lastKnownQuantity = position?.Quantity ?? 0;
             _lastKnownAveragePrice = position?.AveragePrice ?? 0;
         }
-
-        public OrderIntent HardTargetReached(DateTime nowUtc, ExecutableMarket market)
-            => CreateFlattenIntent(nowUtc, market, "HARD_TP", terminal: true, rearm: false);
 
         public OrderIntent TerminalFlatten(DateTime nowUtc, ExecutableMarket market, string reason)
             => CreateFlattenIntent(nowUtc, market, reason, terminal: true, rearm: false);
@@ -628,6 +645,13 @@ namespace ExecAssistantRuntime
             PendingReclaim pending = _pendingReclaim;
             if (pending == null || _pendingEntryIntent != null)
                 return null;
+            bool stateStillMatches = PendingIntentMatchesState(
+                pending.IsAdd, State, position);
+            if (!stateStillMatches)
+            {
+                _pendingReclaim = null;
+                return null;
+            }
             EvidenceCandidateView candidate = evidence.FindCandidate(pending.CandidateId);
             EvidenceBandView failed = evidence.FindBand(pending.FailedBand.Id);
             if (candidate == null || !candidate.IsActive
@@ -661,6 +685,19 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             return CreateEntryIntent(nowUtc, market, position, resolution,
                 pending.IsAdd, "supported_reclaim_candidate");
+        }
+
+        internal static bool PendingIntentMatchesState(
+            bool isAdd,
+            RuntimeExecutionState state,
+            RuntimePosition position)
+        {
+            position ??= RuntimePosition.Flat;
+            return isAdd
+                ? !position.IsFlat
+                    && (state == RuntimeExecutionState.BaseOnly
+                        || state == RuntimeExecutionState.Leveraged)
+                : position.IsFlat && state == RuntimeExecutionState.Armed;
         }
 
         private OrderIntent TryCompleteDirectRetest(
@@ -706,8 +743,12 @@ namespace ExecAssistantRuntime
                 return null;
 
             EvidenceBandView opposing = transition.Band;
-            bool sameCandidateConsumed = opposing.Id == _entryContext.SupportObjectId
-                && opposing.Source == EvidenceSource.Consumed;
+            // Candidate-backed supported reclaims enter after the four-second fast
+            // path while the support candidate is still active. If that candidate
+            // later confirms adversely, the evidence engine emits the opposite
+            // Consumed rail with the same candidate id. Already-owned rails cannot
+            // reuse an id this way.
+            bool sameCandidateConsumed = IsCandidateSupportConsumed(_entryContext, opposing);
             bool nearbyReverse = _entryAnchorFailed
                 && RangeDistance(opposing.MinTick, opposing.MaxTick,
                     _entryContext.SupportMinTick, _entryContext.SupportMaxTick)
@@ -717,6 +758,14 @@ namespace ExecAssistantRuntime
             return CreateFlattenIntent(transition.TimeUtc, market,
                 "reverse_entry_resolution", terminal: false, rearm: true);
         }
+
+        internal static bool IsCandidateSupportConsumed(
+            ResolutionContext entryContext,
+            EvidenceBandView opposing)
+            => entryContext != null
+                && opposing != null
+                && opposing.Id == entryContext.SupportObjectId
+                && opposing.Source == EvidenceSource.Consumed;
 
         private bool CandidateSupportBecameAmbiguous(ExecutionEvidenceEngine evidence)
         {
@@ -737,14 +786,25 @@ namespace ExecAssistantRuntime
         {
             if (_pendingEntryIntent != null || _usedRootObjectIds.Contains(resolution.RootObjectId))
                 return null;
-            _usedRootObjectIds.Add(resolution.RootObjectId);
-            _epoch++;
+            if (!isAdd && _baseAttempts > _directive.MaxBaseReentries)
+            {
+                State = RuntimeExecutionState.Completed;
+                return null;
+            }
             int quantity = isAdd ? _directive.AddQuantity : _directive.BaseQuantity;
             if (isAdd)
                 quantity = Math.Min(quantity,
                     Math.Max(0, _directive.MaxPositionQuantity - (int)Math.Round(position.Quantity)));
             if (quantity <= 0)
                 return null;
+
+            _usedRootObjectIds.Add(resolution.RootObjectId);
+            _epoch++;
+            if (!isAdd)
+            {
+                _baseAttempts++;
+                _freshRootAfterUtc = NormalizeUtc(nowUtc);
+            }
 
             var intent = new OrderIntent
             {

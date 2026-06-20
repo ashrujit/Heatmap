@@ -14,6 +14,7 @@ namespace ExecAssistantRuntime
     public sealed class ExecAssistantRuntime : Strategy
     {
         private const int L1ToleranceTicks = 2;
+        private const int ProcessedControlHistory = 100;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -101,13 +102,15 @@ namespace ExecAssistantRuntime
 
         private readonly object _marketGate = new();
         private readonly object _orderSubscriptionGate = new();
-        private readonly HashSet<string> _subscribedOrderIds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Order> _subscribedOrders = new(StringComparer.Ordinal);
         private readonly ConcurrentQueue<BrokerEvent> _brokerEvents = new();
         private readonly Dictionary<string, SubmissionTelemetry> _submissions = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _processedControlDigests = new(StringComparer.Ordinal);
+        private readonly Queue<string> _processedControlOrder = new();
         private readonly HashSet<string> _blockedDirectiveIds = new(StringComparer.Ordinal);
 
         private Timer _workerTimer;
+        private int _shutdownStarted;
         private RuntimeEventLog _events;
         private RuntimeCheckpointStore _checkpointStore;
         private RuntimeCheckpointData _checkpoint;
@@ -126,10 +129,12 @@ namespace ExecAssistantRuntime
         private DateTime _lastCheckpointUtc = DateTime.MinValue;
         private bool _hadEvidenceSample;
         private bool _bookWasFresh;
+        private bool _runTradingEnabled;
         private string _lastDirectiveFileHash;
         private string _lastControlFileHash;
         private string _acceptedDirectiveRaw;
         private string _lastPositionSignature;
+        private string _lastShadowLivePositionSignature;
         private RuntimePosition _shadowPosition = RuntimePosition.Flat;
         private double? _shadowBreakeven;
         private double? _shadowHardTarget;
@@ -169,7 +174,7 @@ namespace ExecAssistantRuntime
                     RuntimeSymbol,
                     RuntimeAccount,
                     _events,
-                    TradingEnabled);
+                    _runTradingEnabled);
                 if (RunStartupSelfTests)
                 {
                     RuntimeSelfTests.RunAll();
@@ -188,19 +193,22 @@ namespace ExecAssistantRuntime
                 Subscribe();
                 LoadCheckpoint();
                 RecoverAtStartup();
-                PollControl();
-                PollDirective();
+                if (!ShadowLivePositionRequiresAction())
+                {
+                    PollControl();
+                    PollDirective();
+                }
                 int interval = Math.Max(100, WorkerPollMs);
                 _workerTimer = new Timer(_ => Worker(), null, interval, interval);
                 _events.Write("runtime_started",
                     ("symbol", RuntimeSymbol.Name),
                     ("account", RuntimeAccount.Name),
                     ("tick_size", _tickSize),
-                    ("trading_enabled", TradingEnabled),
+                    ("trading_enabled", _runTradingEnabled),
                     ("directive_path", ExpandPath(DirectivePath)),
                     ("control_path", ExpandPath(ControlPath)));
                 Log($"Runtime started for {RuntimeSymbol.Name}/{RuntimeAccount.Name}; "
-                    + $"mode={(TradingEnabled ? "LIVE" : "SHADOW")}.");
+                    + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
             }
             catch (Exception ex)
             {
@@ -229,8 +237,24 @@ namespace ExecAssistantRuntime
             {
                 DateTime nowUtc = DateTime.UtcNow;
                 DrainBrokerEvents();
+                if (ShadowLivePositionRequiresAction())
+                    return;
                 ExecutableMarket market = SnapshotMarket(nowUtc);
-                RuntimePosition position = CurrentPosition();
+                bool ambiguous = false;
+                RuntimePosition position = _runTradingEnabled
+                    ? LivePosition(out ambiguous)
+                    : CurrentPosition();
+                if (_runTradingEnabled && ambiguous
+                    && _coordinator.State != RuntimeExecutionState.Halting)
+                {
+                    _events.Write("ambiguous_position_detected",
+                        ("position_id", position.PositionId),
+                        ("quantity", position.Quantity));
+                    OrderIntent flatten = _coordinator.SafetyFlatten(
+                        nowUtc, market, "ambiguous_bound_positions");
+                    ExecuteIntents(new[] { flatten }, position, market);
+                    return;
+                }
                 ReconcilePosition(position, nowUtc, market);
                 if (position.IsFlat)
                     _gateway.CancelProtectionWhenFlat();
@@ -362,6 +386,16 @@ namespace ExecAssistantRuntime
                     ("working_order_ids", string.Join(",", workingOrders.Select(o => o.Id))));
                 return;
             }
+            int unresolvedEntries = _submissions.Values.Count(t =>
+                t.CancelRequested && !t.FillObserved);
+            if (unresolvedEntries > 0)
+            {
+                _events.Write("directive_rejected",
+                    ("directive_id", directive.Id),
+                    ("reason", "entry_reconciliation_unresolved"),
+                    ("unresolved_entry_count", unresolvedEntries));
+                return;
+            }
             if (active != null && !IsCoordinatorTerminal())
             {
                 _events.Write("directive_rejected",
@@ -370,7 +404,7 @@ namespace ExecAssistantRuntime
                     ("active_directive_id", active.Id));
                 return;
             }
-            if (TradingEnabled && !directive.IsLiveTargetSupported)
+            if (_runTradingEnabled && !directive.IsLiveTargetSupported)
             {
                 _events.Write("directive_rejected",
                     ("directive_id", directive.Id),
@@ -394,7 +428,8 @@ namespace ExecAssistantRuntime
                         ("directive_id", directive.Id),
                         ("reason", "hard_target_has_no_runway"),
                         ("executable_quote", executable),
-                        ("target", directive.TargetPrice));
+                        ("target", directive.TargetPrice),
+                        ("not_before", directive.NotBefore.ToString("O")));
                     return;
                 }
             }
@@ -417,7 +452,7 @@ namespace ExecAssistantRuntime
                 ("max_position_quantity", directive.MaxPositionQuantity),
                 ("target_mode", directive.TargetMode.ToString()),
                 ("target_price", directive.TargetPrice),
-                ("mode", TradingEnabled ? "LIVE" : "SHADOW"));
+                ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
         }
 
@@ -453,7 +488,7 @@ namespace ExecAssistantRuntime
                 return;
             }
 
-            _processedControlDigests[command.CommandId] = command.Digest;
+            RememberProcessedControl(command.CommandId, command.Digest);
             ExecutableMarket market = SnapshotMarket(DateTime.UtcNow);
             RuntimePosition position = CurrentPosition();
             IReadOnlyList<OrderIntent> intents;
@@ -478,6 +513,22 @@ namespace ExecAssistantRuntime
                 ("reason", command.Reason));
             ExecuteIntents(intents, position, market);
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
+        }
+
+        private void RememberProcessedControl(string commandId, string digest)
+        {
+            if (string.IsNullOrWhiteSpace(commandId)
+                || _processedControlDigests.ContainsKey(commandId))
+            {
+                return;
+            }
+            _processedControlDigests[commandId] = digest;
+            _processedControlOrder.Enqueue(commandId);
+            while (_processedControlOrder.Count > ProcessedControlHistory)
+            {
+                string expired = _processedControlOrder.Dequeue();
+                _processedControlDigests.Remove(expired);
+            }
         }
 
         private void ExecuteIntents(IReadOnlyList<OrderIntent> intents,
@@ -512,6 +563,7 @@ namespace ExecAssistantRuntime
                         _submissions[submissionKey] = new SubmissionTelemetry
                         {
                             Intent = intent,
+                            BrokerOrderId = result.OrderId,
                             SubmitUtc = DateTime.UtcNow,
                             SubmitBid = market?.Bid ?? double.NaN,
                             SubmitAsk = market?.Ask ?? double.NaN,
@@ -589,7 +641,7 @@ namespace ExecAssistantRuntime
 
         private void EvaluateShadowProtection(DateTime nowUtc, ExecutableMarket market)
         {
-            if (TradingEnabled || _shadowPosition.IsFlat || market == null || !market.IsValid)
+            if (_runTradingEnabled || _shadowPosition.IsFlat || market == null || !market.IsValid)
                 return;
             bool target = _shadowHardTarget.HasValue
                 && (_shadowPosition.Direction == TradeDirection.Long
@@ -609,6 +661,15 @@ namespace ExecAssistantRuntime
         private void ReconcilePosition(RuntimePosition position, DateTime nowUtc,
             ExecutableMarket market)
         {
+            if (position != null && !position.IsFlat
+                && _coordinator.State == RuntimeExecutionState.Error)
+            {
+                OrderIntent safety = _coordinator.SafetyFlatten(
+                    nowUtc, market, "late_fill_after_entry_reconciliation_error");
+                ExecuteIntents(new[] { safety }, position, market);
+                return;
+            }
+
             TradeDirective directive = _coordinator.Directive;
             if (directive != null && !position.IsFlat
                 && _coordinator.State != RuntimeExecutionState.Halting
@@ -663,7 +724,7 @@ namespace ExecAssistantRuntime
                 return;
             }
 
-            if (!TradingEnabled)
+            if (!_runTradingEnabled)
             {
                 OrderIntent flatten = _coordinator.SafetyFlatten(nowUtc, market,
                     "forward_data_loss_shadow");
@@ -689,7 +750,7 @@ namespace ExecAssistantRuntime
             {
                 _checkpoint = _checkpointStore.Load() ?? new RuntimeCheckpointData();
                 foreach (string id in _checkpoint.ProcessedControlIds.TakeLast(100))
-                    _processedControlDigests[id] = null;
+                    RememberProcessedControl(id, null);
                 if (!string.IsNullOrWhiteSpace(_checkpoint.LastDirectiveId))
                     _blockedDirectiveIds.Add(_checkpoint.LastDirectiveId);
             }
@@ -715,12 +776,9 @@ namespace ExecAssistantRuntime
 
             if (position.IsFlat)
                 return;
-            if (!TradingEnabled)
+            if (!_runTradingEnabled)
             {
-                _events.Write("recovery_action_required",
-                    ("reason", "bound live position exists while strategy is in shadow mode"),
-                    ("position_id", position.PositionId),
-                    ("quantity", position.Quantity));
+                ShadowLivePositionRequiresAction();
                 return;
             }
 
@@ -823,6 +881,7 @@ namespace ExecAssistantRuntime
         {
             while (_brokerEvents.TryDequeue(out BrokerEvent ev))
             {
+                BindSubmissionToOrder(ev);
                 _events.Write(ev.EventType,
                     ("order_id", ev.OrderId),
                     ("position_id", ev.PositionId),
@@ -836,38 +895,53 @@ namespace ExecAssistantRuntime
                     ("broker_utc", ev.BrokerUtc == default
                         ? null
                         : ev.BrokerUtc.ToString("O", CultureInfo.InvariantCulture)),
-                    ("comment", ev.Comment));
+                    ("comment", ev.Comment),
+                    ("group_id", ev.GroupId));
 
                 if (ev.EventType == "trade_fill")
+                {
                     LogFillQuality(ev);
+                    if (HasOrderRole(ev, "TP"))
+                    {
+                        _events.Write("hard_target_fill",
+                            ("order_id", ev.OrderId),
+                            ("position_id", ev.PositionId),
+                            ("quantity", ev.Quantity),
+                            ("price", ev.Price));
+                    }
+                }
                 else if ((ev.EventType == "order_removed" || ev.EventType == "order_updated")
                     && (string.Equals(ev.Status, OrderStatus.Refused.ToString(), StringComparison.Ordinal)
                         || string.Equals(ev.Status, OrderStatus.Cancelled.ToString(), StringComparison.Ordinal))
                     && ev.FilledQuantity <= 0
-                    && !string.IsNullOrWhiteSpace(ev.OrderId)
-                    && _submissions.TryGetValue(ev.OrderId, out SubmissionTelemetry terminal))
+                    && TryFindSubmission(ev, allowSideFallback: false,
+                        out string submissionKey,
+                        out SubmissionTelemetry terminal,
+                        out _))
                 {
                     _coordinator.OnOrderAttemptResult(terminal.Intent, accepted: false);
                     _events.Write("entry_order_terminal_without_fill",
                         ("intent_id", terminal.Intent.IntentId),
                         ("order_id", ev.OrderId),
                         ("status", ev.Status));
-                    _submissions.Remove(ev.OrderId);
+                    _submissions.Remove(submissionKey);
                 }
             }
         }
 
         private void LogFillQuality(BrokerEvent fill)
         {
-            SubmissionTelemetry telemetry = null;
-            if (!string.IsNullOrWhiteSpace(fill.OrderId))
-                _submissions.TryGetValue(fill.OrderId, out telemetry);
-            telemetry ??= _submissions.Values
-                .Where(t => t.Intent.Direction.ToString() == fill.Side)
-                .OrderByDescending(t => t.SubmitUtc)
-                .FirstOrDefault();
-            if (telemetry == null)
+            if (!TryFindSubmission(fill, allowSideFallback: true,
+                out _, out SubmissionTelemetry telemetry, out bool usedSideFallback))
                 return;
+            if (usedSideFallback)
+            {
+                _events.Write("fill_quality_fallback_match",
+                    ("intent_id", telemetry.Intent.IntentId),
+                    ("order_id", fill.OrderId),
+                    ("side", fill.Side),
+                    ("reason", "matched most recent submission by side"));
+            }
             telemetry.FillObserved = true;
             bool isLong = telemetry.Intent.Direction == TradeDirection.Long;
             double triggerExecutable = isLong
@@ -922,15 +996,132 @@ namespace ExecAssistantRuntime
                 }
                 if (ageSeconds <= 10)
                     continue;
-                _gateway.CancelOrderById(key);
-                _coordinator.OnOrderAttemptResult(telemetry.Intent, accepted: false);
-                _events.Write("entry_fill_timeout",
-                    ("intent_id", telemetry.Intent.IntentId),
-                    ("order_id", key),
-                    ("elapsed_seconds", ageSeconds));
-                _submissions.Remove(key);
+                if (!telemetry.CancelRequested)
+                {
+                    bool cancelAccepted = _gateway.CancelEntryOrder(
+                        telemetry.BrokerOrderId, telemetry.Intent.IntentId);
+                    telemetry.CancelRequested = true;
+                    telemetry.LastCancelAttemptUtc = nowUtc;
+                    _events.Write("entry_fill_timeout",
+                        ("intent_id", telemetry.Intent.IntentId),
+                        ("order_id", telemetry.BrokerOrderId),
+                        ("elapsed_seconds", ageSeconds),
+                        ("cancel_accepted", cancelAccepted));
+                    if (!cancelAccepted)
+                    {
+                        _coordinator.MarkError();
+                        telemetry.ReconciliationFailureLogged = true;
+                        _events.Write("entry_order_unresolved",
+                            ("intent_id", telemetry.Intent.IntentId),
+                            ("order_id", telemetry.BrokerOrderId),
+                            ("operator_action_required", true));
+                    }
+                    continue;
+                }
+
+                if (ageSeconds > 30 && !telemetry.ReconciliationFailureLogged)
+                {
+                    _coordinator.MarkError();
+                    telemetry.ReconciliationFailureLogged = true;
+                    _events.Write("entry_cancel_reconciliation_timeout",
+                        ("intent_id", telemetry.Intent.IntentId),
+                        ("order_id", telemetry.BrokerOrderId),
+                        ("elapsed_seconds", ageSeconds),
+                        ("operator_action_required", true));
+                }
+
+                if ((nowUtc - telemetry.LastCancelAttemptUtc).TotalSeconds >= 5)
+                {
+                    bool retryAccepted = _gateway.CancelEntryOrder(
+                        telemetry.BrokerOrderId, telemetry.Intent.IntentId);
+                    telemetry.LastCancelAttemptUtc = nowUtc;
+                    _events.Write("entry_timeout_cancel_retry",
+                        ("intent_id", telemetry.Intent.IntentId),
+                        ("order_id", telemetry.BrokerOrderId),
+                        ("accepted", retryAccepted),
+                        ("elapsed_seconds", ageSeconds));
+                }
             }
         }
+
+        private void BindSubmissionToOrder(BrokerEvent brokerEvent)
+        {
+            if (brokerEvent == null || string.IsNullOrWhiteSpace(brokerEvent.OrderId))
+                return;
+            if (_submissions.TryGetValue(brokerEvent.OrderId,
+                out SubmissionTelemetry direct))
+            {
+                direct.BrokerOrderId = brokerEvent.OrderId;
+                return;
+            }
+
+            KeyValuePair<string, SubmissionTelemetry> tagged = _submissions
+                .FirstOrDefault(pair => HasIntentTag(brokerEvent, pair.Value.Intent.IntentId));
+            if (tagged.Value == null)
+                return;
+            _submissions.Remove(tagged.Key);
+            tagged.Value.BrokerOrderId = brokerEvent.OrderId;
+            _submissions[brokerEvent.OrderId] = tagged.Value;
+        }
+
+        private bool TryFindSubmission(
+            BrokerEvent brokerEvent,
+            bool allowSideFallback,
+            out string key,
+            out SubmissionTelemetry telemetry,
+            out bool usedSideFallback)
+        {
+            key = null;
+            telemetry = null;
+            usedSideFallback = false;
+            if (brokerEvent == null)
+                return false;
+            if (!string.IsNullOrWhiteSpace(brokerEvent.OrderId)
+                && _submissions.TryGetValue(brokerEvent.OrderId, out telemetry))
+            {
+                key = brokerEvent.OrderId;
+                return true;
+            }
+
+            KeyValuePair<string, SubmissionTelemetry> exact = _submissions
+                .FirstOrDefault(pair =>
+                    (!string.IsNullOrWhiteSpace(brokerEvent.OrderId)
+                        && pair.Value.BrokerOrderId == brokerEvent.OrderId)
+                    || HasIntentTag(brokerEvent, pair.Value.Intent.IntentId));
+            if (exact.Value != null)
+            {
+                key = exact.Key;
+                telemetry = exact.Value;
+                return true;
+            }
+            if (!allowSideFallback)
+                return false;
+
+            KeyValuePair<string, SubmissionTelemetry> side = _submissions
+                .Where(pair => pair.Value.Intent.Direction.ToString() == brokerEvent.Side)
+                .OrderByDescending(pair => pair.Value.SubmitUtc)
+                .FirstOrDefault();
+            if (side.Value == null)
+                return false;
+            key = side.Key;
+            telemetry = side.Value;
+            usedSideFallback = true;
+            return true;
+        }
+
+        private static bool HasIntentTag(BrokerEvent brokerEvent, string intentId)
+        {
+            if (brokerEvent == null || string.IsNullOrWhiteSpace(intentId))
+                return false;
+            string token = intentId.Length > 8 ? intentId.Substring(0, 8) : intentId;
+            return (brokerEvent.Comment?.EndsWith($":{token}", StringComparison.Ordinal) ?? false)
+                || (brokerEvent.GroupId?.EndsWith($":{token}", StringComparison.Ordinal) ?? false);
+        }
+
+        private static bool HasOrderRole(BrokerEvent brokerEvent, string role)
+            => brokerEvent != null
+                && ((brokerEvent.Comment?.Contains($":{role}:", StringComparison.Ordinal) ?? false)
+                    || (brokerEvent.GroupId?.Contains($":{role}:", StringComparison.Ordinal) ?? false));
 
         private void SaveCheckpointIfDue(DateTime nowUtc, bool force)
         {
@@ -945,7 +1136,7 @@ namespace ExecAssistantRuntime
                 LastDirectiveId = directive?.Id ?? _checkpoint?.LastDirectiveId,
                 LastDirectiveDigest = directive?.Digest ?? _checkpoint?.LastDirectiveDigest,
                 LastDirectiveJson = _acceptedDirectiveRaw ?? _checkpoint?.LastDirectiveJson,
-                ProcessedControlIds = _processedControlDigests.Keys.TakeLast(100).ToList(),
+                ProcessedControlIds = _processedControlOrder.ToList(),
                 PositionId = position.PositionId,
                 PositionDirection = position.IsFlat ? null : position.Direction.ToString(),
                 PositionQuantity = position.Quantity,
@@ -1034,9 +1225,37 @@ namespace ExecAssistantRuntime
 
         private RuntimePosition CurrentPosition()
         {
-            if (!TradingEnabled && !_shadowPosition.IsFlat)
+            if (!_runTradingEnabled)
                 return _shadowPosition;
             return LivePosition(out _);
+        }
+
+        private bool ShadowLivePositionRequiresAction()
+        {
+            if (_runTradingEnabled)
+                return false;
+            RuntimePosition live = LivePosition(out bool ambiguous);
+            if (live.IsFlat)
+            {
+                _lastShadowLivePositionSignature = null;
+                return false;
+            }
+
+            string signature = $"{live.PositionId}|{live.Direction}|{live.Quantity:R}|"
+                + $"{live.AveragePrice:R}|{ambiguous}";
+            if (!string.Equals(signature, _lastShadowLivePositionSignature,
+                StringComparison.Ordinal))
+            {
+                _lastShadowLivePositionSignature = signature;
+                _events?.Write("recovery_action_required",
+                    ("reason", "bound live position exists while strategy is in shadow mode"),
+                    ("position_id", live.PositionId),
+                    ("side", live.Direction.ToString()),
+                    ("quantity", live.Quantity),
+                    ("average_price", live.AveragePrice),
+                    ("ambiguous", ambiguous));
+            }
+            return true;
         }
 
         private RuntimePosition LivePosition(out bool ambiguous)
@@ -1135,12 +1354,16 @@ namespace ExecAssistantRuntime
             try { Core.Instance.TradeAdded -= Core_TradeAdded; } catch { }
             try { Core.Instance.PositionAdded -= Core_PositionChanged; } catch { }
             try { Core.Instance.PositionRemoved -= Core_PositionChanged; } catch { }
-            foreach (Order order in Core.Instance.Orders.Where(o => SameBoundPair(o.Symbol, o.Account)))
+            Order[] subscribed;
+            lock (_orderSubscriptionGate)
+            {
+                subscribed = _subscribedOrders.Values.ToArray();
+                _subscribedOrders.Clear();
+            }
+            foreach (Order order in subscribed)
             {
                 try { order.Updated -= Order_Updated; } catch { }
             }
-            lock (_orderSubscriptionGate)
-                _subscribedOrderIds.Clear();
         }
 
         private void Symbol_NewQuote(Symbol symbol, Quote quote)
@@ -1185,7 +1408,7 @@ namespace ExecAssistantRuntime
                 return;
             try { order.Updated -= Order_Updated; } catch { }
             lock (_orderSubscriptionGate)
-                _subscribedOrderIds.Remove(order.Id);
+                _subscribedOrders.Remove(order.Id);
             _brokerEvents.Enqueue(BrokerEvent.FromOrder("order_removed", order));
         }
 
@@ -1195,8 +1418,13 @@ namespace ExecAssistantRuntime
                 return;
             lock (_orderSubscriptionGate)
             {
-                if (!_subscribedOrderIds.Add(order.Id))
-                    return;
+                if (_subscribedOrders.TryGetValue(order.Id, out Order prior))
+                {
+                    if (ReferenceEquals(prior, order))
+                        return;
+                    try { prior.Updated -= Order_Updated; } catch { }
+                }
+                _subscribedOrders[order.Id] = order;
                 order.Updated += Order_Updated;
             }
         }
@@ -1231,17 +1459,38 @@ namespace ExecAssistantRuntime
 
         private void Shutdown(string eventType)
         {
-            if (!_running && _events == null)
+            if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
                 return;
             _running = false;
-            try { _workerTimer?.Dispose(); } catch { }
-            _workerTimer = null;
+            Timer timer = Interlocked.Exchange(ref _workerTimer, null);
+            if (timer != null)
+            {
+                try
+                {
+                    var callbackDone = new ManualResetEvent(false);
+                    bool notifyPending = timer.Dispose(callbackDone);
+                    if (notifyPending
+                        && !callbackDone.WaitOne(TimeSpan.FromSeconds(5)))
+                    {
+                        // Keep the handle alive so Timer can signal it if the
+                        // in-flight callback eventually returns. A permanently
+                        // stuck callback leaks this one handle for the remaining
+                        // process lifetime; that is safer than disposing a handle
+                        // the Timer may still signal during overdue shutdown.
+                        _events?.Write("worker_shutdown_timeout");
+                    }
+                    else
+                    {
+                        callbackDone.Dispose();
+                    }
+                }
+                catch { }
+            }
             try { _gateway?.CancelEntryOrdersOnStop(); } catch { }
             try { SaveCheckpointIfDue(DateTime.UtcNow, force: true); } catch { }
             try { _events?.Write(eventType, ("state", _coordinator?.State.ToString())); } catch { }
             Unsubscribe();
             try { _events?.Dispose(); } catch { }
-            _events = null;
             Log("Runtime stopped.");
         }
 
@@ -1255,20 +1504,24 @@ namespace ExecAssistantRuntime
             _lastCheckpointUtc = DateTime.MinValue;
             _hadEvidenceSample = false;
             _bookWasFresh = false;
+            _runTradingEnabled = TradingEnabled;
             _lastDirectiveFileHash = null;
             _lastControlFileHash = null;
             _acceptedDirectiveRaw = null;
             _lastPositionSignature = null;
+            _lastShadowLivePositionSignature = null;
             _shadowPosition = RuntimePosition.Flat;
             _shadowBreakeven = null;
             _shadowHardTarget = null;
             _lastLoggedState = RuntimeExecutionState.Idle;
             _submissions.Clear();
             _processedControlDigests.Clear();
+            _processedControlOrder.Clear();
             _blockedDirectiveIds.Clear();
             while (_brokerEvents.TryDequeue(out _)) { }
             lock (_orderSubscriptionGate)
-                _subscribedOrderIds.Clear();
+                _subscribedOrders.Clear();
+            Volatile.Write(ref _shutdownStarted, 0);
         }
 
         private bool ResolveAccountAndSymbol()
@@ -1366,11 +1619,15 @@ namespace ExecAssistantRuntime
         private sealed class SubmissionTelemetry
         {
             public OrderIntent Intent;
+            public string BrokerOrderId;
             public DateTime SubmitUtc;
             public double SubmitBid;
             public double SubmitAsk;
             public double PositionQuantityBefore;
             public bool FillObserved;
+            public bool CancelRequested;
+            public bool ReconciliationFailureLogged;
+            public DateTime LastCancelAttemptUtc;
         }
 
         private sealed class BrokerEvent
@@ -1387,6 +1644,7 @@ namespace ExecAssistantRuntime
             public double AverageFillPrice;
             public DateTime BrokerUtc;
             public string Comment;
+            public string GroupId;
 
             public static BrokerEvent FromOrder(string eventType, IOrder order)
                 => new()
@@ -1403,6 +1661,7 @@ namespace ExecAssistantRuntime
                     AverageFillPrice = order.AverageFillPrice,
                     BrokerUtc = order.LastUpdateTime,
                     Comment = order.Comment,
+                    GroupId = order.GroupId,
                 };
 
             public static BrokerEvent FromTrade(Trade trade)

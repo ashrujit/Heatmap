@@ -95,15 +95,40 @@ namespace ExecAssistantRuntime
             }
         }
 
-        public void CancelOrderById(string orderId)
+        public bool CancelEntryOrder(string orderId, string intentId)
         {
-            if (!_tradingEnabled || string.IsNullOrWhiteSpace(orderId))
-                return;
-            Order order = Core.Instance.Orders.FirstOrDefault(o => o.Id == orderId
-                && IsRuntimeOrder(o));
-            if (order == null)
-                return;
-            try { Core.Instance.CancelOrder((IOrder)order, SendingSource); } catch { }
+            if (!_tradingEnabled)
+                return false;
+            Order[] orders = Core.Instance.Orders
+                .Where(o => IsRuntimeOrder(o) && IsEntryOrder(o))
+                .Where(o => (!string.IsNullOrWhiteSpace(orderId) && o.Id == orderId)
+                    || HasIntentTag(o, intentId))
+                .ToArray();
+            bool allAccepted = orders.Length > 0;
+            foreach (Order order in orders)
+            {
+                try
+                {
+                    TradingOperationResult result = Core.Instance.CancelOrder(
+                        (IOrder)order, SendingSource);
+                    bool accepted = result.Status == TradingOperationResultStatus.Success;
+                    allAccepted &= accepted;
+                    _events.Write("entry_timeout_cancel_result",
+                        ("intent_id", intentId),
+                        ("order_id", order.Id),
+                        ("accepted", accepted),
+                        ("message", result.Message));
+                }
+                catch (Exception ex)
+                {
+                    allAccepted = false;
+                    _events.Write("entry_timeout_cancel_exception",
+                        ("intent_id", intentId),
+                        ("order_id", order.Id),
+                        ("message", ex.Message));
+                }
+            }
+            return allAccepted;
         }
 
         private GatewayResult PlaceMarket(OrderIntent intent, ExecutableMarket market)
@@ -244,8 +269,10 @@ namespace ExecAssistantRuntime
                 if (existing != null)
                 {
                     if (NearlyEqual(existing.Price, price)
-                        && NearlyEqual(existing.TotalQuantity, position.Quantity))
+                        && NearlyEqual(existing.RemainingQuantity, position.Quantity))
                         return Success(existing.Id, "hard target already correct");
+                    // Quantower initializes modify quantity from RemainingQuantity;
+                    // this is the desired remaining close size.
                     TradingOperationResult modify = Core.Instance.ModifyOrder(
                         existing,
                         TimeInForce.Default,
@@ -336,7 +363,7 @@ namespace ExecAssistantRuntime
                 if (existing != null)
                 {
                     if (NearlyEqual(existing.TriggerPrice, trigger)
-                        && NearlyEqual(existing.TotalQuantity, position.Quantity))
+                        && NearlyEqual(existing.RemainingQuantity, position.Quantity))
                         return Success(existing.Id, "breakeven already correct");
                     TradingOperationResult modify = Core.Instance.ModifyOrder(
                         existing,
@@ -424,37 +451,53 @@ namespace ExecAssistantRuntime
                     ("message", ex.Message));
             }
 
-            try
+            Position[] livePositions = FindBoundPositions();
+            if (livePositions.Length == 0)
+                return Success(null, "position already absent");
+            if (livePositions.Length > 1)
             {
-                Position live = FindBoundPositions()
-                    .FirstOrDefault(p => p.Id == position.PositionId)
-                    ?? FindBoundPositions().FirstOrDefault();
-                if (live == null)
-                    return Success(null, "position already absent");
-                TradingOperationResult result = Core.Instance.ClosePosition(live);
-                bool ok = result.Status == TradingOperationResultStatus.Success;
-                _events.Write("flatten_result",
+                _events.Write("ambiguous_position_flatten",
                     ("intent_id", intent.IntentId),
-                    ("directive_id", intent.DirectiveId),
-                    ("position_id", live.Id),
-                    ("quantity", live.Quantity),
-                    ("reason", intent.Reason),
-                    ("accepted", ok),
-                    ("message", result.Message));
-                return new GatewayResult
+                    ("position_count", livePositions.Length),
+                    ("position_ids", string.Join(",", livePositions.Select(p => p.Id))));
+            }
+
+            bool allAccepted = true;
+            var messages = new List<string>();
+            foreach (Position live in livePositions
+                .OrderByDescending(p => p.Id == position.PositionId))
+            {
+                try
                 {
-                    Accepted = ok,
-                    RequiresFlatten = !ok,
-                    Message = result.Message,
-                };
+                    TradingOperationResult result = Core.Instance.ClosePosition(live);
+                    bool accepted = result.Status == TradingOperationResultStatus.Success;
+                    allAccepted &= accepted;
+                    messages.Add(result.Message);
+                    _events.Write("flatten_result",
+                        ("intent_id", intent.IntentId),
+                        ("directive_id", intent.DirectiveId),
+                        ("position_id", live.Id),
+                        ("quantity", live.Quantity),
+                        ("reason", intent.Reason),
+                        ("accepted", accepted),
+                        ("message", result.Message));
+                }
+                catch (Exception ex)
+                {
+                    allAccepted = false;
+                    messages.Add(ex.Message);
+                    _events.Write("flatten_exception",
+                        ("intent_id", intent.IntentId),
+                        ("position_id", live.Id),
+                        ("message", ex.Message));
+                }
             }
-            catch (Exception ex)
+            return new GatewayResult
             {
-                _events.Write("flatten_exception",
-                    ("intent_id", intent.IntentId),
-                    ("message", ex.Message));
-                return Failure(ex.Message, requiresFlatten: true);
-            }
+                Accepted = allAccepted,
+                RequiresFlatten = !allAccepted,
+                Message = string.Join("; ", messages.Where(m => !string.IsNullOrWhiteSpace(m))),
+            };
         }
 
         private GatewayResult CancelOrders(OrderIntent intent)
@@ -525,8 +568,31 @@ namespace ExecAssistantRuntime
 
         private Order FindProtection(string role)
             => Core.Instance.Orders.FirstOrDefault(o => IsRuntimeOrder(o)
+                && IsWorkingOrder(o)
                 && ((o.Comment?.Contains($":{role}:", StringComparison.Ordinal) ?? false)
                     || (o.GroupId?.Contains($":{role}:", StringComparison.Ordinal) ?? false)));
+
+        private static bool IsWorkingOrder(Order order)
+            => order != null
+                && order.RemainingQuantity > 0
+                && (order.Status == OrderStatus.Opened
+                    || order.Status == OrderStatus.PartiallyFilled
+                    || order.Status == OrderStatus.Inactive);
+
+        private static bool IsEntryOrder(Order order)
+            => order != null
+                && ((order.Comment?.Contains(":BASE:", StringComparison.Ordinal) ?? false)
+                    || (order.Comment?.Contains(":ADD:", StringComparison.Ordinal) ?? false)
+                    || (order.GroupId?.Contains(":BASE:", StringComparison.Ordinal) ?? false)
+                    || (order.GroupId?.Contains(":ADD:", StringComparison.Ordinal) ?? false));
+
+        private static bool HasIntentTag(Order order, string intentId)
+        {
+            string token = IntentToken(intentId);
+            return token != null
+                && ((order.Comment?.EndsWith($":{token}", StringComparison.Ordinal) ?? false)
+                    || (order.GroupId?.EndsWith($":{token}", StringComparison.Ordinal) ?? false));
+        }
 
         private static bool IsProtectionOrder(Order order)
             => order != null
@@ -546,10 +612,16 @@ namespace ExecAssistantRuntime
             string directive = intent.DirectiveId ?? "none";
             if (directive.Length > 18)
                 directive = directive.Substring(0, 18);
-            string id = intent.IntentId ?? Guid.NewGuid().ToString("N");
-            if (id.Length > 8)
-                id = id.Substring(0, 8);
+            string id = IntentToken(intent.IntentId)
+                ?? Guid.NewGuid().ToString("N").Substring(0, 8);
             return $"{TagPrefix}{directive}:{role}:{id}";
+        }
+
+        private static string IntentToken(string intentId)
+        {
+            if (string.IsNullOrWhiteSpace(intentId))
+                return null;
+            return intentId.Length > 8 ? intentId.Substring(0, 8) : intentId;
         }
 
         private void LogProtectionResult(string eventType, OrderIntent intent,
