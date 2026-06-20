@@ -1,0 +1,4 @@
+interface:
+  display_name: "Exec Assistant"
+  short_description: "Refine and dispatch EAR trade directives"
+  default_prompt: "Use $exec-asst to refine and dispatch this execution directive to EAR."
