@@ -16,9 +16,12 @@ The first live-capable cut must prove the complete mechanical path:
 5. retry only from a fresh epoch when the base stops;
 6. add only from fresh campaign evidence;
 7. protect leverage at weighted breakeven;
-8. exit at a hard target, semantic stop, LF/HF, cancellation, or `FLAT`;
-9. reconcile every order, fill, and position change;
-10. produce enough telemetry to diagnose timing and fill quality afterward.
+8. hand campaign protection to fresh favorable sponsors without moving the
+   broker breakeven stop;
+9. exit at a hard target, semantic stop, current-sponsor failure, LF/HF,
+   cancellation, or `FLAT`;
+10. reconcile every order, fill, and position change;
+11. produce enough telemetry to diagnose timing and fill quality afterward.
 
 ## Safety Cut Line
 
@@ -26,9 +29,9 @@ The strategy starts in shadow mode. Live order placement requires the explicit
 Quantower `Trading Enabled` setting.
 
 The v1 live cut supports `HARD_TP`. The other schema-valid target modes remain
-shadow-only until weak-extension and continuation-survival rules are specified
-without discretion. A live directive using an unsupported target mode is
-rejected before activation.
+frozen, observation-only compatibility values in shadow mode. They do not gain
+weak-extension or continuation-survival behavior. A live directive using an
+unsupported target mode is rejected before activation.
 
 This is deliberate fail-closed behavior, not a permanent reduction of the
 design. Entry, scaling, protection, control, and recovery can be exercised on a
@@ -108,7 +111,10 @@ uninterrupted seconds of favorable eight-tick displacement.
 - retry allowance before leverage only;
 - maximum position as a ceiling, never an objective;
 - immediate weighted breakeven after the first add;
+- irreversible favorable-only sponsor promotion and exact-current-sponsor
+  failure flattening;
 - post-activation opposite LF/HF flattening;
+- armed-directive invalidation when a fresh opposite LF/HF appears while flat;
 - target and control precedence.
 
 The coordinator produces order intents. It does not call Quantower directly.
@@ -136,6 +142,10 @@ retest while the wall survives.
 
 `RuntimeEventLog.cs` writes append-only JSONL on a dedicated writer thread.
 Broker and market-data callbacks never write files directly.
+
+Quantower Strategy Manager also receives sparse `[EAR]` lifecycle messages for
+directive, order/protection, sponsor, HF/LF, control, recovery, and error events.
+It is the immediate operator channel, not a replacement for JSONL audit detail.
 
 Each event includes UTC and monotonic timestamps. Order telemetry records:
 
@@ -187,13 +197,19 @@ be used to resume old evidence.
 - after the first add fill, install whole-position weighted breakeven
   immediately from actual broker position average and quantity;
 - later adds modify breakeven and hard-target quantity;
+- the filled entry support initializes the sponsor; a later newly owned,
+  non-overlapping same-side rail may promote only fully in the favorable
+  direction after price confirms beyond its band;
+- sponsor tests/holds do nothing; failure or adverse consumption of the exact
+  current sponsor market-flattens, while older sponsor failures are ignored;
+- sponsor promotion never moves the weighted-breakeven broker stop;
 - failure to establish valid leveraged protection is a flattening error.
 
 ### Targets
 
 - `HARD_TP`: resting close-order limit at the normalized target;
-- decision/trailing modes: parse and shadow-log, but reject for live execution
-  in this cut;
+- decision/trailing modes: parse for compatibility and shadow-log only, with no
+  target behavior; reject for live execution;
 - reaching the hard target or any terminal exit completes the directive and
   prevents re-arming.
 
@@ -235,6 +251,9 @@ Before enabling orders:
 - restart fixtures produce cancel, flatten, or `RECOVERY_PROTECTED` exactly as
   specified;
 - leveraged fixtures arm breakeven immediately and terminate after flatten;
+- sponsor fixtures prove initial identity, favorable non-overlapping promotion,
+  no fallback to an older sponsor, and exact-current-sponsor failure flatten;
+- a fresh opposite HF/LF while flat invalidates without a no-op close request;
 - event logs can reconstruct trigger quote, submission quote, and fill price;
 - Quantower build succeeds and the deployed DLL loads after restart.
 

@@ -68,8 +68,24 @@ namespace ExecAssistantRuntime
         public long RootMaxTick { get; init; }
         public long SupportMinTick { get; init; }
         public long SupportMaxTick { get; init; }
+        public EvidenceSource SupportSource { get; init; }
         public DateTime RootFormedUtc { get; init; }
+        public DateTime SupportFormedUtc { get; init; }
         public DateTime TriggerUtc { get; init; }
+    }
+
+    internal sealed class SponsorContext
+    {
+        public int ObjectId { get; init; }
+        public int? PriorObjectId { get; init; }
+        public EvidenceSide Side { get; init; }
+        public EvidenceSource Source { get; init; }
+        public long MinTick { get; init; }
+        public long MaxTick { get; init; }
+        public DateTime FormedUtc { get; init; }
+        public DateTime PromotedUtc { get; init; }
+        public string Reason { get; init; }
+        public int Epoch { get; init; }
     }
 
     internal sealed class OrderIntent
@@ -115,6 +131,8 @@ namespace ExecAssistantRuntime
         private FlattenDisposition _flattenDisposition;
         private double _lastKnownQuantity;
         private double _lastKnownAveragePrice;
+        private SponsorContext _currentSponsor;
+        private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
         {
@@ -126,6 +144,8 @@ namespace ExecAssistantRuntime
         public int BaseAttempts => _baseAttempts;
         public bool EverLeveraged => _everLeveraged;
         public bool HasPendingEntryOrder => _pendingEntryIntent != null;
+        public SponsorContext CurrentSponsor => _currentSponsor;
+        public int SponsorVersion => _sponsorVersion;
 
         public void AcceptDirective(
             TradeDirective directive,
@@ -153,6 +173,8 @@ namespace ExecAssistantRuntime
             _flattenDisposition = null;
             _lastKnownQuantity = 0;
             _lastKnownAveragePrice = 0;
+            _currentSponsor = null;
+            _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
             if (existingHeldFailureIds != null)
@@ -255,23 +277,43 @@ namespace ExecAssistantRuntime
                 State = RuntimeExecutionState.Invalidated;
                 return intents;
             }
+            EvidenceTransition terminalFailure = transitions.FirstOrDefault(transition =>
+                transition?.Kind == EvidenceTransitionKind.FailureHeld
+                && transition.Band != null
+                && !_baselineFailureIds.Contains(transition.Band.Id)
+                && transition.TimeUtc >= _activatedUtc
+                && OppositeFailureFlattens(transition.Band));
+            if (terminalFailure != null)
+            {
+                string reason = terminalFailure.Band.Side == EvidenceSide.Demand ? "LF" : "HF";
+                if (position.IsFlat)
+                {
+                    InvalidateWhileFlat();
+                    intents.Add(CreateCancelOrdersIntent(
+                        terminalFailure.TimeUtc, market, $"{reason}_while_flat"));
+                }
+                else
+                {
+                    intents.Add(CreateFlattenIntent(terminalFailure.TimeUtc, market,
+                        reason, terminal: true, rearm: false));
+                }
+                return intents;
+            }
             foreach (EvidenceTransition transition in transitions)
             {
                 if (transition == null)
                     continue;
 
-                if (transition.Kind == EvidenceTransitionKind.FailureHeld
-                    && transition.Band != null
-                    && !_baselineFailureIds.Contains(transition.Band.Id)
-                    && transition.TimeUtc >= _activatedUtc
-                    && OppositeFailureFlattens(transition.Band))
+                OrderIntent sponsorFailure = EvaluateSponsorFailure(
+                    transition, market, position);
+                if (sponsorFailure != null)
                 {
-                    intents.Add(CreateFlattenIntent(transition.TimeUtc, market,
-                        transition.Band.Side == EvidenceSide.Demand ? "LF" : "HF",
-                        terminal: true,
-                        rearm: false));
+                    intents.Add(sponsorFailure);
                     break;
                 }
+
+                if (!position.IsFlat)
+                    TryPromoteSponsor(transition);
 
                 if (State == RuntimeExecutionState.BaseOnly && !position.IsFlat)
                 {
@@ -355,11 +397,13 @@ namespace ExecAssistantRuntime
                 {
                     _entryContext = filledIntent.Resolution;
                     State = RuntimeExecutionState.BaseOnly;
+                    PromoteFilledResolution(filledIntent.Resolution, nowUtc, "filled_entry");
                 }
                 else if (filledIntent.Kind == OrderIntentKind.Add)
                 {
                     _everLeveraged = true;
                     State = RuntimeExecutionState.Leveraged;
+                    PromoteFilledResolution(filledIntent.Resolution, nowUtc, "filled_add");
                 }
 
                 if (_directive.TargetMode == TargetMode.HardTp)
@@ -419,6 +463,7 @@ namespace ExecAssistantRuntime
                 _entryAnchorFailed = false;
                 _pendingReclaim = null;
                 _pendingRetest = null;
+                _currentSponsor = null;
 
                 if (disposition?.HaltAfterFlat == true)
                     State = RuntimeExecutionState.Halted;
@@ -530,6 +575,7 @@ namespace ExecAssistantRuntime
             _pendingEntryIntent = null;
             _pendingReclaim = null;
             _pendingRetest = null;
+            _currentSponsor = null;
         }
 
         public void MarkError()
@@ -556,7 +602,9 @@ namespace ExecAssistantRuntime
                 RootMaxTick = band.MaxTick,
                 SupportMinTick = band.MinTick,
                 SupportMaxTick = band.MaxTick,
+                SupportSource = band.Source,
                 RootFormedUtc = band.FormedUtc,
+                SupportFormedUtc = band.FormedUtc,
                 TriggerUtc = transition.TimeUtc,
             };
 
@@ -759,6 +807,127 @@ namespace ExecAssistantRuntime
                 "reverse_entry_resolution", terminal: false, rearm: true);
         }
 
+        private OrderIntent EvaluateSponsorFailure(
+            EvidenceTransition transition,
+            ExecutableMarket market,
+            RuntimePosition position)
+        {
+            if (_currentSponsor == null || transition?.Band == null
+                || transition.Band.Id != _currentSponsor.ObjectId)
+            {
+                return null;
+            }
+
+            bool confirmedFailure = transition.Kind == EvidenceTransitionKind.RailFailed;
+            bool consumedAdversely = transition.Kind == EvidenceTransitionKind.RailOwned
+                && transition.Band.Side != DesiredEvidenceSide()
+                && transition.Band.Source == EvidenceSource.Consumed;
+            if (!confirmedFailure && !consumedAdversely)
+                return null;
+
+            string reason = consumedAdversely
+                ? $"sponsor_consumed:{_currentSponsor.ObjectId}"
+                : $"sponsor_failed:{_currentSponsor.ObjectId}";
+            if (position == null || position.IsFlat)
+            {
+                InvalidateWhileFlat();
+                return CreateCancelOrdersIntent(transition.TimeUtc, market, reason);
+            }
+
+            bool terminal = _everLeveraged;
+            return CreateFlattenIntent(transition.TimeUtc, market, reason,
+                terminal: terminal, rearm: !terminal);
+        }
+
+        private void PromoteFilledResolution(
+            ResolutionContext resolution,
+            DateTime promotedUtc,
+            string reason)
+        {
+            if (resolution == null || resolution.SupportObjectId <= 0)
+                return;
+            var sponsor = new SponsorContext
+            {
+                ObjectId = resolution.SupportObjectId,
+                PriorObjectId = _currentSponsor?.ObjectId,
+                Side = DesiredEvidenceSide(),
+                Source = resolution.SupportSource,
+                MinTick = resolution.SupportMinTick,
+                MaxTick = resolution.SupportMaxTick,
+                FormedUtc = resolution.SupportFormedUtc,
+                PromotedUtc = NormalizeUtc(promotedUtc),
+                Reason = reason,
+                Epoch = _epoch,
+            };
+            PromoteSponsor(sponsor, requireFavorableAdvance: _currentSponsor != null);
+        }
+
+        private void TryPromoteSponsor(EvidenceTransition transition)
+        {
+            EvidenceBandView band = transition?.Band;
+            if (_currentSponsor == null
+                || transition.Kind != EvidenceTransitionKind.RailOwned
+                || band == null
+                || band.Role != EvidenceRole.Rail
+                || !band.IsLiveRail
+                || band.Side != DesiredEvidenceSide()
+                || band.Id == _currentSponsor.ObjectId
+                || transition.TimeUtc <= _currentSponsor.PromotedUtc
+                || band.FormedUtc <= _currentSponsor.FormedUtc
+                || !OwnershipDisplacedFavorably(transition, band))
+            {
+                return;
+            }
+
+            PromoteSponsor(new SponsorContext
+            {
+                ObjectId = band.Id,
+                PriorObjectId = _currentSponsor.ObjectId,
+                Side = band.Side,
+                Source = band.Source,
+                MinTick = band.MinTick,
+                MaxTick = band.MaxTick,
+                FormedUtc = band.FormedUtc,
+                PromotedUtc = NormalizeUtc(transition.TimeUtc),
+                Reason = "accepted_same_side_ownership",
+                Epoch = _epoch,
+            }, requireFavorableAdvance: true);
+        }
+
+        private void PromoteSponsor(SponsorContext sponsor, bool requireFavorableAdvance)
+        {
+            if (sponsor == null)
+                return;
+            if (requireFavorableAdvance && !IsFullyBeyondCurrentSponsor(sponsor))
+                return;
+            _currentSponsor = sponsor;
+            _sponsorVersion++;
+        }
+
+        private bool IsFullyBeyondCurrentSponsor(SponsorContext candidate)
+        {
+            if (_currentSponsor == null)
+                return true;
+            return _directive.Direction == TradeDirection.Long
+                ? candidate.MinTick > _currentSponsor.MaxTick
+                : candidate.MaxTick < _currentSponsor.MinTick;
+        }
+
+        private bool OwnershipDisplacedFavorably(
+            EvidenceTransition transition,
+            EvidenceBandView band)
+            => _directive.Direction == TradeDirection.Long
+                ? transition.CurrentMidTick > band.MaxTick
+                : transition.CurrentMidTick < band.MinTick;
+
+        private void InvalidateWhileFlat()
+        {
+            State = RuntimeExecutionState.Invalidated;
+            _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+        }
+
         internal static bool IsCandidateSupportConsumed(
             ResolutionContext entryContext,
             EvidenceBandView opposing)
@@ -894,7 +1063,9 @@ namespace ExecAssistantRuntime
                 RootMaxTick = failed.MaxTick,
                 SupportMinTick = support.MinTick,
                 SupportMaxTick = support.MaxTick,
+                SupportSource = support.Source,
                 RootFormedUtc = failed.FormedUtc,
+                SupportFormedUtc = support.FormedUtc,
                 TriggerUtc = triggerUtc,
             };
 

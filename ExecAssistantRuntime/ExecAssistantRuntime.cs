@@ -139,6 +139,7 @@ namespace ExecAssistantRuntime
         private double? _shadowBreakeven;
         private double? _shadowHardTarget;
         private RuntimeExecutionState _lastLoggedState = RuntimeExecutionState.Idle;
+        private int _lastLoggedSponsorVersion;
 
         public ExecAssistantRuntime()
         {
@@ -311,11 +312,11 @@ namespace ExecAssistantRuntime
             IReadOnlyList<EvidenceTransition> transitions = _evidence.Process(depth);
             foreach (EvidenceTransition transition in transitions)
                 LogEvidence(transition, market);
-            ExecuteIntents(
-                _coordinator.ProcessEvidence(transitions, nowUtc, market,
-                    CurrentPosition(), _evidence),
-                CurrentPosition(),
-                market);
+            RuntimePosition current = CurrentPosition();
+            IReadOnlyList<OrderIntent> intents = _coordinator.ProcessEvidence(
+                transitions, nowUtc, market, current, _evidence);
+            LogSponsorIfChanged();
+            ExecuteIntents(intents, current, market);
         }
 
         private void PollDirective()
@@ -340,7 +341,7 @@ namespace ExecAssistantRuntime
                 _events.Write("directive_rejected",
                     ("reason", "contract"),
                     ("message", ex.Message));
-                Log($"Directive rejected: {ex.Message}", StrategyLoggingLevel.Error);
+                LogOperator($"Directive rejected: {ex.Message}", error: true);
                 return;
             }
 
@@ -353,6 +354,8 @@ namespace ExecAssistantRuntime
                         ("directive_id", directive.Id),
                         ("accepted_digest", active.Digest),
                         ("new_digest", directive.Digest));
+                    LogOperator($"Directive {directive.Id} rejected: immutable payload changed.",
+                        error: true);
                     if (CurrentPosition().IsFlat)
                         _coordinator.MarkError();
                 }
@@ -364,6 +367,8 @@ namespace ExecAssistantRuntime
                 _events.Write("directive_rejected",
                     ("directive_id", directive.Id),
                     ("reason", "fresh_id_required_after_restart_or_terminal_state"));
+                LogOperator($"Directive {directive.Id} rejected: a fresh id is required.",
+                    error: true);
                 return;
             }
             RuntimePosition position = CurrentPosition();
@@ -374,6 +379,8 @@ namespace ExecAssistantRuntime
                     ("reason", "bound_position_not_flat"),
                     ("position_id", position.PositionId),
                     ("position_quantity", position.Quantity));
+                LogOperator($"Directive {directive.Id} rejected: bound position is not flat "
+                    + $"(qty={position.Quantity:R}).", error: true);
                 return;
             }
             Order[] workingOrders = BoundWorkingOrders();
@@ -384,6 +391,8 @@ namespace ExecAssistantRuntime
                     ("reason", "bound_working_orders_exist"),
                     ("working_order_count", workingOrders.Length),
                     ("working_order_ids", string.Join(",", workingOrders.Select(o => o.Id))));
+                LogOperator($"Directive {directive.Id} rejected: {workingOrders.Length} "
+                    + "bound working order(s) exist.", error: true);
                 return;
             }
             int unresolvedEntries = _submissions.Values.Count(t =>
@@ -394,6 +403,8 @@ namespace ExecAssistantRuntime
                     ("directive_id", directive.Id),
                     ("reason", "entry_reconciliation_unresolved"),
                     ("unresolved_entry_count", unresolvedEntries));
+                LogOperator($"Directive {directive.Id} rejected: {unresolvedEntries} "
+                    + "entry reconciliation(s) remain unresolved.", error: true);
                 return;
             }
             if (active != null && !IsCoordinatorTerminal())
@@ -402,6 +413,8 @@ namespace ExecAssistantRuntime
                     ("directive_id", directive.Id),
                     ("reason", "prior_directive_active"),
                     ("active_directive_id", active.Id));
+                LogOperator($"Directive {directive.Id} rejected: directive {active.Id} is active.",
+                    error: true);
                 return;
             }
             if (_runTradingEnabled && !directive.IsLiveTargetSupported)
@@ -410,8 +423,8 @@ namespace ExecAssistantRuntime
                     ("directive_id", directive.Id),
                     ("reason", "target_mode_shadow_only"),
                     ("target_mode", directive.TargetMode.ToString()));
-                Log($"Directive {directive.Id} uses a target mode not enabled for live trading.",
-                    StrategyLoggingLevel.Error);
+                LogOperator($"Directive {directive.Id} rejected: target mode "
+                    + $"{directive.TargetMode} is frozen and not live-enabled.", error: true);
                 return;
             }
 
@@ -430,6 +443,8 @@ namespace ExecAssistantRuntime
                         ("executable_quote", executable),
                         ("target", directive.TargetPrice),
                         ("not_before", directive.NotBefore.ToString("O")));
+                    LogOperator($"Directive {directive.Id} rejected: HARD_TP "
+                        + $"{directive.TargetPrice:R} has no executable runway.", error: true);
                     return;
                 }
             }
@@ -438,6 +453,7 @@ namespace ExecAssistantRuntime
                 directive,
                 DateTime.UtcNow,
                 _evidence.HeldFailureObjects().Select(b => b.Id));
+            _lastLoggedSponsorVersion = 0;
             _coordinator.InitializeObservedPosition(position);
             _acceptedDirectiveRaw = json;
             _blockedDirectiveIds.Add(directive.Id);
@@ -453,6 +469,10 @@ namespace ExecAssistantRuntime
                 ("target_mode", directive.TargetMode.ToString()),
                 ("target_price", directive.TargetPrice),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
+            LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
+                + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
+                + $"{directive.TargetMode}={directive.TargetPrice:R}, "
+                + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
         }
 
@@ -475,6 +495,7 @@ namespace ExecAssistantRuntime
             catch (Exception ex)
             {
                 _events.Write("control_rejected", ("message", ex.Message));
+                LogOperator($"Control rejected: {ex.Message}", error: true);
                 return;
             }
             if (_processedControlDigests.TryGetValue(command.CommandId, out string priorDigest))
@@ -484,6 +505,8 @@ namespace ExecAssistantRuntime
                 {
                     _events.Write("control_mutation_rejected",
                         ("command_id", command.CommandId));
+                    LogOperator($"Control {command.CommandId} rejected: immutable payload changed.",
+                        error: true);
                 }
                 return;
             }
@@ -511,6 +534,10 @@ namespace ExecAssistantRuntime
                 ("action", command.Action.ToString()),
                 ("directive_id", command.DirectiveId),
                 ("reason", command.Reason));
+            LogOperator($"Control {command.Action} accepted"
+                + (string.IsNullOrWhiteSpace(command.DirectiveId)
+                    ? "."
+                    : $" for directive {command.DirectiveId}."));
             ExecuteIntents(intents, position, market);
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
         }
@@ -550,6 +577,7 @@ namespace ExecAssistantRuntime
                     ("shadow", result.Shadow),
                     ("order_id", result.OrderId),
                     ("message", result.Message));
+                LogIntentResult(intent, result);
 
                 if (intent.Kind == OrderIntentKind.EnterBase
                     || intent.Kind == OrderIntentKind.Add)
@@ -628,6 +656,10 @@ namespace ExecAssistantRuntime
             };
             IReadOnlyList<OrderIntent> protection = _coordinator.OnPositionChanged(
                 _shadowPosition, DateTime.UtcNow, market);
+            LogSponsorIfChanged();
+            LogOperator($"{intent.Kind} filled for directive {intent.DirectiveId}: "
+                + $"qty={intent.Quantity:R} at {fillPrice:R}; position "
+                + $"qty={_shadowPosition.Quantity:R}, avg={_shadowPosition.AveragePrice:R}.");
             ExecuteIntents(protection, _shadowPosition, market);
         }
 
@@ -662,10 +694,10 @@ namespace ExecAssistantRuntime
             ExecutableMarket market)
         {
             if (position != null && !position.IsFlat
-                && _coordinator.State == RuntimeExecutionState.Error)
+                && IsCoordinatorTerminal())
             {
                 OrderIntent safety = _coordinator.SafetyFlatten(
-                    nowUtc, market, "late_fill_after_entry_reconciliation_error");
+                    nowUtc, market, "position_observed_after_terminal_state");
                 ExecuteIntents(new[] { safety }, position, market);
                 return;
             }
@@ -699,8 +731,15 @@ namespace ExecAssistantRuntime
                 ("side", position.IsFlat ? null : position.Direction.ToString()),
                 ("quantity", position.Quantity),
                 ("average_price", position.AveragePrice));
-            ExecuteIntents(_coordinator.OnPositionChanged(position, nowUtc, market),
-                position, market);
+            LogOperator(position.IsFlat
+                ? $"Position flat; directive={_coordinator.Directive?.Id ?? "none"}."
+                : $"Position reconciled: {position.Direction} qty={position.Quantity:R}, "
+                    + $"avg={position.AveragePrice:R}, directive="
+                    + $"{_coordinator.Directive?.Id ?? "none"}.");
+            IReadOnlyList<OrderIntent> protection = _coordinator.OnPositionChanged(
+                position, nowUtc, market);
+            LogSponsorIfChanged();
+            ExecuteIntents(protection, position, market);
             if (becameFlat)
                 _gateway.CancelProtectionWhenFlat();
         }
@@ -711,6 +750,8 @@ namespace ExecAssistantRuntime
             _events.Write("forward_data_loss",
                 ("position_quantity", position?.Quantity ?? 0),
                 ("state", _coordinator.State.ToString()));
+            LogOperator($"Forward L2 data lost; state={_coordinator.State}, "
+                + $"position_qty={(position?.Quantity ?? 0):R}.", error: true);
             _evidence = NewEvidenceEngine();
             _hadEvidenceSample = false;
 
@@ -979,6 +1020,8 @@ namespace ExecAssistantRuntime
                     ? null
                     : DistanceToRange(fillTick, resolution.SupportMinTick,
                         resolution.SupportMaxTick)));
+            LogOperator($"{telemetry.Intent.Kind} fill for directive "
+                + $"{telemetry.Intent.DirectiveId}: qty={fill.Quantity:R} at {fill.Price:R}.");
         }
 
         private void ReconcileSubmissionTimeouts(DateTime nowUtc, RuntimePosition position)
@@ -1330,6 +1373,102 @@ namespace ExecAssistantRuntime
                 ("directive_id", _coordinator.Directive?.Id),
                 ("base_attempts", _coordinator.BaseAttempts),
                 ("ever_leveraged", _coordinator.EverLeveraged));
+            LogOperator($"Directive {_coordinator.Directive?.Id ?? "none"}: "
+                + $"{previous} -> {_lastLoggedState}.",
+                error: _lastLoggedState == RuntimeExecutionState.Error
+                    || _lastLoggedState == RuntimeExecutionState.Halted);
+        }
+
+        private void LogSponsorIfChanged()
+        {
+            if (_coordinator == null
+                || _coordinator.SponsorVersion <= _lastLoggedSponsorVersion)
+            {
+                return;
+            }
+            _lastLoggedSponsorVersion = _coordinator.SponsorVersion;
+            SponsorContext sponsor = _coordinator.CurrentSponsor;
+            if (sponsor == null)
+                return;
+            double lower = sponsor.MinTick * _tickSize;
+            double upper = sponsor.MaxTick * _tickSize;
+            _events.Write("sponsor_promoted",
+                ("directive_id", _coordinator.Directive?.Id),
+                ("sponsor_id", sponsor.ObjectId),
+                ("prior_sponsor_id", sponsor.PriorObjectId),
+                ("side", sponsor.Side.ToString()),
+                ("source", sponsor.Source.ToString()),
+                ("lower", lower),
+                ("upper", upper),
+                ("reason", sponsor.Reason),
+                ("epoch", sponsor.Epoch),
+                ("promoted_utc", sponsor.PromotedUtc.ToString("O")));
+            LogOperator($"Sponsor promoted for directive {_coordinator.Directive?.Id}: "
+                + $"id={sponsor.ObjectId}, prior={sponsor.PriorObjectId?.ToString() ?? "none"}, "
+                + $"{sponsor.Side} {lower:R}-{upper:R}, "
+                + $"reason={sponsor.Reason}.");
+        }
+
+        private void LogIntentResult(OrderIntent intent, GatewayResult result)
+        {
+            string detail = intent.Kind switch
+            {
+                OrderIntentKind.EnterBase => $"base submission qty={intent.Quantity:R}",
+                OrderIntentKind.Add => $"add submission qty={intent.Quantity:R}",
+                OrderIntentKind.Flatten => $"market flatten reason={intent.Reason}",
+                OrderIntentKind.EnsureHardTarget => $"HARD_TP protection at {intent.Price:R}",
+                OrderIntentKind.EnsureBreakeven => $"weighted-BE protection at {intent.Price:R}",
+                OrderIntentKind.CancelRuntimeOrders => $"runtime-order cancellation reason={intent.Reason}",
+                _ => intent.Kind.ToString(),
+            };
+            if (result.Accepted)
+            {
+                if (intent.Kind == OrderIntentKind.Flatten
+                    && intent.Reason?.StartsWith("sponsor_", StringComparison.Ordinal) == true)
+                {
+                    SponsorContext sponsor = _coordinator.CurrentSponsor;
+                    _events.Write("sponsor_failed",
+                        ("directive_id", intent.DirectiveId),
+                        ("sponsor_id", sponsor?.ObjectId),
+                        ("side", sponsor?.Side.ToString()),
+                        ("lower", sponsor == null ? null : sponsor.MinTick * _tickSize),
+                        ("upper", sponsor == null ? null : sponsor.MaxTick * _tickSize),
+                        ("reason", intent.Reason),
+                        ("flatten_accepted", true));
+                }
+                if (intent.Kind == OrderIntentKind.CancelRuntimeOrders
+                    && (string.Equals(intent.Reason, "HF_while_flat", StringComparison.Ordinal)
+                        || string.Equals(intent.Reason, "LF_while_flat", StringComparison.Ordinal)))
+                {
+                    _events.Write("directive_invalidated",
+                        ("directive_id", intent.DirectiveId),
+                        ("reason", intent.Reason));
+                    LogOperator($"Directive {intent.DirectiveId} invalidated by "
+                        + $"{intent.Reason.Substring(0, 2)} while flat; human reissue required.",
+                        error: true);
+                    return;
+                }
+                bool safety = intent.Kind == OrderIntentKind.Flatten
+                    && (string.Equals(intent.Reason, "HF", StringComparison.Ordinal)
+                        || string.Equals(intent.Reason, "LF", StringComparison.Ordinal)
+                        || intent.Reason?.StartsWith("sponsor_", StringComparison.Ordinal) == true
+                        || intent.Reason?.StartsWith("forward_data_loss", StringComparison.Ordinal) == true
+                        || intent.Reason?.StartsWith("protection_failed", StringComparison.Ordinal) == true);
+                LogOperator($"Directive {intent.DirectiveId}: {detail} accepted "
+                    + $"({(result.Shadow ? "SHADOW" : "LIVE")}).", error: safety);
+                return;
+            }
+            LogOperator($"Directive {intent.DirectiveId}: {detail} rejected: "
+                + $"{result.Message}.", error: true);
+        }
+
+        private void LogOperator(string message, bool error = false)
+        {
+            string text = $"[EAR] {message}";
+            if (error)
+                Log(text, StrategyLoggingLevel.Error);
+            else
+                Log(text);
         }
 
         private void Subscribe()
@@ -1514,6 +1653,7 @@ namespace ExecAssistantRuntime
             _shadowBreakeven = null;
             _shadowHardTarget = null;
             _lastLoggedState = RuntimeExecutionState.Idle;
+            _lastLoggedSponsorVersion = 0;
             _submissions.Clear();
             _processedControlDigests.Clear();
             _processedControlOrder.Clear();

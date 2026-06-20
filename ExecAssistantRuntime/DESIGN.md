@@ -219,6 +219,30 @@ command, not a status edit. A new trade idea requires a new id and cannot take
 ownership until the prior directive is terminal or an explicit control command
 has ended it.
 
+### Operator-Visible Lifecycle Log
+
+The append-only JSONL event log remains the canonical audit record, but it is
+not sufficient as the operator's immediate status channel. Quantower Strategy
+Manager's visible strategy log must receive concise, deduplicated messages for
+human-significant lifecycle events:
+
+- runtime start/stop and live versus shadow mode;
+- directive accepted, rejected, armed, invalidated, cancelled, expired, or
+  completed;
+- base/add submission and fill, current quantity, and weighted average;
+- breakeven and hard-target protection establishment or failure;
+- sponsor promotion and sponsor failure;
+- HF/LF flatten, including HF/LF invalidation while flat;
+- accepted `CANCEL_DIRECTIVE` or `FLAT` control;
+- data loss, recovery action, halted state, and errors requiring intervention.
+
+Routine quotes, candidate updates, rail tests, and repeated state paint do not
+belong in the visible log. Each message includes the directive id, mode, side,
+state/reason, and relevant quantity/price so the operator can understand the
+runtime without polling through `exec-asst`. Errors and safety actions use the
+error severity; normal lifecycle changes use the ordinary strategy-log
+severity. No custom audio, popup, or chart UI is required.
+
 ## Directive Schema
 
 The normative Draft 2020-12 schemas are:
@@ -267,7 +291,7 @@ directive looks like:
     "opposite_failure_object": "flatten"
   },
   "target": {
-    "mode": "TARGET_DECISION",
+    "mode": "HARD_TP",
     "price": 30380,
     "direction": "below"
   },
@@ -323,6 +347,8 @@ The execution model uses a base position followed by optional smaller adds:
 - treat maximum quantity as a ceiling, not a position-building objective;
 - after the first add fills, protect the complete position at its actual
   weighted breakeven;
+- track the currently promoted causal sponsor internally and market-flatten on
+  its confirmed failure;
 - exit the complete position when a terminal condition fires;
 - do not trim individual clips or preserve a discretionary runner.
 
@@ -331,7 +357,9 @@ add `1`, maximum position `5`. The first add moves weighted breakeven only one
 third of the way from the base price to the add price. The next additions move
 it by one quarter and one fifth of their distance from the current average.
 Later adds therefore have progressively less ability to damage a good base
-location.
+location. Sponsor protection is independent of this arithmetic: weighted
+breakeven remains the broker-native emergency stop, while sponsor failure is an
+evidence-conditioned market exit.
 
 This is not free risk reduction. A two-contract base makes every failed base
 attempt twice as expensive as a one-contract base. That tradeoff is intentional
@@ -634,66 +662,89 @@ left, marketable order.
 
 ## 2026-06-17 Open-Auction Fixture
 
-The post-10:10 short is the reference fixture for a point-to-point directive:
-short above `30475`, maximum position three, decision below the `30380` rail.
+The post-10:15 short is the reference fixture for an ambitious target that does
+not suspend campaign protection: short inside `30450-30550`, base quantity two,
+add quantity one, maximum position five.
 
 Relevant behavior:
 
-- demand at `30479-30482` converted into supply near 10:20, allowed a retest
-  limit, then failed; this was a valid small stopped base attempt;
-- later supply at `30527-30530` established and survived;
-- demand at `30496-30498` failed beneath it near 10:27, authorizing the
-  successful base short around `30491`;
-- the later re-failure around `30495` was the same contest, not a fresh add
-  epoch;
-- supply around `30482` merely appeared and did not represent demand consumed
-  into supply;
-- stronger conversions later occurred below the directive's entry boundary.
+- demand at `30479-30482` converted into supply and authorized a two-contract
+  retest entry around `30477.50` near 10:20:48;
+- no fresh add resolution completed inside the add range, so maximum quantity
+  remained a ceiling and the position stayed base-only;
+- price first crossed `30360` near 10:47:26, reached `30284.75`, then reclaimed
+  the area;
+- demand around `30363-30366` established and produced a fresh LF, terminating
+  the short around `30377` near 10:50:38;
+- the launch/sponsor area was subsequently reclaimed. Later downside did not
+  restore the completed campaign.
 
-The directive therefore produced no add despite spare quantity capacity. That
-result came from realized auction evidence, not a day-type classifier.
+An intentionally over-ambitious hard target at `30270` would not have changed
+that exit. Price did not first reach `30270` until about 14:02 and later traded
+substantially lower, but LF and sponsor protection remain active before a hard
+target. The afternoon decline was a new auction sequence requiring a new
+directive.
 
-Price later traversed the `30360-30380` no-build area. Demand around
-`30363-30366` established and survived after the boundary, so the directive
-flattened around `30374`. Price moving lower afterward did not make that exit
-wrong. A continuation short would be a new directive.
+This fixture establishes that a target is an objective, never a hold-until
+instruction.
 
 ## 2026-06-16 Campaign Fixture
 
-The post-10:00 short is the reference fixture for a campaign-capable directive:
-short below `30890`, base quantity two, add quantity one, maximum position five,
-decision below `30750`.
+The post-10:00 short is the reference fixture for a campaign-capable directive.
+The bounded replay uses `30820-30890`, base quantity two, add quantity one, and
+maximum position five.
 
-After retry noise, supply at `30844-30848` re-established and repeatedly held.
-The durable campaign stack then progressed lower:
+The production evidence/coordinator replay produced:
 
-- base near the surviving `30844-30848` supply;
-- add after failed demand re-established as supply around `30834-30837`;
-- add when demand around `30806-30808` converted into supply;
-- add when demand around `30773-30775` converted into supply.
+- a two-contract supported-reclaim base near `30828` around 10:13:48;
+- one direct-conversion add near `30801.75` from supply around
+  `30806-30808`;
+- one direct-conversion add near `30770.50` from supply around
+  `30773-30775`;
+- four contracts at a weighted average near `30807.06`, with no base retry.
 
 The `30780-30783` demand failure and the subsequent `30773-30775` conversion
 belonged to one resolution epoch, not two adds. The campaign therefore reached
 four contracts, not the configured maximum of five. Again, maximum size was a
 ceiling.
 
-Below `30750`, same-side supply initially continued to hold. Around 10:22,
-supply at `30728-30730` converted into opposing demand while price was near
-`30734`. The local target-decision exit was correct even though that demand
-failed seconds later and the day continued lower. The directive had reached its
-planned decision area; holding for the full-day thesis would have required
-fresh human judgement.
+Supply at `30773-30775` sponsored the first break below `30750` and remained
+intact. Local counter-demand below it repeatedly failed; later lower supply
+established. The prior design claim that the `30728-30730` conversion required
+a target-decision exit was incorrect because that local object did not defeat
+the causal sponsor.
+
+## 2026-06-18 Sponsor-Handoff Fixture
+
+The later June 18 long establishes why the runtime needs sponsor succession
+even when the directive uses a fixed hard target. This is an evidence/design
+fixture, not a claim that the current coordinator carried a position through
+the sequence; existing breakeven/HF protection completed the replayed campaigns
+earlier.
+
+- demand around `30636-30640` sponsored the first move through `30675`;
+- several supply objects above the gate survived temporarily but failed before
+  defeating that demand;
+- after those supplies failed, new demand established around `30691-30693`;
+- that accepted higher demand became the promoted sponsor around 12:39;
+- the promoted sponsor failed around 12:45:10 while price was near `30684`,
+  requiring a market flatten regardless of the later rally.
+
+Promotion is therefore a one-way handoff. Once higher demand or lower supply
+becomes the current sponsor, protection must not fall back to an older remote
+object merely because the older object remains live. Subsequent validating
+evidence belongs to a new campaign after the flatten.
 
 ## Adversarial Wrong-Direction Fixture
 
 A deliberately biased June 16 long demonstrates what the runtime must and must
 not protect against.
 
-For a long activated after 09:55 above `30750` with decision at `30884`, the
-first valid supported reclaim triggered at the decision gate. Price made only a
-small extension, built no supporting ownership above the gate, and returned.
-The base flattened approximately at scratch and the directive completed. Later
-long triggers were irrelevant.
+For a long activated after 09:55 above `30750` with an ambitious hard target at
+`30884`, the target does not suspend entry-anchor, sponsor, or LF/HF protection.
+The first valid supported reclaim produced only a small extension before its
+clean execution path failed and the directive completed. Later long triggers
+were irrelevant.
 
 For the same long activated after 10:00, two valid countertrend base attempts
 could stop before any add occurred. Breakeven protection never activated. Those
@@ -710,11 +761,11 @@ obedient and may take another fresh retry within the directive contract.
 The June 11 NQM6 session is the canonical end-to-end fixture. It is not a PnL
 backtest. It verifies that the same state machine behaves coherently through a
 failed early short, repeated human reissues, an unscheduled squeeze, late long
-campaigns, target decisions, and repeated local failure objects.
+campaigns, fixed targets, and repeated local failure objects.
 
 ### Reissued Shorts
 
-A short activated after 12:25 below `29000`, with decision below `28600`, found
+A short activated after 12:25 below `29000`, with a hard target below `28600`, found
 a supported reclaim near 12:29. A formal LF printed at 12:30:24 before any add,
 so the base flattened and the directive became terminal. The later continuation
 lower did not make that local LF exit wrong.
@@ -736,18 +787,16 @@ stubbornness harmless.
 
 ### Squeeze Participation
 
-A long activated at 13:28 above `28940`, with decision above `29250`, did not
+A long activated at 13:28 above `28940`, with a hard target above `29250`, did not
 chase the vertical squeeze. The first supply failure above the entry floor had
 no eligible supporting demand inside the directive's context range. The runtime
 waited until supply around `29139-29142` converted into demand at 13:37:54 and
 entered the base near `29174`.
 
 Supply around `29216-29219` converted into demand at 13:42:58 and authorized one
-add near `29240`. Price reached the `29250` decision gate at 13:43:14, which
-disabled all further adds. Demand then established beyond the gate around
-`29253-29259`, allowing the position to remain open. That continuation demand
-failed at 13:45:45 as price returned to the gate, so the directive completed
-near `29250`. The later HF was irrelevant.
+add near `29240`. The hard target completed the directive near `29250` at
+13:43:14. Demand that later established around `29253-29259` belonged to a new
+possible campaign and could not keep the completed directive open.
 
 This is the reference behavior for a fast squeeze: no random probing, no
 repeated scratching, no fill simply because price crossed the activation floor,
@@ -756,7 +805,7 @@ unmanaged ideal price.
 
 ### Late Long Reissues
 
-A long activated after 13:50 above `29050`, with decision above `29320`, entered
+A long activated after 13:50 above `29050`, with a hard target above `29320`, entered
 on direct conversion around `29168-29175`, then added on independent conversions
 around `29215-29219` and `29248`. The four-contract weighted average was around
 `29200-29204`. Price crossed it at 14:01:55-14:01:58, before the demand stack
@@ -796,9 +845,15 @@ Deterministic replay of June 11 must assert all of the following:
 - LF/HF flatten the opposite side and terminate the directive;
 - failure objects already live at activation are context, not immediate flatten
   triggers; only a fresh post-activation failure epoch may trigger;
-- reaching a target gate disables adds before target-decision evaluation;
-- surviving same-side evidence beyond a decision gate permits continuation,
-  while its failure or opposing survival completes the trade;
+- a fixed hard-target fill completes the directive before any later evidence
+  may act;
+- a causal same-side sponsor can promote only in the favorable direction, and
+  failure of the currently promoted sponsor market-flattens the campaign;
+- sponsor promotion never moves the broker breakeven stop to a sponsor edge;
+- LF/HF remain unconditional terminal events rather than waiting to see whether
+  a sponsor later fails;
+- a fresh LF/HF while flat invalidates an armed directive and requires a human
+  reissue instead of producing a no-op flatten;
 - every reissue starts with a new id, fresh counters, and an activation baseline;
 - no terminal directive can reactivate when later evidence validates its old
   thesis.
@@ -857,9 +912,12 @@ says only "look long if bullish", it should be rejected by `exec-asst`.
 At acceptance, the runtime snapshots the currently live LF/HF objects. They may
 remain contextual evidence, but they cannot immediately flatten the new
 directive. Only a fresh failure epoch after activation is a terminal LF/HF
-trigger. Ordinary demand/supply anchors are different: a pre-existing anchor
-may participate at any age when it is still live and intersects
-`context_price_range`.
+trigger. If the directive is positioned, that event market-flattens and
+completes it. If it is flat but still armed, the same event invalidates the
+directive without sending a meaningless close request. In either case later
+evidence requires a human reissue with a new id. Ordinary demand/supply anchors
+are different: a pre-existing anchor may participate at any age when it is
+still live and intersects `context_price_range`.
 
 Activation does not reconstruct an entry resolution that completed before the
 directive arrived. Existing anchors may support a fresh post-activation
@@ -925,7 +983,8 @@ The following do not add:
 - the same demand/supply area failing repeatedly inside one unresolved contest;
 - a confirmation object that merely completes the previous resolution;
 - evidence outside the directive's add-eligible range;
-- any event after the target decision gate becomes active.
+- any event at or beyond the fixed hard target, where no executable runway
+  remains.
 
 One resolution epoch can authorize at most one add. `adds_allowed: false` is a
 hard human veto. Otherwise, these evidence rules decide whether the campaign
@@ -939,8 +998,6 @@ The execution state machine distinguishes evidence burden by position state:
 - `BASE_ONLY`: base position is live and protected by its semantic entry stop;
 - `LEVERAGED`: at least one add has filled; weighted breakeven and terminal
   adverse rules are active;
-- `DECISION_ACTIVE`: the planned target/decision gate has been reached; no more
-  adds are permitted and local exit evidence is sufficient;
 - `RECOVERY_PROTECTED`: a pre-existing profitable position was found after
   restart; no old L2 evidence may act, weighted breakeven is installed, and
   only fixed-price exit protection remains;
@@ -949,11 +1006,11 @@ The execution state machine distinguishes evidence burden by position state:
 - `COMPLETED`, `INVALIDATED`, `EXPIRED`, `ERROR`: terminal trade-directive
   states.
 
-Before the decision gate, local opposing evidence is not automatically an exit.
-The base entry anchor, post-activation LF/HF, and weighted breakeven govern the
-position. At the decision gate, the burden changes: local weak extension,
-failed continuation build, or opposing resolution may complete the trade even
-when the larger day thesis remains intact.
+Sponsor protection is an orthogonal tracked object, not a separate target
+state. `BASE_ONLY` and `LEVERAGED` may each carry a current sponsor id and its
+lineage. `HARD_TP`, weighted breakeven, LF/HF, and sponsor failure retain their
+own precedence; reaching an unsupported decision-mode price does not create a
+new execution state.
 
 ## Restart And Forward-Only Data Loss
 
@@ -976,11 +1033,11 @@ Recovery is account-and-symbol scoped:
 - do not add, retry, rebuild an old candidate timer, or react to newly rebuilt
   rails while in `RECOVERY_PROTECTED`.
 
-A valid fixed `HARD_TP` may be retained or recreated. An evidence-conditioned
-decision or trailing target cannot resume without its lost context; if it has a
-fixed gate price, degrade it to a hard exit at that gate. Otherwise the
-recovered position exits only by breakeven or explicit `FLAT`. A fresh directive
-cannot take ownership until the recovered position is flat.
+A valid fixed `HARD_TP` may be retained or recreated. Sponsor lineage cannot be
+reconstructed after restart, so recovered positions do not resume sponsor
+promotion or sponsor-failure exits. They exit only by retained/recreated hard
+target, breakeven, or explicit `FLAT`. A fresh directive cannot take ownership
+until the recovered position is flat.
 
 Profitability and breakeven validity use executable bid/ask, not last trade or
 unrealized-PnL display. For a long, the breakeven sell stop must be valid below
@@ -1034,15 +1091,48 @@ price. Round in the protective direction: up for a long sell stop and down for
 a short buy stop. This avoids deliberately placing nominal breakeven on the
 loss side; actual stop-market slippage remains measured in the fill log.
 
-Before the target gate, a leveraged position has exactly two adverse exits:
+A leveraged position has three independent adverse protections:
 
-- the weighted-breakeven order;
-- the opposite post-activation failure object: HF for a long, LF for a short.
+- the unchanged weighted-breakeven broker order;
+- the opposite post-activation failure object: HF for a long, LF for a short;
+- confirmed failure of the internally tracked current sponsor, which produces
+  a market-flatten intent.
 
-Failure of the newest add-producing anchor does not create a third discretionary
-exit rule. It may drive price into breakeven or participate in a formal LF/HF,
-but it does not independently trim or flatten the campaign. This keeps
-leveraged management deterministic.
+The sponsor is not represented by a resting stop at either edge of its price
+band. Tests and ordinary `HOLD` transitions do not move or flatten the position.
+Only the evidence engine's confirmed failure of the exact current sponsor acts.
+The broker breakeven order remains in place as protection against fast movement,
+evidence delay, data loss, disconnect, or a rejected market flatten.
+
+### Sponsor Handoff
+
+Sponsor handoff is campaign protection, not target interpretation and not a
+price trail.
+
+- the initial sponsor comes from the causal support/converted object that
+  authorized the filled entry resolution and promotes when that entry fills;
+- a later `OWNED` same-side rail is eligible only when it has a different id,
+  formed after the current sponsor, owned after the current promotion, and the
+  ownership transition's mid is favorably beyond the new band;
+- promotion must advance protection completely beyond the current band: the
+  new demand minimum must exceed the current demand maximum for a long, while
+  the new supply maximum must be below the current supply minimum for a short;
+- overlapping same-side rails are one auction for protection purposes and do
+  not promote repeatedly;
+- promotion is irreversible; after a handoff the runtime never falls back to an
+  older, more remote sponsor;
+- a promoted sponsor may be tested repeatedly while it remains live;
+- confirmed failure of the current sponsor market-flattens the complete
+  position;
+- if the position has ever been leveraged, that flatten completes the
+  directive. Base-only retry behavior remains governed by the explicit retry
+  contract and fresh-epoch requirement.
+
+This deliberately conservative spatial/temporal rule is the mechanical causal
+proxy for v1. A candidate, repeated paint message, test/hold, overlapping rail,
+or ownership that has not displaced price beyond its own band is not enough.
+The promoted object id, prior sponsor id, causal epoch, promotion time, band
+boundaries, and later outcome are logged so replay can prove every handoff.
 
 No arbitrary maximum stop distance, risk/reward ratio, or backtest-derived stop
 cap belongs in this strategy. The plan came from human judgement rather than a
@@ -1063,55 +1153,31 @@ This does not mean the full day thesis is invalid. It means this directive's
 clean execution path is no longer clean. If the trader still wants the same side,
 issue another directive, likely at a better price.
 
+When the position is flat but the directive remains armed, a fresh opposite
+LF/HF invalidates the directive immediately. It must not emit a no-op flatten
+and remain eligible for a later automatic entry.
+
 ## Targets
 
-Targets must describe both price and behavior.
+`HARD_TP` is the only target behavior selected for development and live use. It
+is a resting close-order limit at the normalized target price and completes the
+directive when filled. The human may choose a moderately ambitious fixed target
+because sponsor protection, weighted breakeven, and LF/HF remain active on the
+way there. A target is still finite; sponsor protection is not permission for an
+unbounded objective.
 
-Recommended target modes:
+`TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
+`TARGET_DECISION_BEFORE_EXTREME` remain schema-valid for compatibility but are
+frozen entirely. They are not the next design layer, do not receive inferred
+shadow exit behavior, and remain rejected for live execution. No
+`DECISION_ACTIVE` state or gate-specific continuation grammar should be added.
 
-- `HARD_TP`: exit at the target object or price, no interpretation;
-- `TARGET_DECISION`: at target, decide from build/acceptance/opposing evidence;
-- `TRAIL_AFTER_TARGET`: target reached, continue only while continuation
-  evidence survives;
-- `TARGET_DECISION_BEFORE_EXTREME`: do not blindly target an unvisited balance
-  edge; require decision before the no-build area.
-
-Known opposing ownership should usually be `HARD_TP`, especially inside IB.
-
-Bare wick or thin extension should not automatically be `HARD_TP`. It can be a
-decision point if the directive allows continuation.
-
-Reaching any target gate disables further adds. A target exit completes the
-directive even if price later continues in the planned direction. The human and
-Dost may evaluate a new continuation leg and issue a new directive.
-
-## Opposing Evidence At Target
-
-For a long:
-
-- supply appearing is warning only;
-- supply surviving is exit;
-- supply consumed into demand is continuation evidence.
-
-For a short:
-
-- demand appearing is warning only;
-- demand surviving is exit;
-- demand consumed into supply is continuation evidence.
-
-At a decision gate, the runtime is evaluating the local extension, not proving
-or disproving the full-day thesis. A local opposing conversion or surviving
-opposing wall may flatten even if it fails moments later. Conversely, an
-opposing band that merely appears and is immediately consumed does not require
-an exit.
-
-Weak expansion with no same-side build beyond the gate is also an exit. Strong
-expansion through a no-build area may continue until opposing ownership survives
-or continuation evidence fails under the still-open target policy.
-
-Inside IB, prefer hard exits unless the directive explicitly authorizes target
-decision behavior. IB trades are not the place to ask the runtime to hold through
-complex evidence.
+Sponsor handoff supplies the useful continuation behavior without coupling it
+to a target boundary. It operates before a hard target, can terminate an
+over-ambitious directive before the objective is touched, and can ratchet
+protection after new favorable business establishes. A hard-target fill or any
+earlier terminal protection event ends the campaign even if price later resumes
+in the planned direction.
 
 ## Grey Zones
 
@@ -1138,8 +1204,8 @@ IBL as target is too aggressive.
 Rules:
 
 - if there is a clear rail below, use that rail as `HARD_TP`;
-- if the target is an unvisited/no-build area, use
-  `TARGET_DECISION_BEFORE_EXTREME`;
+- if the proposed hard target is an unvisited/no-build area with no defensible
+  finite objective, choose a closer hard target or do not dispatch the trade;
 - do not assume edge-to-edge rotation just because the balance exists.
 
 ## Emergency FLAT Control
@@ -1244,20 +1310,28 @@ improvise strategy.
 
 Closed by the June fixtures:
 
-- leveraged pre-target adverse management is weighted breakeven or opposite
-  post-activation LF/HF only;
+- leveraged adverse management includes weighted breakeven, opposite
+  post-activation LF/HF, and confirmed current-sponsor failure;
 - breakeven arms immediately after the first confirmed add fill;
-- a newest-anchor failure does not independently trim or flatten leverage;
+- the broker breakeven order never moves to a sponsor edge;
+- only the tracked current sponsor, whether initial or promoted, can produce the
+  sponsor-failure exit;
+- sponsor promotion is favorable-only, non-overlapping, irreversible, and
+  requires a fresh same-side `OWNED` transition with price displaced beyond the
+  new band;
+- a base-only sponsor failure uses the configured retry/fresh-epoch contract,
+  while failure after any add completes the directive;
 - LF/HF flatten the complete position and terminate the directive;
+- LF/HF while flat invalidates an armed directive and requires human reissue;
 - pre-existing LF/HF objects are baselined as context at activation;
-- target gates disable adds;
+- `HARD_TP` is the only target selected for development/live use; decision and
+  trailing modes are frozen rather than awaiting threshold research;
 - maximum quantity is never a fill objective;
 - `max_base_reentries` counts attempts after the initial base;
 - ranges are inclusive after tick normalization;
 - anchors may sit outside `order_price_range` only when they intersect the
   explicit `context_price_range`;
-- `TARGET_DECISION` may activate directly at the gate, while `HARD_TP` with no
-  executable runway is rejected;
+- `HARD_TP` with no executable runway is rejected;
 - a terminal leg never re-arms from later validating evidence;
 - raw candidate formation is never executable by itself;
 - supported reclaim requires same-side support with correct topology and at
@@ -1275,15 +1349,16 @@ Closed by the June fixtures:
 - off-tick weighted breakeven rounds protectively: up for longs and down for
   shorts;
 - `FLAT` cancels all working orders for the bound account/symbol before closing
-  the complete bound net position.
+  the complete bound net position;
+- Quantower's visible Strategy Manager log is the operator status channel for
+  high-signal lifecycle events; JSONL remains the detailed audit record.
 
 The remaining decisions should be resolved in this order:
 
-1. target-decision survival and weak-extension thresholds;
-2. base invalidation and retry reconciliation transitions;
-3. partial-fill and breakeven replacement behavior observed against the demo
+1. base invalidation and retry reconciliation transitions;
+2. partial-fill and breakeven replacement behavior observed against the demo
    broker;
-4. stale-data, disconnect, and end-of-session contracts.
+3. stale-data, disconnect, and end-of-session contracts.
 
 ### Retry Accounting
 
@@ -1303,21 +1378,18 @@ The remaining decisions should be resolved in this order:
 
 ### Breakeven Order Mechanics
 
-- Weighted breakeven uses actual fills with no fee or profit offset. Which
-  protective tick-rounding direction is used when the average is off tick?
 - When an add partially fills, is protection updated immediately from actual
   filled quantity or only after the add order is terminal?
 - How are replace/cancel races reconciled so an old stop cannot reverse the
   position after a newer stop or flatten fills?
 
-### Target Precedence
+### Sponsor Replay Validation
 
-- What measurable state defines weak expansion/no-build and rail reclaim without
-  reproducing discretionary interpretation?
-- How long may a same-side target build remain candidate before absence of
-  confirmation becomes a weak-expansion exit?
-- When continuation evidence beyond a gate fails, is first trade back through
-  the gate sufficient or must opposing ownership also survive?
+- Does the conservative non-overlap rule miss a materially useful handoff in
+  live/replay evidence? Do not loosen it without a concrete counterexample.
+- Are sponsor-failure market exits accepted promptly enough under live broker
+  conditions for weighted breakeven to remain emergency protection rather than
+  the common exit?
 
 ### Price Context
 
@@ -1343,15 +1415,17 @@ The remaining decisions should be resolved in this order:
 - News avoidance belongs to human dispatch windows, but stale-data and exchange
   disconnect behavior must be mechanical and fail closed.
 - Runtime events need a stable schema for candidate, trigger, order, fill,
-  semantic stop, retry, add, breakeven, decision, control, and reconciliation
-  records.
+  semantic stop, retry, add, breakeven, sponsor promotion/failure, control, and
+  reconciliation records. Human-visible lifecycle messages must remain sparse
+  and deduplicated.
 
 ## Next Design Step
 
-The v1 trade/control schemas, candidate timing, epoch identity, and restart
-posture now exist. The next design layer should specify target-decision survival
-and weak-extension behavior precisely enough to implement without
-discretionary gaps.
+The v1 trade/control schemas, candidate timing, epoch identity, restart posture,
+sponsor handoff, flat HF/LF invalidation, and visible lifecycle log now exist.
+The next design layer is live/demo order-lifecycle validation: partial fills,
+replace/cancel races, and base-retry reconciliation. TARGET_DECISION remains
+frozen.
 
 Deterministic replay remains valuable, but demo/throwaway accounts can shorten
 the gap between replay and live order-lifecycle validation.
@@ -1364,6 +1438,9 @@ The next spike should:
   reconciliation;
 - compute candidate/live-anchor/resolution-epoch state from copied LL-style
   math;
+- invalidate an armed flat directive on fresh opposite LF/HF and emit a visible
+  Strategy Manager message;
+- replay sponsor promotion and failure through the June 16-18 fixtures;
 - replay June 11 as the canonical state-machine fixture, with June 16, June 17,
   and June 18 as focused fixtures;
 - log every state transition and proposed order;
@@ -1379,7 +1456,9 @@ The right build order from the current spike is:
 6. base entry, semantic stop, and retry replay;
 7. direct-conversion retest routing and supported-reclaim market routing;
 8. add gates and asymmetric quantity handling;
-9. weighted breakeven and target-decision behavior;
-10. tiny-size live validation on a demo/throwaway account.
+9. sponsor handoff, HF/LF-flat invalidation, and operator-visible lifecycle
+   logging;
+10. weighted breakeven plus fixed `HARD_TP` interaction;
+11. tiny-size live validation on a demo/throwaway account.
 
 The runtime should become reliable one directive family at a time.

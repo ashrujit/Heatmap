@@ -165,6 +165,8 @@ namespace ExecAssistantRuntime
             Require(coordinator.State == RuntimeExecutionState.BaseOnly, "base state");
             Require(protections.Any(i => i.Kind == OrderIntentKind.EnsureHardTarget),
                 "base target protection");
+            Require(coordinator.CurrentSponsor?.ObjectId == 1,
+                "filled entry initializes sponsor from causal support");
 
             EvidenceTransition staleAdd = ConsumedDemand(
                 id: 2,
@@ -221,6 +223,22 @@ namespace ExecAssistantRuntime
                 evidence).SingleOrDefault();
             Require(flatten?.Kind == OrderIntentKind.Flatten, "HF flatten");
 
+            var flatHfCoordinator = new ExecutionCoordinator(0.25);
+            flatHfCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent flatHf = flatHfCoordinator.ProcessEvidence(
+                new[] { hf },
+                now.AddSeconds(30),
+                market,
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(flatHf?.Kind == OrderIntentKind.CancelRuntimeOrders,
+                "HF while flat cancels runtime entry orders without a close request");
+            Require(flatHfCoordinator.State == RuntimeExecutionState.Invalidated,
+                "HF while flat invalidates directive");
+
+            SponsorTests(directive, now, market, evidence);
+            ShortSponsorTests(now, market, evidence);
+
             var candidateEntry = new ResolutionContext { SupportObjectId = 77 };
             var consumedOpposite = new EvidenceBandView
             {
@@ -262,6 +280,233 @@ namespace ExecAssistantRuntime
                 "submitted base attempts exhaust retry allowance");
         }
 
+        private static void SponsorTests(
+            TradeDirective directive,
+            DateTime now,
+            ExecutableMarket market,
+            ExecutionEvidenceEngine evidence)
+        {
+            var coordinator = new ExecutionCoordinator(0.25);
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+
+            OrderIntent entry = coordinator.ProcessEvidence(
+                new[]
+                {
+                    ConsumedDemand(500, now.AddSeconds(1), now.AddSeconds(12),
+                        30500, 30501),
+                },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).Single();
+            coordinator.OnOrderAttemptResult(entry, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "sponsor-selftest",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = 30504,
+            };
+            coordinator.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            Require(coordinator.CurrentSponsor?.ObjectId == 500,
+                "initial sponsor identity");
+
+            EvidenceTransition overlap = RailTransition(
+                EvidenceTransitionKind.RailOwned,
+                id: 501,
+                side: EvidenceSide.Demand,
+                source: EvidenceSource.Lean,
+                formedUtc: now.AddSeconds(14),
+                eventUtc: now.AddSeconds(25),
+                lower: 30500.50,
+                upper: 30501.50);
+            Require(coordinator.ProcessEvidence(
+                    new[] { overlap }, now.AddSeconds(25), market, basePosition, evidence)
+                    .Count == 0,
+                "overlapping same-side ownership is not an order trigger");
+            Require(coordinator.CurrentSponsor?.ObjectId == 500,
+                "overlapping rail cannot promote sponsor");
+
+            EvidenceTransition advancing = ConsumedDemand(
+                id: 502,
+                formedUtc: now.AddSeconds(26),
+                eventUtc: now.AddSeconds(38),
+                lower: 30506,
+                upper: 30507);
+            OrderIntent add = coordinator.ProcessEvidence(
+                new[] { advancing }, now.AddSeconds(38), market, basePosition, evidence)
+                .SingleOrDefault();
+            Require(add?.Kind == OrderIntentKind.Add,
+                "fresh favorable conversion adds");
+            Require(coordinator.CurrentSponsor?.ObjectId == 502,
+                "fresh non-overlapping ownership promotes sponsor");
+
+            coordinator.OnOrderAttemptResult(add, accepted: true);
+            var leveragedPosition = new RuntimePosition
+            {
+                PositionId = "sponsor-selftest",
+                Direction = TradeDirection.Long,
+                Quantity = 3,
+                AveragePrice = 30504.50,
+            };
+            coordinator.OnPositionChanged(
+                leveragedPosition, now.AddSeconds(39), market);
+            Require(coordinator.State == RuntimeExecutionState.Leveraged,
+                "sponsor test leveraged state");
+
+            EvidenceTransition tested = RailTransition(
+                EvidenceTransitionKind.RailTested,
+                502,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddSeconds(26),
+                now.AddSeconds(40),
+                30506,
+                30507);
+            EvidenceTransition held = RailTransition(
+                EvidenceTransitionKind.RailHeld,
+                502,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddSeconds(26),
+                now.AddSeconds(41),
+                30506,
+                30507);
+            Require(coordinator.ProcessEvidence(
+                    new[] { tested, held }, now.AddSeconds(41), market,
+                    leveragedPosition, evidence).Count == 0,
+                "sponsor tests and holds do not flatten");
+
+            EvidenceTransition oldFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                500,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddSeconds(1),
+                now.AddSeconds(42),
+                30500,
+                30501);
+            Require(coordinator.ProcessEvidence(
+                    new[] { oldFailure }, now.AddSeconds(42), market,
+                    leveragedPosition, evidence).Count == 0,
+                "older sponsor failure cannot override promoted sponsor");
+
+            EvidenceTransition currentFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                502,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddSeconds(26),
+                now.AddSeconds(43),
+                30506,
+                30507);
+            OrderIntent flatten = coordinator.ProcessEvidence(
+                new[] { currentFailure }, now.AddSeconds(43), market,
+                leveragedPosition, evidence).SingleOrDefault();
+            Require(flatten?.Kind == OrderIntentKind.Flatten
+                    && flatten.TerminalAfterFlat
+                    && flatten.Reason == "sponsor_failed:502",
+                "current sponsor failure terminally flattens leveraged campaign");
+        }
+
+        private static void ShortSponsorTests(
+            DateTime now,
+            ExecutableMarket market,
+            ExecutionEvidenceEngine evidence)
+        {
+            string shortJson = ValidDirectiveJson()
+                .Replace("selftest-long-01", "selftest-short-01")
+                .Replace("\"side\": \"long\"", "\"side\": \"short\"")
+                .Replace("\"price\": 31000", "\"price\": 29900")
+                .Replace("\"direction\": \"above\"", "\"direction\": \"below\"");
+            TradeDirective directive = DirectiveContracts.ParseTradeDirective(shortJson, 5);
+            var coordinator = new ExecutionCoordinator(0.25);
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+
+            EvidenceTransition initial = RailTransition(
+                EvidenceTransitionKind.RailOwned,
+                600,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(1),
+                now.AddSeconds(12),
+                30508,
+                30509);
+            OrderIntent entry = coordinator.ProcessEvidence(
+                new[] { initial }, now.AddSeconds(12), market,
+                RuntimePosition.Flat, evidence).Single();
+            coordinator.OnOrderAttemptResult(entry, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "short-sponsor-selftest",
+                Direction = TradeDirection.Short,
+                Quantity = 2,
+                AveragePrice = 30503.75,
+            };
+            coordinator.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            Require(coordinator.CurrentSponsor?.ObjectId == 600,
+                "short initial sponsor identity");
+
+            EvidenceTransition advancing = RailTransition(
+                EvidenceTransitionKind.RailOwned,
+                601,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(14),
+                now.AddSeconds(25),
+                30500,
+                30501);
+            OrderIntent add = coordinator.ProcessEvidence(
+                new[] { advancing }, now.AddSeconds(25), market,
+                basePosition, evidence).SingleOrDefault();
+            Require(add?.Kind == OrderIntentKind.Add
+                    && coordinator.CurrentSponsor?.ObjectId == 601,
+                "lower supply promotes short sponsor and adds");
+            coordinator.OnOrderAttemptResult(add, accepted: true);
+            var leveragedPosition = new RuntimePosition
+            {
+                PositionId = "short-sponsor-selftest",
+                Direction = TradeDirection.Short,
+                Quantity = 3,
+                AveragePrice = 30503,
+            };
+            coordinator.OnPositionChanged(
+                leveragedPosition, now.AddSeconds(26), market);
+
+            EvidenceTransition oldFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                600,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(1),
+                now.AddSeconds(27),
+                30508,
+                30509);
+            Require(coordinator.ProcessEvidence(
+                    new[] { oldFailure }, now.AddSeconds(27), market,
+                    leveragedPosition, evidence).Count == 0,
+                "short old sponsor failure ignored after promotion");
+
+            EvidenceTransition currentFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                601,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(14),
+                now.AddSeconds(28),
+                30500,
+                30501);
+            OrderIntent flatten = coordinator.ProcessEvidence(
+                new[] { currentFailure }, now.AddSeconds(28), market,
+                leveragedPosition, evidence).SingleOrDefault();
+            Require(flatten?.Kind == OrderIntentKind.Flatten
+                    && flatten.TerminalAfterFlat
+                    && flatten.Reason == "sponsor_failed:601",
+                "current short sponsor failure terminally flattens campaign");
+        }
+
         private static EvidenceTransition ConsumedDemand(
             int id,
             DateTime formedUtc,
@@ -272,7 +517,7 @@ namespace ExecAssistantRuntime
             {
                 Kind = EvidenceTransitionKind.RailOwned,
                 TimeUtc = eventUtc,
-                CurrentMidTick = (long)Math.Round(((lower + upper) / 2.0) / 0.25),
+                CurrentMidTick = (long)Math.Round(upper / 0.25) + 9,
                 Band = new EvidenceBandView
                 {
                     Id = id,
@@ -290,6 +535,56 @@ namespace ExecAssistantRuntime
                     Score = 9,
                 },
             };
+
+        private static EvidenceTransition RailTransition(
+            EvidenceTransitionKind kind,
+            int id,
+            EvidenceSide side,
+            EvidenceSource source,
+            DateTime formedUtc,
+            DateTime eventUtc,
+            double lower,
+            double upper)
+        {
+            long minTick = (long)Math.Round(lower / 0.25);
+            long maxTick = (long)Math.Round(upper / 0.25);
+            long currentMidTick = side == EvidenceSide.Demand
+                ? maxTick + 9
+                : minTick - 9;
+            return new EvidenceTransition
+            {
+                Kind = kind,
+                TimeUtc = eventUtc,
+                CurrentMidTick = currentMidTick,
+                Band = new EvidenceBandView
+                {
+                    Id = id,
+                    Role = EvidenceRole.Rail,
+                    Side = side,
+                    SourceSide = side == EvidenceSide.Demand
+                        ? EvidenceSide.Supply
+                        : EvidenceSide.Demand,
+                    Source = source,
+                    State = kind switch
+                    {
+                        EvidenceTransitionKind.RailTested => EvidenceState.Tested,
+                        EvidenceTransitionKind.RailHeld => EvidenceState.Held,
+                        EvidenceTransitionKind.RailFailed => EvidenceState.Failed,
+                        _ => EvidenceState.Owned,
+                    },
+                    MinTick = minTick,
+                    MaxTick = maxTick,
+                    FormedUtc = formedUtc,
+                    OwnedUtc = eventUtc,
+                    LastStateUtc = eventUtc,
+                    FailedUtc = kind == EvidenceTransitionKind.RailFailed
+                        ? eventUtc
+                        : null,
+                    EventCount = 3,
+                    Score = 9,
+                },
+            };
+        }
 
         private static BookDepthSnapshot Book(DateTime timeUtc, double bid,
             double bidSize, double askSize = 1)

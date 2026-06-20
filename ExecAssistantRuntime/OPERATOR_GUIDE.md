@@ -10,14 +10,18 @@ The deployed strategy supports the settled NQ execution path:
 - base semantic stop and fresh-epoch retries;
 - strict fresh-epoch adds;
 - weighted-breakeven stop after the first add;
+- internal favorable-only sponsor handoff and market flatten on exact current
+  sponsor failure;
 - resting `HARD_TP` limit;
 - `CANCEL_DIRECTIVE`, `FLAT`, and fail-closed restart recovery;
-- append-only evidence/order/fill telemetry.
+- append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
+  lifecycle messages.
 
 `TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
 `TARGET_DECISION_BEFORE_EXTREME` remain observation-only in shadow mode. They
-do not create a simulated hard target. With `Trading Enabled` checked, the
-strategy rejects those modes before activation.
+are frozen and do not create a simulated hard target or target-gate behavior.
+With `Trading Enabled` checked, the strategy rejects those modes before
+activation.
 
 ## Installation
 
@@ -84,14 +88,21 @@ the repository schemas exactly. Symbol and account never belong in JSON.
    minutes gives it useful rail context.
 4. Write a new `TRADE_DIRECTIVE` with a unique ID, current timestamps, and
    `HARD_TP`.
-5. Confirm the strategy log reports `directive_accepted` and the JSONL log
-   contains evidence transitions.
+5. Confirm the Strategy Manager log reports an `[EAR] Directive ... accepted`
+   message and the JSONL log contains `directive_accepted` plus evidence
+   transitions.
 6. A shadow trigger creates `order_shadow_fill`, simulated position protection,
    and eventual shadow exit without touching the broker.
 
 Repeated edits to an accepted ID are rejected as mutation. After completion,
 cancel, `FLAT`, or restart, issue a new directive ID even when the plan is the
 same.
+
+A fresh opposite HF/LF while the directive is armed but flat invalidates it,
+cancels any runtime entry order, and requires a new directive ID. Once a
+position exists, the initial filled entry support is its sponsor. The visible
+log reports later sponsor promotions and exact-sponsor failures; tests and holds
+do not move the weighted-BE order or flatten the position.
 
 ## Demo Live Run
 

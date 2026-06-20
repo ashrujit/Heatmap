@@ -42,8 +42,22 @@ spike JSON shape as an alternate parser.
   marketable-limit policy until logs demonstrate a real fill problem.
 - L2 callbacks and broker callbacks must not perform file I/O. Serialize runtime
   decisions through one worker and write JSONL on a dedicated logger thread.
-- Decision/trailing target modes are not live-eligible until their measurable
-  continuation/exit rules are closed in `DESIGN.md`; reject rather than infer.
+- `HARD_TP` is the only developed/live target path. Decision/trailing modes
+  remain schema-valid compatibility values but are frozen; reject them live and
+  do not infer target-gate behavior in shadow mode.
+- Campaign protection tracks one causal same-side sponsor internally. A later
+  sponsor may promote only when it is newly owned, fully beyond the current
+  sponsor in the favorable direction, and has confirmed favorable
+  displacement. Promotion is irreversible; only failure or adverse consumption
+  of the exact current sponsor flattens. Never move the broker weighted-BE stop
+  to a sponsor edge.
+- A fresh opposite HF/LF is terminal evidence even while the directive is flat.
+  In that case invalidate the directive and cancel runtime entry orders without
+  sending a meaningless position-close request; later evidence requires a new
+  directive id.
+- The Strategy Manager log is the operator's immediate, sparse lifecycle
+  channel. Keep JSONL as the canonical detailed audit and do not echo routine
+  evidence transitions into the visible log.
 - The account/symbol pair should be dedicated while trading is enabled. Net
   position attribution cannot be recovered reliably after a restart.
 - `research/export_book_jsonl.py` is a narrow bridge for piping archived
