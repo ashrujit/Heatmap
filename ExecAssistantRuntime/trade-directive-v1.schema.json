@@ -1,0 +1,501 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:exec-assistant:trade-directive:v1",
+  "title": "ExecAssistantRuntime Trade Directive v1",
+  "description": "Immutable, active-only execution contract for one trade leg. Symbol and account are bound to the Quantower strategy instance and are intentionally absent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "id",
+    "status",
+    "created_at",
+    "side",
+    "window",
+    "entry",
+    "sizing",
+    "retries",
+    "stop",
+    "target"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "TRADE_DIRECTIVE"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "status": {
+      "const": "active",
+      "description": "Terminal states are runtime outcomes, not mutations to this input envelope. Use a control command to cancel or flatten."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "side": {
+      "enum": [
+        "long",
+        "short"
+      ]
+    },
+    "window": {
+      "$ref": "#/$defs/window"
+    },
+    "entry": {
+      "$ref": "#/$defs/entry"
+    },
+    "sizing": {
+      "$ref": "#/$defs/sizing"
+    },
+    "retries": {
+      "$ref": "#/$defs/retries"
+    },
+    "stop": {
+      "$ref": "#/$defs/stop"
+    },
+    "target": {
+      "$ref": "#/$defs/target"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "Audit context only. Runtime behavior must not be inferred from this field."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "side": {
+            "const": "long"
+          }
+        },
+        "required": [
+          "side"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": {
+              "direction": {
+                "const": "above"
+              }
+            }
+          },
+          "entry": {
+            "properties": {
+              "pre_entry_invalidation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/belowTrigger"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "side": {
+            "const": "short"
+          }
+        },
+        "required": [
+          "side"
+        ]
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": {
+              "direction": {
+                "const": "below"
+              }
+            }
+          },
+          "entry": {
+            "properties": {
+              "pre_entry_invalidation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/aboveTrigger"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sizing": {
+            "properties": {
+              "adds_allowed": {
+                "const": false
+              }
+            },
+            "required": [
+              "adds_allowed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sizing": {
+            "properties": {
+              "add_quantity": {
+                "const": 0
+              }
+            }
+          },
+          "entry": {
+            "properties": {
+              "add_price_range": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sizing": {
+            "properties": {
+              "adds_allowed": {
+                "const": true
+              }
+            },
+            "required": [
+              "adds_allowed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sizing": {
+            "properties": {
+              "add_quantity": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "entry": {
+            "properties": {
+              "add_price_range": {
+                "$ref": "#/$defs/priceRange"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "price": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "priceRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lower",
+        "upper"
+      ],
+      "properties": {
+        "lower": {
+          "$ref": "#/$defs/price"
+        },
+        "upper": {
+          "$ref": "#/$defs/price"
+        }
+      }
+    },
+    "belowTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "price"
+      ],
+      "properties": {
+        "direction": {
+          "const": "below"
+        },
+        "price": {
+          "$ref": "#/$defs/price"
+        }
+      }
+    },
+    "aboveTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direction",
+        "price"
+      ],
+      "properties": {
+        "direction": {
+          "const": "above"
+        },
+        "price": {
+          "$ref": "#/$defs/price"
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "not_before",
+        "expires_at"
+      ],
+      "properties": {
+        "not_before": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "order_price_range",
+        "context_price_range",
+        "add_price_range",
+        "pre_entry_invalidation",
+        "allowed_resolutions"
+      ],
+      "properties": {
+        "mode": {
+          "const": "contest_transition"
+        },
+        "order_price_range": {
+          "$ref": "#/$defs/priceRange",
+          "description": "The quote must be inside this inclusive, tick-normalized range when an entry order is submitted."
+        },
+        "context_price_range": {
+          "$ref": "#/$defs/priceRange",
+          "description": "Supporting anchors and failed objects must intersect this inclusive, tick-normalized range."
+        },
+        "add_price_range": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/priceRange"
+            }
+          ],
+          "description": "Required when scaling is enabled and null when scaling is disabled."
+        },
+        "pre_entry_invalidation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/belowTrigger"
+            },
+            {
+              "$ref": "#/$defs/aboveTrigger"
+            }
+          ]
+        },
+        "allowed_resolutions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "direct_conversion",
+              "supported_reclaim"
+            ]
+          }
+        }
+      }
+    },
+    "sizing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_quantity",
+        "add_quantity",
+        "max_position_quantity",
+        "adds_allowed"
+      ],
+      "properties": {
+        "base_quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "add_quantity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_position_quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "adds_allowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "retries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_base_reentries"
+      ],
+      "properties": {
+        "max_base_reentries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Number of new base attempts allowed after the initial base attempt."
+        }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base",
+        "leveraged",
+        "opposite_failure_object"
+      ],
+      "properties": {
+        "base": {
+          "const": "reverse_entry_resolution"
+        },
+        "leveraged": {
+          "const": "weighted_breakeven"
+        },
+        "opposite_failure_object": {
+          "const": "flatten"
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "price",
+        "direction"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "HARD_TP",
+            "TARGET_DECISION",
+            "TRAIL_AFTER_TARGET",
+            "TARGET_DECISION_BEFORE_EXTREME"
+          ]
+        },
+        "price": {
+          "$ref": "#/$defs/price"
+        },
+        "direction": {
+          "enum": [
+            "above",
+            "below"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Optional audit label such as IBH, open, rail, or prior supply."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": 1,
+      "kind": "TRADE_DIRECTIVE",
+      "id": "2026-06-19-short-01",
+      "status": "active",
+      "created_at": "2026-06-19T10:05:00-04:00",
+      "side": "short",
+      "window": {
+        "not_before": "2026-06-19T10:05:00-04:00",
+        "expires_at": "2026-06-19T11:30:00-04:00"
+      },
+      "entry": {
+        "mode": "contest_transition",
+        "order_price_range": {
+          "lower": 30475,
+          "upper": 30550
+        },
+        "context_price_range": {
+          "lower": 30380,
+          "upper": 30550
+        },
+        "add_price_range": {
+          "lower": 30380,
+          "upper": 30550
+        },
+        "pre_entry_invalidation": null,
+        "allowed_resolutions": [
+          "direct_conversion",
+          "supported_reclaim"
+        ]
+      },
+      "sizing": {
+        "base_quantity": 2,
+        "add_quantity": 1,
+        "max_position_quantity": 5,
+        "adds_allowed": true
+      },
+      "retries": {
+        "max_base_reentries": 3
+      },
+      "stop": {
+        "base": "reverse_entry_resolution",
+        "leveraged": "weighted_breakeven",
+        "opposite_failure_object": "flatten"
+      },
+      "target": {
+        "mode": "TARGET_DECISION",
+        "price": 30380,
+        "direction": "below",
+        "reference": "rail"
+      },
+      "notes": "Human planning context for audit only"
+    }
+  ]
+}

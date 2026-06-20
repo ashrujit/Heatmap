@@ -205,6 +205,23 @@ The live overlay now carries both objects through the ownership-rail pipeline:
   extreme reversal failure, not ordinary supply/demand conversion inside
   accepted business.
 
+`research/candidate_timing_probe.py` isolates the ownership timing question for
+execution research. It keeps the researched event-cluster and eight-tick move
+thresholds, then measures how often directional displacement survives shorter
+persistence windows than the indicator's visual ten-second confirmation. It is
+not an entry backtest; its purpose is to determine whether an independent
+execution runtime may act earlier without weakening LevelLedger paint.
+
+Five full RTH sessions (NQM6 June 11-12 and NQU6 June 16-18) rejected a general
+candidate shortcut: raw candidates resolved to their original side only 52.2%,
+and even explicitly paired opposite candidates remained unstable before the
+normal ten-second confirmation. The one defensible exception was a candidate
+supporting the failure of an already-confirmed opposing rail. Within twenty
+ticks, requiring four seconds of uninterrupted eight-tick favorable displacement
+removed the observed failures in that small sample. This exception belongs to
+ExecAssistantRuntime only; it is not a reason to shorten LevelLedger's visual
+confirmation.
+
 Useful commands from repo root:
 
 ```powershell

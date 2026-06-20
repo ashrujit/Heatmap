@@ -1,0 +1,69 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+
+namespace ExecAssistantRuntime
+{
+    internal sealed class RuntimeCheckpointData
+    {
+        public int Version { get; set; } = 1;
+        public string UpdatedUtc { get; set; }
+        public string RuntimeState { get; set; }
+        public string LastDirectiveId { get; set; }
+        public string LastDirectiveDigest { get; set; }
+        public string LastDirectiveJson { get; set; }
+        public List<string> ProcessedControlIds { get; set; } = new();
+        public string PositionId { get; set; }
+        public string PositionDirection { get; set; }
+        public double PositionQuantity { get; set; }
+        public double PositionAveragePrice { get; set; }
+    }
+
+    internal sealed class RuntimeCheckpointStore
+    {
+        private readonly string _path;
+
+        public RuntimeCheckpointStore(string path)
+        {
+            _path = Environment.ExpandEnvironmentVariables(path ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(_path))
+                throw new ArgumentException("Checkpoint path is empty.", nameof(path));
+            string directory = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+        }
+
+        public RuntimeCheckpointData Load()
+        {
+            if (!File.Exists(_path))
+                return null;
+            string json = File.ReadAllText(_path);
+            RuntimeCheckpointData data = JsonSerializer.Deserialize<RuntimeCheckpointData>(
+                json,
+                SerializerOptions);
+            if (data == null || data.Version != 1)
+                throw new InvalidDataException("Unsupported or empty runtime checkpoint.");
+            data.ProcessedControlIds ??= new List<string>();
+            return data;
+        }
+
+        public void Save(RuntimeCheckpointData data)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+            data.Version = 1;
+            data.UpdatedUtc = DateTime.UtcNow.ToString("O");
+            string json = JsonSerializer.Serialize(data, SerializerOptions);
+            string temporary = _path + ".tmp";
+            File.WriteAllText(temporary, json);
+            File.Move(temporary, _path, overwrite: true);
+        }
+
+        private static readonly JsonSerializerOptions SerializerOptions = new()
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        };
+    }
+}

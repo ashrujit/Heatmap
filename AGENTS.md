@@ -1,6 +1,6 @@
-# Heatmap — Quantower Indicator Suite
+# Heatmap — Quantower Indicator And Strategy Suite
 
-This repo hosts a suite of Quantower indicators built as standalone .NET 8 DLLs. Each indicator lives in its own subfolder, has its own `.csproj`, and deploys to `<QT_ROOT>\Settings\Scripts\Indicators\<Name>\` via the project file's `OutputPath`.
+This repo hosts Quantower indicators and strategies built as standalone .NET 8 DLLs. Each project lives in its own subfolder, has its own `.csproj`, and deploys to its Quantower script directory via the project file's `OutputPath`.
 
 ## Documentation policy
 
@@ -38,7 +38,7 @@ From any sub-project directory:
 dotnet build
 ```
 
-Output DLL lands directly in Quantower's indicators path (set via `OutputPath` in the `.csproj`). Restart Quantower to pick up new DLLs — Quantower caches indicator assemblies on startup.
+Output DLL lands directly in the project's Quantower script path (set via `OutputPath` in the `.csproj`). Restart Quantower to pick up new DLLs — Quantower caches script assemblies on startup.
 
 ## Cross-cutting Quantower invariants
 
@@ -66,3 +66,4 @@ These apply to any indicator in this suite that touches L2 / market data / chart
 - [`MarketRecorder/`](MarketRecorder/AGENTS.md) — Dedicated L2 + tick recorder replacing L2_Heatmap's capture role. Writes chunked, validated Parquet plus status/manifest metadata so capture health is visible and one bad write cannot poison a full session.
 - [`TapeLedger/`](TapeLedger/AGENTS.md) - Tick-only auction shelf ledger. Paints traded shelves, OR5/IB break-quality banners, and late-morning/lunch extreme-rejection repair context on a mostly-empty 5-minute chart. Uses bands, banners, and a compact panel aggressively; it does not attempt full-day reversal classification.
 - [`BubbleTape/`](BubbleTape/AGENTS.md) — Sparse footprint-compression overlay. Aggregates L1 aggressor tape into bounded price-time bubbles so prior buyer/seller assertions can be reviewed on a naked 1m/5m chart without opening a full footprint. No CVD, no wick-only logic, no trade-size winsorization.
+- [`ExecAssistantRuntime/`](ExecAssistantRuntime/AGENTS.md) - Directive-bound Quantower strategy. Copies LevelLedger evidence math behind an isolated execution state machine, consumes strict immutable JSON directives, and owns entry/add/protection/flatten order lifecycle for one configured account/symbol pair.

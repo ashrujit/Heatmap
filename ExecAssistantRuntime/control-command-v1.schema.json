@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:exec-assistant:control-command:v1",
+  "title": "ExecAssistantRuntime Control Command v1",
+  "description": "Immutable out-of-band control for the bound Quantower strategy instance. Symbol, account, and instance scope are intentionally absent from the payload.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/flat"
+    },
+    {
+      "$ref": "#/$defs/cancelDirective"
+    }
+  ],
+  "$defs": {
+    "flat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "command_id",
+        "issued_at",
+        "action"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "CONTROL"
+        },
+        "command_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "action": {
+          "const": "FLAT"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "cancelDirective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "command_id",
+        "issued_at",
+        "action",
+        "directive_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "CONTROL"
+        },
+        "command_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "action": {
+          "const": "CANCEL_DIRECTIVE"
+        },
+        "directive_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema_version": 1,
+      "kind": "CONTROL",
+      "command_id": "flat-20260619-001",
+      "issued_at": "2026-06-19T10:12:05-04:00",
+      "action": "FLAT",
+      "reason": "Human strategy reassessment"
+    },
+    {
+      "schema_version": 1,
+      "kind": "CONTROL",
+      "command_id": "cancel-20260619-002",
+      "issued_at": "2026-06-19T10:18:00-04:00",
+      "action": "CANCEL_DIRECTIVE",
+      "directive_id": "2026-06-19-short-01"
+    }
+  ]
+}
