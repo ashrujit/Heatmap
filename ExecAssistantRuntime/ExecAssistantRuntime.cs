@@ -1210,8 +1210,6 @@ namespace ExecAssistantRuntime
                 snapshot = new BookDepthSnapshot
                 {
                     TimeUtc = nowUtc,
-                    BestBid = RuntimeSymbol.Bid,
-                    BestAsk = RuntimeSymbol.Ask,
                     Bids = ConvertLevels(dom.Bids),
                     Asks = ConvertLevels(dom.Asks),
                 };

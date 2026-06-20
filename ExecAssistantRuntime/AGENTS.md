@@ -42,6 +42,10 @@ spike JSON shape as an alternate parser.
   marketable-limit policy until logs demonstrate a real fill problem.
 - L2 callbacks and broker callbacks must not perform file I/O. Serialize runtime
   decisions through one worker and write JSONL on a dedicated logger thread.
+- L1 best bid/ask is authoritative only for executable-market, order-routing,
+  profitability, and broker-protection decisions. Evidence snapshots derive
+  their best prices and midpoint from DOM/L2. L1 agreement may reject a stale
+  DOM sample but must never replace its prices.
 - `HARD_TP` is the only developed/live target path. Decision/trailing modes
   remain schema-valid compatibility values but are frozen; reject them live and
   do not infer target-gate behavior in shadow mode.

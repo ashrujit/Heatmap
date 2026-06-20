@@ -149,10 +149,17 @@ diverges, document why.
 
 Runtime execution should use live Quantower data directly:
 
-- L1 quote stream for best bid/ask and basic price anchors;
+- L1 quote stream for executable best bid/ask used by order routing,
+  profitability, and broker-protection decisions;
 - trade stream for prints and aggressor flow;
-- L2 heartbeat and sampled DOM for ownership/failure math;
+- L2 heartbeat and sampled DOM, including DOM-derived best prices and midpoint,
+  for all ownership/failure math;
 - Quantower order/position/trade collections for execution state.
+
+L1-versus-DOM agreement is a stale/queued-book guard only. L1 must never be
+substituted into an accepted evidence snapshot; if L2 cannot provide the book,
+evidence processing fails closed while existing execution protection may keep
+using L1.
 
 MarketRecorder/parquet and MCP are for replay, audit, backtest, and research.
 They are not the live execution feed.

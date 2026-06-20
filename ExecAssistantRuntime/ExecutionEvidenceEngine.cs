@@ -67,8 +67,6 @@ namespace ExecAssistantRuntime
     internal sealed class BookDepthSnapshot
     {
         public DateTime TimeUtc { get; init; }
-        public double BestBid { get; init; }
-        public double BestAsk { get; init; }
         public IReadOnlyList<DepthLevelSnapshot> Bids { get; init; }
         public IReadOnlyList<DepthLevelSnapshot> Asks { get; init; }
     }
@@ -714,12 +712,11 @@ namespace ExecAssistantRuntime
             var asks = ValidLevels(depth.Asks).Take(BroadLevels).ToArray();
             if (bids.Length == 0 && asks.Length == 0)
                 return null;
-            double bestBid = double.IsFinite(depth.BestBid) && depth.BestBid > 0
-                ? depth.BestBid
-                : bids.FirstOrDefault()?.Price ?? double.NaN;
-            double bestAsk = double.IsFinite(depth.BestAsk) && depth.BestAsk > 0
-                ? depth.BestAsk
-                : asks.FirstOrDefault()?.Price ?? double.NaN;
+            // Evidence price state belongs to the sampled DOM. L1 is kept out
+            // of this contract so executable-quote freshness cannot shift an
+            // ownership, rail, sponsor, or HF/LF transition.
+            double bestBid = bids.FirstOrDefault()?.Price ?? double.NaN;
+            double bestAsk = asks.FirstOrDefault()?.Price ?? double.NaN;
             long bidTick = double.IsFinite(bestBid) ? PriceToTick(bestBid) : 0;
             long askTick = double.IsFinite(bestAsk) ? PriceToTick(bestAsk) : 0;
             long midTick = double.IsFinite(bestBid) && double.IsFinite(bestAsk)

@@ -607,8 +607,6 @@ namespace ExecAssistantRuntime
             return new BookDepthSnapshot
             {
                 TimeUtc = timeUtc,
-                BestBid = bid,
-                BestAsk = bid + tick,
                 Bids = bids,
                 Asks = asks,
             };
