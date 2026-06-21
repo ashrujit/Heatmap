@@ -28,14 +28,10 @@ The first live-capable cut must prove the complete mechanical path:
 The strategy starts in shadow mode. Live order placement requires the explicit
 Quantower `Trading Enabled` setting.
 
-The v1 live cut supports `HARD_TP`. The other schema-valid target modes remain
-frozen, observation-only compatibility values in shadow mode. They do not gain
-weak-extension or continuation-survival behavior. A live directive using an
-unsupported target mode is rejected before activation.
-
-This is deliberate fail-closed behavior, not a permanent reduction of the
-design. Entry, scaling, protection, control, and recovery can be exercised on a
-demo account without pretending the remaining target question is settled.
+The v1 contract supports only `HARD_TP` in both shadow and live modes. Any other
+target value is rejected during parsing, before shared coordinator or recovery
+logic can observe it. Entry, scaling, protection, control, and recovery can be
+exercised on a demo account against the same fixed-target contract used live.
 
 The strategy assumes a dedicated account/symbol pair while enabled. Manual or
 unrelated position changes inside that pair are treated as reconciliation
@@ -208,8 +204,6 @@ be used to resume old evidence.
 ### Targets
 
 - `HARD_TP`: resting close-order limit at the normalized target;
-- decision/trailing modes: parse for compatibility and shadow-log only, with no
-  target behavior; reject for live execution;
 - reaching the hard target or any terminal exit completes the directive and
   prevents re-arming.
 
@@ -266,7 +260,5 @@ confirmation.
 - opportunity discovery and all Codex skills;
 - multi-symbol or multi-account operation inside one instance;
 - automated strategy reversal or reissue;
-- `TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
-  `TARGET_DECISION_BEFORE_EXTREME` live exits;
 - adaptive ES routing or liquidity-aware limit placement;
 - changing LevelLedger or sharing a mutable math library with it.

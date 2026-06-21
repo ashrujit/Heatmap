@@ -17,11 +17,8 @@ The deployed strategy supports the settled NQ execution path:
 - append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
   lifecycle messages.
 
-`TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
-`TARGET_DECISION_BEFORE_EXTREME` remain observation-only in shadow mode. They
-are frozen and do not create a simulated hard target or target-gate behavior.
-With `Trading Enabled` checked, the strategy rejects those modes before
-activation.
+`HARD_TP` is the sole accepted target mode in both shadow and live operation.
+The parser rejects any other value before directive activation.
 
 ## Installation
 

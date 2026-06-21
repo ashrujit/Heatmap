@@ -1016,8 +1016,7 @@ The execution state machine distinguishes evidence burden by position state:
 Sponsor protection is an orthogonal tracked object, not a separate target
 state. `BASE_ONLY` and `LEVERAGED` may each carry a current sponsor id and its
 lineage. `HARD_TP`, weighted breakeven, LF/HF, and sponsor failure retain their
-own precedence; reaching an unsupported decision-mode price does not create a
-new execution state.
+own precedence; no target-specific intermediate execution state exists.
 
 ## Restart And Forward-Only Data Loss
 
@@ -1173,11 +1172,10 @@ because sponsor protection, weighted breakeven, and LF/HF remain active on the
 way there. A target is still finite; sponsor protection is not permission for an
 unbounded objective.
 
-`TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
-`TARGET_DECISION_BEFORE_EXTREME` remain schema-valid for compatibility but are
-frozen entirely. They are not the next design layer, do not receive inferred
-shadow exit behavior, and remain rejected for live execution. No
-`DECISION_ACTIVE` state or gate-specific continuation grammar should be added.
+The v1 schema accepts no alternate target modes. This applies equally to shadow
+and live operation so abandoned exit concepts cannot affect entry gates,
+checkpoint recovery, or simulated results. No target-decision state,
+gate-specific continuation grammar, or price-trailing behavior should be added.
 
 Sponsor handoff supplies the useful continuation behavior without coupling it
 to a target boundary. It operates before a hard target, can terminate an
@@ -1331,8 +1329,7 @@ Closed by the June fixtures:
 - LF/HF flatten the complete position and terminate the directive;
 - LF/HF while flat invalidates an armed directive and requires human reissue;
 - pre-existing LF/HF objects are baselined as context at activation;
-- `HARD_TP` is the only target selected for development/live use; decision and
-  trailing modes are frozen rather than awaiting threshold research;
+- `HARD_TP` is the sole target contract in shadow and live operation;
 - maximum quantity is never a fill objective;
 - `max_base_reentries` counts attempts after the initial base;
 - ranges are inclusive after tick normalization;
@@ -1431,8 +1428,7 @@ The remaining decisions should be resolved in this order:
 The v1 trade/control schemas, candidate timing, epoch identity, restart posture,
 sponsor handoff, flat HF/LF invalidation, and visible lifecycle log now exist.
 The next design layer is live/demo order-lifecycle validation: partial fills,
-replace/cancel races, and base-retry reconciliation. TARGET_DECISION remains
-frozen.
+replace/cancel races, and base-retry reconciliation.
 
 Deterministic replay remains valuable, but demo/throwaway accounts can shorten
 the gap between replay and live order-lifecycle validation.

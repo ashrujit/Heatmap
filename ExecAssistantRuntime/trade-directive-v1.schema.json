@@ -419,12 +419,7 @@
       ],
       "properties": {
         "mode": {
-          "enum": [
-            "HARD_TP",
-            "TARGET_DECISION",
-            "TRAIL_AFTER_TARGET",
-            "TARGET_DECISION_BEFORE_EXTREME"
-          ]
+          "const": "HARD_TP"
         },
         "price": {
           "$ref": "#/$defs/price"
@@ -490,7 +485,7 @@
         "opposite_failure_object": "flatten"
       },
       "target": {
-        "mode": "TARGET_DECISION",
+        "mode": "HARD_TP",
         "price": 30380,
         "direction": "below",
         "reference": "rail"

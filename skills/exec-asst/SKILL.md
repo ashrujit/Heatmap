@@ -85,11 +85,11 @@ Extract these behavioral fields from the user's instruction:
   enabled;
 - add range when adds are enabled;
 - optional pre-entry invalidation price;
-- target mode, target price, and reference label;
+- hard-target price and optional reference label;
 - activation time and expiry.
 
 Ask one concise combined question if a behavior-changing field is missing.
-Never guess quantity, price boundaries, invalidation, or target mode.
+Never guess quantity, price boundaries, invalidation, or target price.
 
 Settled defaults that do not require another question:
 
@@ -100,9 +100,8 @@ Settled defaults that do not require another question:
 - activation: now;
 - expiry: 30 minutes.
 
-Only `HARD_TP` is currently eligible for live trading. Non-hard target modes
-may be dispatched only when the user explicitly says the EAR instance is in
-shadow mode; otherwise explain the limitation and stop.
+Always emit `HARD_TP`; it is the sole target contract in both shadow and live
+operation.
 
 ### 2. Audit Before Dispatch
 
@@ -127,7 +126,7 @@ recap without asking for ceremonial confirmation.
 Use `earctl.py dispatch`; do not hand-edit the runtime file. Example:
 
 ```powershell
-python skills\exec-asst\scripts\earctl.py dispatch --side short --order-range 30475 30550 --context-range 30380 30550 --add-range 30380 30550 --base-quantity 2 --add-quantity 1 --max-position 5 --pre-entry-invalidation 30560 --target-mode HARD_TP --target-price 30380 --target-reference rail --ttl-minutes 30 --notes "Short below the upper supply complex"
+python skills\exec-asst\scripts\earctl.py dispatch --side short --order-range 30475 30550 --context-range 30380 30550 --add-range 30380 30550 --base-quantity 2 --add-quantity 1 --max-position 5 --pre-entry-invalidation 30560 --target-price 30380 --target-reference rail --ttl-minutes 30 --notes "Short below the upper supply complex"
 ```
 
 The utility validates the payload, writes with atomic replacement, and waits

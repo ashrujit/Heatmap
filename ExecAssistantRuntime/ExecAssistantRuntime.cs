@@ -417,17 +417,6 @@ namespace ExecAssistantRuntime
                     error: true);
                 return;
             }
-            if (_runTradingEnabled && !directive.IsLiveTargetSupported)
-            {
-                _events.Write("directive_rejected",
-                    ("directive_id", directive.Id),
-                    ("reason", "target_mode_shadow_only"),
-                    ("target_mode", directive.TargetMode.ToString()));
-                LogOperator($"Directive {directive.Id} rejected: target mode "
-                    + $"{directive.TargetMode} is frozen and not live-enabled.", error: true);
-                return;
-            }
-
             ExecutableMarket market = SnapshotMarket(DateTime.UtcNow);
             if (directive.TargetMode == TargetMode.HardTp && market.IsValid)
             {
@@ -669,6 +658,7 @@ namespace ExecAssistantRuntime
             _shadowBreakeven = null;
             _shadowHardTarget = null;
             _coordinator.OnPositionChanged(_shadowPosition, DateTime.UtcNow, market);
+            LogSponsorIfChanged();
         }
 
         private void EvaluateShadowProtection(DateTime nowUtc, ExecutableMarket market)
@@ -839,7 +829,9 @@ namespace ExecAssistantRuntime
                 }
             }
 
-            if (ambiguous || recoveredDirective == null || !market.IsValid
+            bool unsupportedTarget = recoveredDirective != null
+                && recoveredDirective.TargetMode != TargetMode.HardTp;
+            if (ambiguous || recoveredDirective == null || unsupportedTarget || !market.IsValid
                 || !IsProfitable(position, market))
             {
                 var flatten = new OrderIntent
@@ -850,6 +842,7 @@ namespace ExecAssistantRuntime
                     Quantity = position.Quantity,
                     Reason = ambiguous ? "restart_ambiguous_position"
                         : recoveredDirective == null ? "restart_missing_directive"
+                        : unsupportedTarget ? "restart_unsupported_target_mode"
                         : !market.IsValid ? "restart_missing_quote"
                         : "restart_position_not_profitable",
                     TriggerUtc = DateTime.UtcNow,
@@ -893,28 +886,33 @@ namespace ExecAssistantRuntime
             }
 
             TradeDirective directive = _coordinator.Directive;
-            if (directive != null)
+            if (directive == null || directive.TargetMode != TargetMode.HardTp)
             {
-                var target = new OrderIntent
-                {
-                    IntentId = Guid.NewGuid().ToString("N"),
-                    Kind = OrderIntentKind.EnsureHardTarget,
-                    Direction = position.Direction,
-                    Quantity = position.Quantity,
-                    Price = directive.TargetPrice,
-                    Reason = reason,
-                    DirectiveId = directive.Id,
-                    TriggerUtc = DateTime.UtcNow,
-                    TriggerBid = market.Bid,
-                    TriggerAsk = market.Ask,
-                };
-                GatewayResult targetResult = _gateway.Execute(target, position, market);
-                if (!targetResult.Accepted)
-                {
-                    OrderIntent flatten = _coordinator.SafetyFlatten(DateTime.UtcNow,
-                        market, $"recovery_target_failed:{targetResult.Message}");
-                    _gateway.Execute(flatten, position, market);
-                }
+                OrderIntent flatten = _coordinator.SafetyFlatten(DateTime.UtcNow,
+                    market, "recovery_unsupported_target_mode");
+                _gateway.Execute(flatten, position, market);
+                return;
+            }
+
+            var target = new OrderIntent
+            {
+                IntentId = Guid.NewGuid().ToString("N"),
+                Kind = OrderIntentKind.EnsureHardTarget,
+                Direction = position.Direction,
+                Quantity = position.Quantity,
+                Price = directive.TargetPrice,
+                Reason = reason,
+                DirectiveId = directive.Id,
+                TriggerUtc = DateTime.UtcNow,
+                TriggerBid = market.Bid,
+                TriggerAsk = market.Ask,
+            };
+            GatewayResult targetResult = _gateway.Execute(target, position, market);
+            if (!targetResult.Accepted)
+            {
+                OrderIntent flatten = _coordinator.SafetyFlatten(DateTime.UtcNow,
+                    market, $"recovery_target_failed:{targetResult.Message}");
+                _gateway.Execute(flatten, position, market);
             }
         }
 
@@ -1387,7 +1385,26 @@ namespace ExecAssistantRuntime
             _lastLoggedSponsorVersion = _coordinator.SponsorVersion;
             SponsorContext sponsor = _coordinator.CurrentSponsor;
             if (sponsor == null)
+            {
+                SponsorClearContext cleared = _coordinator.LastSponsorClear;
+                if (cleared?.Sponsor == null)
+                    return;
+                SponsorContext prior = cleared.Sponsor;
+                _events.Write("sponsor_cleared",
+                    ("directive_id", _coordinator.Directive?.Id),
+                    ("sponsor_id", prior.ObjectId),
+                    ("prior_sponsor_id", prior.PriorObjectId),
+                    ("side", prior.Side.ToString()),
+                    ("source", prior.Source.ToString()),
+                    ("lower", prior.MinTick * _tickSize),
+                    ("upper", prior.MaxTick * _tickSize),
+                    ("promotion_reason", prior.Reason),
+                    ("flatten_reason", cleared.FlattenReason),
+                    ("epoch", prior.Epoch),
+                    ("promoted_utc", prior.PromotedUtc.ToString("O")),
+                    ("cleared_utc", cleared.ClearedUtc.ToString("O")));
                 return;
+            }
             double lower = sponsor.MinTick * _tickSize;
             double upper = sponsor.MaxTick * _tickSize;
             _events.Write("sponsor_promoted",

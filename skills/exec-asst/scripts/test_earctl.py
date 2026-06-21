@@ -68,6 +68,18 @@ class EarctlTests(unittest.TestCase):
         with self.assertRaises(earctl.ContractError):
             earctl.validate_directive(directive, 5)
 
+    def test_rejects_legacy_target_modes(self):
+        for mode in (
+            "TARGET_DECISION",
+            "TRAIL_AFTER_TARGET",
+            "TARGET_DECISION_BEFORE_EXTREME",
+        ):
+            with self.subTest(mode=mode):
+                directive = self.valid_directive()
+                directive["target"]["mode"] = mode
+                with self.assertRaises(earctl.ContractError):
+                    earctl.validate_directive(directive, 5)
+
     def test_control_and_status(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

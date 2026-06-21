@@ -18,12 +18,6 @@ from uuid import uuid4
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 OFFSET_RE = re.compile(r"(?:Z|[+-][0-9]{2}:[0-9]{2})$")
 RESOLUTIONS = {"direct_conversion", "supported_reclaim"}
-TARGET_MODES = {
-    "HARD_TP",
-    "TARGET_DECISION",
-    "TRAIL_AFTER_TARGET",
-    "TARGET_DECISION_BEFORE_EXTREME",
-}
 
 
 class ContractError(ValueError):
@@ -209,8 +203,8 @@ def validate_directive(data: dict[str, Any], instance_max_quantity: int = 5) -> 
     target = _keys(root["target"], "directive.target",
                    {"mode", "price", "direction", "reference"},
                    {"mode", "price", "direction"})
-    if not isinstance(target["mode"], str) or target["mode"] not in TARGET_MODES:
-        raise ContractError("unknown target mode")
+    if target["mode"] != "HARD_TP":
+        raise ContractError("target.mode must be HARD_TP")
     target_price = _price(target["price"], "target.price")
     expected_direction = "above" if side == "long" else "below"
     if target["direction"] != expected_direction:
@@ -461,7 +455,7 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
             "opposite_failure_object": "flatten",
         },
         "target": {
-            "mode": args.target_mode,
+            "mode": "HARD_TP",
             "price": args.target_price,
             "direction": "above" if args.side == "long" else "below",
         },
@@ -568,7 +562,6 @@ def parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--max-base-reentries", type=int, default=3)
     dispatch.add_argument("--pre-entry-invalidation", type=float)
     dispatch.add_argument("--resolution", action="append", choices=sorted(RESOLUTIONS))
-    dispatch.add_argument("--target-mode", choices=sorted(TARGET_MODES), required=True)
     dispatch.add_argument("--target-price", type=float, required=True)
     dispatch.add_argument("--target-reference")
     dispatch.add_argument("--not-before")

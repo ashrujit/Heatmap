@@ -102,6 +102,18 @@ namespace ExecAssistantRuntime
                 "\"max_position_quantity\": 5",
                 "\"max_position_quantity\": 6"),
                 "instance quantity ceiling");
+            foreach (string legacyMode in new[]
+            {
+                "TARGET_DECISION",
+                "TRAIL_AFTER_TARGET",
+                "TARGET_DECISION_BEFORE_EXTREME",
+            })
+            {
+                ExpectInvalid(valid.Replace(
+                    "\"mode\": \"HARD_TP\"",
+                    $"\"mode\": \"{legacyMode}\""),
+                    $"legacy target mode {legacyMode}");
+            }
 
             ControlCommand flat = DirectiveContracts.ParseControlCommand(
                 "{\"schema_version\":1,\"kind\":\"CONTROL\","
@@ -408,6 +420,22 @@ namespace ExecAssistantRuntime
                     && flatten.TerminalAfterFlat
                     && flatten.Reason == "sponsor_failed:502",
                 "current sponsor failure terminally flattens leveraged campaign");
+
+            int promotedVersion = coordinator.SponsorVersion;
+            coordinator.OnPositionChanged(
+                RuntimePosition.Flat, now.AddSeconds(44), market);
+            Require(coordinator.CurrentSponsor == null,
+                "flat position clears current sponsor");
+            Require(coordinator.SponsorVersion == promotedVersion + 1,
+                "sponsor clearance advances telemetry version");
+            Require(coordinator.LastSponsorClear?.Sponsor?.ObjectId == 502
+                    && coordinator.LastSponsorClear.FlattenReason == "sponsor_failed:502"
+                    && coordinator.LastSponsorClear.ClearedUtc == now.AddSeconds(44),
+                "sponsor clearance preserves sponsor lineage and flatten reason");
+            coordinator.OnPositionChanged(
+                RuntimePosition.Flat, now.AddSeconds(45), market);
+            Require(coordinator.SponsorVersion == promotedVersion + 1,
+                "repeated flat reconciliation does not duplicate sponsor clearance");
         }
 
         private static void ShortSponsorTests(

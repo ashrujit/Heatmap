@@ -36,9 +36,8 @@ protectively rounded breakeven. LF/HF flattens the complete position.
 
 ## Targets
 
-- `HARD_TP`: resting close limit; the only live-eligible v1 mode.
-- `TARGET_DECISION`, `TRAIL_AFTER_TARGET`, and
-  `TARGET_DECISION_BEFORE_EXTREME`: observation-only in shadow mode.
+- `HARD_TP`: resting close limit and the sole accepted v1 target mode in both
+  shadow and live operation.
 
 For a long, target direction is `above`; for a short, `below`. The target must
 leave executable runway from the entry range.

@@ -46,15 +46,19 @@ spike JSON shape as an alternate parser.
   profitability, and broker-protection decisions. Evidence snapshots derive
   their best prices and midpoint from DOM/L2. L1 agreement may reject a stale
   DOM sample but must never replace its prices.
-- `HARD_TP` is the only developed/live target path. Decision/trailing modes
-  remain schema-valid compatibility values but are frozen; reject them live and
-  do not infer target-gate behavior in shadow mode.
+- `HARD_TP` is the sole target contract in both shadow and live modes. Reject
+  any other target value during parsing so abandoned exit concepts cannot reach
+  shared coordinator or restart-recovery paths.
 - Campaign protection tracks one causal same-side sponsor internally. A later
   sponsor may promote only when it is newly owned, fully beyond the current
   sponsor in the favorable direction, and has confirmed favorable
   displacement. Promotion is irreversible; only failure or adverse consumption
   of the exact current sponsor flattens. Never move the broker weighted-BE stop
   to a sponsor edge.
+- Sponsor lineage is explicit in the canonical JSONL audit: promotion opens a
+  sponsor interval and the sponsored-position-to-flat transition closes it with
+  `sponsor_cleared`, preserving the last sponsor and flatten reason. Clearance
+  is deliberately not echoed to the Strategy Manager log.
 - A fresh opposite HF/LF is terminal evidence even while the directive is flat.
   In that case invalidate the directive and cancel runtime entry orders without
   sending a meaningless position-close request; later evidence requires a new

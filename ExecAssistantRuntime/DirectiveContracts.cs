@@ -25,9 +25,6 @@ namespace ExecAssistantRuntime
     internal enum TargetMode
     {
         HardTp,
-        TargetDecision,
-        TrailAfterTarget,
-        TargetDecisionBeforeExtreme,
     }
 
     internal enum ControlAction
@@ -78,7 +75,6 @@ namespace ExecAssistantRuntime
         public string Notes { get; init; }
         public string Digest { get; init; }
 
-        public bool IsLiveTargetSupported => TargetMode == TargetMode.HardTp;
     }
 
     internal sealed class ControlCommand
@@ -334,19 +330,12 @@ namespace ExecAssistantRuntime
                 new[] { "mode", "price", "direction", "reference" },
                 new[] { "mode", "price", "direction" });
             string modeText = RequireString(target, "mode", "directive.target");
-            TargetMode mode = modeText switch
-            {
-                "HARD_TP" => TargetMode.HardTp,
-                "TARGET_DECISION" => TargetMode.TargetDecision,
-                "TRAIL_AFTER_TARGET" => TargetMode.TrailAfterTarget,
-                "TARGET_DECISION_BEFORE_EXTREME" => TargetMode.TargetDecisionBeforeExtreme,
-                _ => throw Invalid("unknown directive.target.mode"),
-            };
+            RequireConstant(modeText, "HARD_TP", "directive.target.mode");
             string directionText = RequireString(target, "direction", "directive.target");
             string expected = direction == TradeDirection.Long ? "above" : "below";
             RequireConstant(directionText, expected, "directive.target.direction");
             return (
-                mode,
+                TargetMode.HardTp,
                 RequirePositiveDouble(target, "price", "directive.target"),
                 OptionalString(target, "reference", "directive.target", 128));
         }

@@ -88,6 +88,13 @@ namespace ExecAssistantRuntime
         public int Epoch { get; init; }
     }
 
+    internal sealed class SponsorClearContext
+    {
+        public SponsorContext Sponsor { get; init; }
+        public string FlattenReason { get; init; }
+        public DateTime ClearedUtc { get; init; }
+    }
+
     internal sealed class OrderIntent
     {
         public string IntentId { get; init; }
@@ -132,6 +139,7 @@ namespace ExecAssistantRuntime
         private double _lastKnownQuantity;
         private double _lastKnownAveragePrice;
         private SponsorContext _currentSponsor;
+        private SponsorClearContext _lastSponsorClear;
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
@@ -145,6 +153,7 @@ namespace ExecAssistantRuntime
         public bool EverLeveraged => _everLeveraged;
         public bool HasPendingEntryOrder => _pendingEntryIntent != null;
         public SponsorContext CurrentSponsor => _currentSponsor;
+        public SponsorClearContext LastSponsorClear => _lastSponsorClear;
         public int SponsorVersion => _sponsorVersion;
 
         public void AcceptDirective(
@@ -174,6 +183,7 @@ namespace ExecAssistantRuntime
             _lastKnownQuantity = 0;
             _lastKnownAveragePrice = 0;
             _currentSponsor = null;
+            _lastSponsorClear = null;
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
@@ -463,6 +473,17 @@ namespace ExecAssistantRuntime
                 _entryAnchorFailed = false;
                 _pendingReclaim = null;
                 _pendingRetest = null;
+                if (_currentSponsor != null)
+                {
+                    _lastSponsorClear = new SponsorClearContext
+                    {
+                        Sponsor = _currentSponsor,
+                        FlattenReason = disposition?.Reason
+                            ?? "protective_or_external_exit",
+                        ClearedUtc = nowUtc,
+                    };
+                    _sponsorVersion++;
+                }
                 _currentSponsor = null;
 
                 if (disposition?.HaltAfterFlat == true)
@@ -900,6 +921,7 @@ namespace ExecAssistantRuntime
                 return;
             if (requireFavorableAdvance && !IsFullyBeyondCurrentSponsor(sponsor))
                 return;
+            _lastSponsorClear = null;
             _currentSponsor = sponsor;
             _sponsorVersion++;
         }
