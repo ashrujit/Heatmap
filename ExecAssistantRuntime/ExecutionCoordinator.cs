@@ -201,7 +201,8 @@ namespace ExecAssistantRuntime
             DateTime nowUtc,
             ExecutableMarket market,
             RuntimePosition position,
-            ExecutionEvidenceEngine evidence)
+            ExecutionEvidenceEngine evidence,
+            bool evidenceAvailable = true)
         {
             var intents = new List<OrderIntent>();
             if (_directive == null || IsTerminal(State)
@@ -230,6 +231,9 @@ namespace ExecAssistantRuntime
                 State = RuntimeExecutionState.Invalidated;
                 return intents;
             }
+
+            if (!evidenceAvailable)
+                return intents;
 
             if (_pendingEntryIntent == null
                 && (State == RuntimeExecutionState.Armed
@@ -449,14 +453,16 @@ namespace ExecAssistantRuntime
                 && (position.Quantity != previousQuantity
                     || Math.Abs(position.AveragePrice - previousAverage) > 1e-9)
                 && (State == RuntimeExecutionState.BaseOnly
-                    || State == RuntimeExecutionState.Leveraged))
+                    || State == RuntimeExecutionState.Leveraged
+                    || State == RuntimeExecutionState.RecoveryProtected))
             {
                 if (_directive.TargetMode == TargetMode.HardTp)
                 {
                     intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureHardTarget,
                         nowUtc, market, position, "position_quantity_or_average_changed"));
                 }
-                if (State == RuntimeExecutionState.Leveraged)
+                if (State == RuntimeExecutionState.Leveraged
+                    || State == RuntimeExecutionState.RecoveryProtected)
                 {
                     intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureBreakeven,
                         nowUtc, market, position, "position_quantity_or_average_changed"));

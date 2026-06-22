@@ -55,6 +55,20 @@ Safety:
 - `Trading Enabled=true` permits actual broker operations;
 - startup self-tests should remain enabled.
 
+Market-data continuity:
+
+- `L2 Freshness (sec)` is the no-real-L2-callback threshold; default `5`;
+- `L2 Stale/Mismatch Grace (sec)` is the continuous confirmation delay before
+  EAR invokes cancel/flatten/recovery; default `5`;
+- empty DOM, L1/DOM mismatch, and DOM read failure start the grace immediately;
+- one good snapshot clears an unconfirmed grace and resumes evidence processing.
+
+With both defaults, a missing heartbeat becomes unusable after five seconds and
+must remain unusable for another five seconds before continuity loss confirms.
+A continuously mismatched or empty DOM confirms after five seconds. Transient
+failures are written as `book_unusable_started` / `book_usable_recovered` audit
+events but are not Strategy Manager errors.
+
 `Trading Enabled` is captured when the strategy starts so the runtime and order
 gateway cannot disagree about mode. Stop and restart the strategy after changing
 it; changing the setting on a running instance has no effect until restart.
@@ -74,6 +88,12 @@ Default runtime files:
 
 The strategy does not create an active directive template. Payloads must match
 the repository schemas exactly. Symbol and account never belong in JSON.
+
+Use `skills\exec-asst\scripts\earctl.py status` for the machine-readable
+operator snapshot. Its checkpoint heartbeat carries the captured trading mode,
+instance quantity ceiling, position, active directive identity, and admission
+blockers. `directive.json` is only the latest attempted input; the checkpoint's
+last accepted JSON is authoritative for reissue.
 
 ## First Shadow Run
 
@@ -143,6 +163,13 @@ repeat the action.
 L2 state is forward-only. Restart never resumes candidates, rails, epochs, or
 LF/HF baselines.
 
+A rejected sample alone is not data loss. While a sample is unusable, EAR pauses
+evidence-dependent entry, add, retry, and semantic-stop decisions. If the book
+recovers inside the configured grace, the directive and evidence epoch remain
+intact. If the grace expires, EAR logs `forward_data_loss`, cancels runtime
+orders, and applies the restart-style rules below. Recovery afterward warms a
+new evidence epoch.
+
 - Flat on restart: cancel orphan runtime orders and require a fresh directive
   ID.
 - Losing, ambiguous, unquoted, or unprotectable live position: flatten.
@@ -163,6 +190,12 @@ authoritative when cancellation acknowledgement is lost.
 
 Stopping the strategy cancels runtime entry/add orders. It intentionally leaves
 accepted target/breakeven protection attached to an open position.
+
+A complete Quantower/Windows crash cannot run stale-data logic. The resting
+`HARD_TP` remains broker-side and leveraged positions also have broker-side
+weighted breakeven, but a base-only semantic stop is runtime-driven. A separate
+broker-resident disaster-stop price would require an explicit directive-contract
+addition; the continuity settings do not provide crash protection by themselves.
 
 ## Reading Fill Quality
 

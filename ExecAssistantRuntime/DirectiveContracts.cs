@@ -168,6 +168,11 @@ namespace ExecAssistantRuntime
             if (addRangeElement.ValueKind != JsonValueKind.Null)
                 addRange = ParsePriceRange(RequireObject(addRangeElement, "directive.entry.add_price_range"),
                     "directive.entry.add_price_range");
+            if (addRange != null
+                && (contextRange.Lower > addRange.Lower || contextRange.Upper < addRange.Upper))
+            {
+                throw Invalid("directive.entry.context_price_range must contain add_price_range");
+            }
 
             PriceTrigger preEntryInvalidation = ParseOptionalTrigger(
                 RequireProperty(entry, "pre_entry_invalidation", "directive.entry"),
@@ -191,10 +196,16 @@ namespace ExecAssistantRuntime
             {
                 if (addQuantity < 1 || addRange == null)
                     throw Invalid("scaling requires positive add_quantity and non-null add_price_range");
+                if (baseQuantity + addQuantity > maxPositionQuantity)
+                    throw Invalid("scaling requires capacity for one complete add");
             }
             else if (addQuantity != 0 || addRange != null)
             {
                 throw Invalid("disabled scaling requires add_quantity=0 and add_price_range=null");
+            }
+            else if (maxPositionQuantity != baseQuantity)
+            {
+                throw Invalid("disabled scaling requires max_position_quantity=base_quantity");
             }
 
             JsonElement retries = RequireObjectProperty(root, "retries", "directive");

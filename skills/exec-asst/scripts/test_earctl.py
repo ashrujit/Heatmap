@@ -49,6 +49,25 @@ class EarctlTests(unittest.TestCase):
             },
         }
 
+    def checkpoint(self, directive=None, state="Idle", **overrides):
+        value = {
+            "version": 1,
+            "updated_utc": earctl.timestamp(earctl.datetime.now(earctl.timezone.utc)),
+            "runtime_state": state,
+            "last_directive_id": None if directive is None else directive["id"],
+            "last_directive_json": None if directive is None else json.dumps(directive),
+            "trading_enabled": False,
+            "instance_max_quantity": 5,
+            "worker_poll_ms": 250,
+            "recovery_action_required": False,
+            "bound_working_order_count": 0,
+            "unresolved_entry_count": 0,
+            "position_quantity": 0,
+            "position_average_price": 0,
+        }
+        value.update(overrides)
+        return value
+
     def test_validate_and_atomic_dispatch(self):
         directive = self.valid_directive()
         earctl.validate_directive(directive, 5)
@@ -58,6 +77,81 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual("pending", result["outcome"])
             self.assertEqual(directive, json.loads((root / "directive.json").read_text()))
 
+    def test_context_defaults_without_becoming_conversational_input(self):
+        args = earctl.parser().parse_args([
+            "dispatch",
+            "--side", "short",
+            "--order-range", "30475", "30550",
+            "--add-range", "30380", "30550",
+            "--base-quantity", "2",
+            "--add-quantity", "1",
+            "--max-position", "5",
+            "--target-price", "30380",
+            "--dry-run",
+        ])
+        directive = earctl.build_directive(args)
+        self.assertEqual(
+            {"lower": 30380.0, "upper": 30550.0},
+            directive["entry"]["context_price_range"],
+        )
+
+        args = earctl.parser().parse_args([
+            "dispatch",
+            "--side", "short",
+            "--order-range", "30475", "30550",
+            "--base-quantity", "2",
+            "--add-quantity", "0",
+            "--max-position", "2",
+            "--no-adds",
+            "--target-price", "30380",
+            "--dry-run",
+        ])
+        directive = earctl.build_directive(args)
+        earctl.validate_directive(directive, 5)
+        self.assertEqual(
+            {"lower": 30475.0, "upper": 30550.0},
+            directive["entry"]["context_price_range"],
+        )
+
+    def test_add_range_defaults_to_campaign_envelope(self):
+        short_args = earctl.parser().parse_args([
+            "dispatch",
+            "--side", "short",
+            "--order-range", "30475", "30550",
+            "--base-quantity", "2",
+            "--add-quantity", "1",
+            "--max-position", "5",
+            "--target-price", "29800",
+            "--dry-run",
+        ])
+        short = earctl.build_directive(short_args)
+        earctl.validate_directive(short, 5)
+        self.assertEqual(
+            {"lower": 29800.0, "upper": 30550.0},
+            short["entry"]["add_price_range"],
+        )
+        self.assertEqual(short["entry"]["add_price_range"],
+                         short["entry"]["context_price_range"])
+
+        long_args = earctl.parser().parse_args([
+            "dispatch",
+            "--side", "long",
+            "--order-range", "30475", "30550",
+            "--base-quantity", "2",
+            "--add-quantity", "1",
+            "--max-position", "5",
+            "--target-price", "30800",
+            "--dry-run",
+        ])
+        long = earctl.build_directive(long_args)
+        earctl.validate_directive(long, 5)
+        self.assertEqual(
+            {"lower": 30475.0, "upper": 30800.0},
+            long["entry"]["add_price_range"],
+        )
+        self.assertEqual(long["entry"]["add_price_range"],
+                         long["entry"]["context_price_range"])
+
     def test_rejects_unknown_and_scaling_mismatch(self):
         directive = self.valid_directive()
         directive["unknown"] = True
@@ -65,6 +159,20 @@ class EarctlTests(unittest.TestCase):
             earctl.validate_directive(directive, 5)
         directive = self.valid_directive()
         directive["sizing"]["adds_allowed"] = False
+        with self.assertRaises(earctl.ContractError):
+            earctl.validate_directive(directive, 5)
+        directive = self.valid_directive()
+        directive["sizing"]["max_position_quantity"] = 2
+        with self.assertRaises(earctl.ContractError):
+            earctl.validate_directive(directive, 5)
+        directive = self.valid_directive()
+        directive["sizing"]["adds_allowed"] = False
+        directive["sizing"]["add_quantity"] = 0
+        directive["entry"]["add_price_range"] = None
+        with self.assertRaises(earctl.ContractError):
+            earctl.validate_directive(directive, 5)
+        directive = self.valid_directive()
+        directive["entry"]["add_price_range"]["lower"] = 30300
         with self.assertRaises(earctl.ContractError):
             earctl.validate_directive(directive, 5)
 
@@ -94,15 +202,22 @@ class EarctlTests(unittest.TestCase):
             )
             result = earctl.command_control(args)
             self.assertEqual("pending", result["outcome"])
-            checkpoint = {"version": 1, "runtime_state": "Armed"}
+            checkpoint = self.checkpoint(state="Idle")
             (root / "checkpoint.json").write_text(json.dumps(checkpoint))
-            (root / "events.jsonl").write_text(json.dumps({
+            events = [json.dumps({
                 "event": "runtime_started",
                 "trading_enabled": False,
-            }) + "\n")
+            })]
+            events.extend(json.dumps({"event": "evidence_transition", "sequence": i})
+                          for i in range(600))
+            events.append(json.dumps({"event": "entry_order_unresolved"}))
+            (root / "events.jsonl").write_text("\n".join(events) + "\n")
             status = earctl.status_snapshot(root)
-            self.assertEqual("Armed", status["checkpoint"]["runtime_state"])
-            self.assertTrue(status["runtime_running"])
+            self.assertEqual("Idle", status["runtime"]["state"])
+            self.assertEqual("running", status["runtime"]["health"])
+            self.assertEqual("SHADOW", status["runtime"]["mode"])
+            self.assertEqual("entry_order_unresolved",
+                             status["recent_errors"][0]["event"])
 
     def test_reissue_uses_fresh_identity_and_window(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -113,7 +228,13 @@ class EarctlTests(unittest.TestCase):
                 "not_before": "2026-06-19T10:00:00-04:00",
                 "expires_at": "2026-06-19T10:30:00-04:00",
             }
-            earctl.atomic_write(root / "directive.json", original)
+            rejected_file = self.valid_directive()
+            rejected_file["id"] = "rejected-file-must-not-be-reissued"
+            earctl.atomic_write(root / "directive.json", rejected_file)
+            earctl.atomic_write(root / "checkpoint.json", self.checkpoint(original))
+            status = earctl.status_snapshot(root)
+            self.assertEqual("checkpoint_runtime_state",
+                             status["directive"]["last_outcome"]["event"])
             args = argparse.Namespace(
                 runtime_dir=root,
                 source=None,
@@ -132,6 +253,56 @@ class EarctlTests(unittest.TestCase):
             start = earctl._timestamp(reissued["window"]["not_before"], "start")
             end = earctl._timestamp(reissued["window"]["expires_at"], "end")
             self.assertEqual(60 * 60, (end - start).total_seconds())
+            self.assertNotEqual(rejected_file["id"], reissued["id"])
+            self.assertEqual(original["entry"], reissued["entry"])
+
+    def test_cancel_active_resolves_checkpoint_identity(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            directive = self.valid_directive()
+            earctl.atomic_write(root / "checkpoint.json",
+                                self.checkpoint(directive, state="Armed"))
+            args = argparse.Namespace(
+                runtime_dir=root,
+                id="cancel-active-test",
+                reason="test",
+                wait_seconds=0,
+                dry_run=True,
+            )
+            result = earctl.command_cancel_active(args)
+            self.assertEqual("validated", result["outcome"])
+            self.assertEqual(directive["id"], result["control"]["directive_id"])
+
+    def test_reissue_refuses_active_runtime_state(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            directive = self.valid_directive()
+            earctl.atomic_write(root / "checkpoint.json",
+                                self.checkpoint(directive, state="Armed"))
+            (root / "events.jsonl").write_text(
+                json.dumps({"event": "runtime_started"}) + "\n")
+            args = argparse.Namespace(
+                runtime_dir=root,
+                source=None,
+                ttl_minutes=30,
+                id=None,
+                reason=None,
+                wait_seconds=0,
+                dry_run=False,
+                instance_max_quantity=None,
+            )
+            with self.assertRaisesRegex(earctl.ContractError, "prior_directive_active"):
+                earctl.command_reissue(args)
+            self.assertFalse((root / "directive.json").exists())
+
+    def test_checkpoint_ceiling_replaces_client_default(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            earctl.atomic_write(root / "checkpoint.json",
+                                self.checkpoint(instance_max_quantity=4))
+            self.assertEqual(4, earctl.runtime_instance_ceiling(root, None))
+            with self.assertRaises(earctl.ContractError):
+                earctl.validate_directive(self.valid_directive(), 4)
 
 
 if __name__ == "__main__":

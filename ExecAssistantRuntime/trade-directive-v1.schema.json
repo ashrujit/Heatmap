@@ -318,7 +318,7 @@
               "$ref": "#/$defs/priceRange"
             }
           ],
-          "description": "Required when scaling is enabled and null when scaling is disabled."
+          "description": "Required when scaling is enabled, null when scaling is disabled, and semantically required to be contained by context_price_range."
         },
         "pre_entry_invalidation": {
           "oneOf": [

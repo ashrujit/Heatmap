@@ -33,6 +33,10 @@ spike JSON shape as an alternate parser.
 - Normative trade directives are active-only inputs. Runtime terminal states
   belong in the append-only event log. `CANCEL_DIRECTIVE` and `FLAT` are
   immutable control commands.
+- The checkpoint is also the machine-readable operator heartbeat. Keep its
+  mode, instance ceiling, poll cadence, position, admission blockers, and last
+  accepted immutable JSON current so transport tooling never infers accepted
+  state from `directive.json` or liveness from a bounded event-log tail.
 - One resolution epoch may authorize one order attempt. Repeated evidence,
   manual cancellation, or a zero-fill terminal result must not create a polling
   loop that resubmits it.
@@ -46,6 +50,11 @@ spike JSON shape as an alternate parser.
   profitability, and broker-protection decisions. Evidence snapshots derive
   their best prices and midpoint from DOM/L2. L1 agreement may reject a stale
   DOM sample but must never replace its prices.
+- A rejected DOM sample is not an L2 continuity break. Pause evidence-dependent
+  actions while the book is unusable, but preserve the evidence epoch unless
+  stale heartbeat, empty DOM, L1/DOM disagreement, or read failure remains
+  continuous through the configured grace. Only confirmed loss invokes the
+  restart-style cancel/flatten/recovery contract; a good sample resets the grace.
 - `HARD_TP` is the sole target contract in both shadow and live modes. Reject
   any other target value during parsing so abandoned exit concepts cannot reach
   shared coordinator or restart-recovery paths.

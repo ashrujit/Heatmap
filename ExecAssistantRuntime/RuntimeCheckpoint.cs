@@ -14,6 +14,12 @@ namespace ExecAssistantRuntime
         public string LastDirectiveDigest { get; set; }
         public string LastDirectiveJson { get; set; }
         public List<string> ProcessedControlIds { get; set; } = new();
+        public bool? TradingEnabled { get; set; }
+        public int? InstanceMaxQuantity { get; set; }
+        public int? WorkerPollMs { get; set; }
+        public bool RecoveryActionRequired { get; set; }
+        public int BoundWorkingOrderCount { get; set; }
+        public int UnresolvedEntryCount { get; set; }
         public string PositionId { get; set; }
         public string PositionDirection { get; set; }
         public double PositionQuantity { get; set; }

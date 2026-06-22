@@ -53,11 +53,15 @@ namespace ExecAssistantRuntime
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
-        [InputParameter("Quote Freshness (ms)", sortIndex: 11,
+        [InputParameter("L2 Stale/Mismatch Grace (sec)", sortIndex: 11,
+            minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int BookUnusableGraceSec = 5;
+
+        [InputParameter("Quote Freshness (ms)", sortIndex: 12,
             minimum: 250, maximum: 10000, increment: 250, decimalPlaces: 0)]
         public int QuoteFreshnessMs = 2000;
 
-        [InputParameter("Run Startup Self Tests", sortIndex: 12)]
+        [InputParameter("Run Startup Self Tests", sortIndex: 13)]
         public bool RunStartupSelfTests = true;
 
         [InputParameter("LL Book Lookback (sec)", sortIndex: 20,
@@ -108,6 +112,7 @@ namespace ExecAssistantRuntime
         private readonly Dictionary<string, string> _processedControlDigests = new(StringComparer.Ordinal);
         private readonly Queue<string> _processedControlOrder = new();
         private readonly HashSet<string> _blockedDirectiveIds = new(StringComparer.Ordinal);
+        private readonly BookContinuityTracker _bookContinuity = new();
 
         private Timer _workerTimer;
         private int _shutdownStarted;
@@ -128,7 +133,7 @@ namespace ExecAssistantRuntime
         private DateTime _lastBookSampleUtc = DateTime.MinValue;
         private DateTime _lastCheckpointUtc = DateTime.MinValue;
         private bool _hadEvidenceSample;
-        private bool _bookWasFresh;
+        private bool _evidenceActionsPaused = true;
         private bool _runTradingEnabled;
         private string _lastDirectiveFileHash;
         private string _lastControlFileHash;
@@ -206,6 +211,10 @@ namespace ExecAssistantRuntime
                     ("account", RuntimeAccount.Name),
                     ("tick_size", _tickSize),
                     ("trading_enabled", _runTradingEnabled),
+                    ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
+                    ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
+                    ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
+                    ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
                     ("directive_path", ExpandPath(DirectivePath)),
                     ("control_path", ExpandPath(ControlPath)));
                 Log($"Runtime started for {RuntimeSymbol.Name}/{RuntimeAccount.Name}; "
@@ -273,8 +282,8 @@ namespace ExecAssistantRuntime
                 }
 
                 position = CurrentPosition();
-                ExecuteIntents(_coordinator.Tick(nowUtc, market, position, _evidence),
-                    position, market);
+                ExecuteIntents(_coordinator.Tick(nowUtc, market, position, _evidence,
+                    evidenceAvailable: !_evidenceActionsPaused), position, market);
                 LogStateIfChanged();
                 SaveCheckpointIfDue(nowUtc, force: false);
             }
@@ -292,22 +301,68 @@ namespace ExecAssistantRuntime
         private void ProcessBookSample(DateTime nowUtc, ExecutableMarket market,
             RuntimePosition position)
         {
+            var diagnostic = new BookSampleDiagnostic
+            {
+                SymbolBid = double.IsFinite(RuntimeSymbol.Bid) ? RuntimeSymbol.Bid : null,
+                SymbolAsk = double.IsFinite(RuntimeSymbol.Ask) ? RuntimeSymbol.Ask : null,
+            };
             bool l2Fresh;
             lock (_marketGate)
             {
+                diagnostic.LastL2Utc = _lastL2Utc == DateTime.MinValue
+                    ? null
+                    : _lastL2Utc;
+                diagnostic.L2AgeMs = _lastL2Utc == DateTime.MinValue
+                    ? null
+                    : Math.Max(0, (nowUtc - _lastL2Utc).TotalMilliseconds);
                 l2Fresh = _lastL2Utc != DateTime.MinValue
                     && (nowUtc - _lastL2Utc).TotalSeconds <= Math.Max(1, BookFreshnessSec);
             }
 
-            if (!l2Fresh || !TryBuildDepthSnapshot(nowUtc, out BookDepthSnapshot depth))
+            BookDepthSnapshot depth = null;
+            bool usable;
+            if (!l2Fresh)
             {
-                if (_bookWasFresh && _hadEvidenceSample)
-                    HandleForwardDataLoss(nowUtc, market, position);
-                _bookWasFresh = false;
+                diagnostic.Reason = "l2_heartbeat_stale";
+                usable = false;
+            }
+            else
+            {
+                usable = TryBuildDepthSnapshot(nowUtc, out depth, diagnostic);
+            }
+
+            if (!usable)
+            {
+                _evidenceActionsPaused = true;
+                BookContinuityUpdate update = _bookContinuity.ObserveUnusable(
+                    nowUtc,
+                    diagnostic.Reason,
+                    Math.Max(1, BookUnusableGraceSec));
+                if (update.StartedUnusable)
+                {
+                    WriteBookHealthEvent("book_unusable_started", update, diagnostic);
+                }
+                else if (update.ReasonChanged)
+                {
+                    WriteBookHealthEvent("book_unusable_reason_changed", update, diagnostic);
+                }
+                if (update.ConfirmedLoss && _hadEvidenceSample)
+                    HandleForwardDataLoss(nowUtc, market, position, update, diagnostic);
                 return;
             }
 
-            _bookWasFresh = true;
+            BookContinuityUpdate recovered = _bookContinuity.ObserveUsable(nowUtc);
+            if (recovered.Recovered)
+            {
+                WriteBookHealthEvent("book_usable_recovered", recovered, diagnostic);
+                if (recovered.RecoveredAfterConfirmedLoss)
+                {
+                    LogOperator($"L2 book recovered after {recovered.UnusableSeconds:F1}s; "
+                        + "new evidence epoch warming.");
+                }
+            }
+
+            _evidenceActionsPaused = false;
             _hadEvidenceSample = true;
             IReadOnlyList<EvidenceTransition> transitions = _evidence.Process(depth);
             foreach (EvidenceTransition transition in transitions)
@@ -317,6 +372,33 @@ namespace ExecAssistantRuntime
                 transitions, nowUtc, market, current, _evidence);
             LogSponsorIfChanged();
             ExecuteIntents(intents, current, market);
+        }
+
+        private void WriteBookHealthEvent(string eventType,
+            BookContinuityUpdate update, BookSampleDiagnostic diagnostic)
+        {
+            _events.Write(eventType,
+                ("initial_reason", update.InitialReason),
+                ("latest_reason", update.LatestReason),
+                ("unusable_seconds", update.UnusableSeconds),
+                ("unusable_since_utc", update.UnusableSinceUtc == DateTime.MinValue
+                    ? null
+                    : update.UnusableSinceUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("last_usable_utc", update.LastUsableUtc == DateTime.MinValue
+                    ? null
+                    : update.LastUsableUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
+                ("confirmation_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                ("last_l2_utc", diagnostic.LastL2Utc?.ToString("O",
+                    CultureInfo.InvariantCulture)),
+                ("l2_age_ms", diagnostic.L2AgeMs),
+                ("bid_levels", diagnostic.BidLevels),
+                ("ask_levels", diagnostic.AskLevels),
+                ("symbol_bid", diagnostic.SymbolBid),
+                ("symbol_ask", diagnostic.SymbolAsk),
+                ("dom_bid", diagnostic.DomBid),
+                ("dom_ask", diagnostic.DomAsk),
+                ("error", diagnostic.Error));
         }
 
         private void PollDirective()
@@ -735,15 +817,31 @@ namespace ExecAssistantRuntime
         }
 
         private void HandleForwardDataLoss(DateTime nowUtc, ExecutableMarket market,
-            RuntimePosition position)
+            RuntimePosition position, BookContinuityUpdate continuity,
+            BookSampleDiagnostic diagnostic)
         {
             _events.Write("forward_data_loss",
                 ("position_quantity", position?.Quantity ?? 0),
-                ("state", _coordinator.State.ToString()));
-            LogOperator($"Forward L2 data lost; state={_coordinator.State}, "
+                ("state", _coordinator.State.ToString()),
+                ("initial_reason", continuity.InitialReason),
+                ("latest_reason", continuity.LatestReason),
+                ("unusable_seconds", continuity.UnusableSeconds),
+                ("confirmation_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                ("l2_age_ms", diagnostic.L2AgeMs),
+                ("bid_levels", diagnostic.BidLevels),
+                ("ask_levels", diagnostic.AskLevels),
+                ("symbol_bid", diagnostic.SymbolBid),
+                ("symbol_ask", diagnostic.SymbolAsk),
+                ("dom_bid", diagnostic.DomBid),
+                ("dom_ask", diagnostic.DomAsk),
+                ("error", diagnostic.Error));
+            LogOperator($"Forward L2 continuity lost after "
+                + $"{continuity.UnusableSeconds:F1}s; initial={continuity.InitialReason}, "
+                + $"latest={continuity.LatestReason}, state={_coordinator.State}, "
                 + $"position_qty={(position?.Quantity ?? 0):R}.", error: true);
             _evidence = NewEvidenceEngine();
             _hadEvidenceSample = false;
+            _evidenceActionsPaused = true;
 
             if (position == null || position.IsFlat)
             {
@@ -752,6 +850,27 @@ namespace ExecAssistantRuntime
                     ExecuteIntents(_coordinator.CancelDirective(nowUtc, market, position),
                         position, market);
                 }
+                return;
+            }
+
+            var cancel = new OrderIntent
+            {
+                IntentId = Guid.NewGuid().ToString("N"),
+                Kind = OrderIntentKind.CancelRuntimeOrders,
+                Direction = position.Direction,
+                Reason = "forward_data_loss",
+                DirectiveId = _coordinator.Directive?.Id,
+                TriggerUtc = nowUtc,
+                TriggerBid = market?.Bid ?? double.NaN,
+                TriggerAsk = market?.Ask ?? double.NaN,
+            };
+            GatewayResult cancelResult = _gateway.Execute(cancel, position, market);
+            LogIntentResult(cancel, cancelResult);
+            if (!cancelResult.Accepted)
+            {
+                OrderIntent flatten = _coordinator.SafetyFlatten(nowUtc, market,
+                    $"forward_data_loss_cancel_failed:{cancelResult.Message}");
+                ExecuteIntents(new[] { flatten }, position, market);
                 return;
             }
 
@@ -1164,20 +1283,32 @@ namespace ExecAssistantRuntime
                 && ((brokerEvent.Comment?.Contains($":{role}:", StringComparison.Ordinal) ?? false)
                     || (brokerEvent.GroupId?.Contains($":{role}:", StringComparison.Ordinal) ?? false));
 
-        private void SaveCheckpointIfDue(DateTime nowUtc, bool force)
+        private void SaveCheckpointIfDue(
+            DateTime nowUtc,
+            bool force,
+            RuntimePosition positionOverride = null,
+            string stateOverride = null,
+            bool recoveryActionRequired = false)
         {
             if (!force && (nowUtc - _lastCheckpointUtc).TotalSeconds < 2)
                 return;
             _lastCheckpointUtc = nowUtc;
-            RuntimePosition position = CurrentPosition();
+            RuntimePosition position = positionOverride ?? CurrentPosition();
             TradeDirective directive = _coordinator.Directive;
             _checkpoint = new RuntimeCheckpointData
             {
-                RuntimeState = _coordinator.State.ToString(),
+                RuntimeState = stateOverride ?? _coordinator.State.ToString(),
                 LastDirectiveId = directive?.Id ?? _checkpoint?.LastDirectiveId,
                 LastDirectiveDigest = directive?.Digest ?? _checkpoint?.LastDirectiveDigest,
                 LastDirectiveJson = _acceptedDirectiveRaw ?? _checkpoint?.LastDirectiveJson,
                 ProcessedControlIds = _processedControlOrder.ToList(),
+                TradingEnabled = _runTradingEnabled,
+                InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
+                WorkerPollMs = Math.Max(100, WorkerPollMs),
+                RecoveryActionRequired = recoveryActionRequired,
+                BoundWorkingOrderCount = BoundWorkingOrders().Length,
+                UnresolvedEntryCount = _submissions.Values.Count(t =>
+                    t.CancelRequested && !t.FillObserved),
                 PositionId = position.PositionId,
                 PositionDirection = position.IsFlat ? null : position.Direction.ToString(),
                 PositionQuantity = position.Quantity,
@@ -1193,18 +1324,33 @@ namespace ExecAssistantRuntime
             }
         }
 
-        private bool TryBuildDepthSnapshot(DateTime nowUtc, out BookDepthSnapshot snapshot)
+        private bool TryBuildDepthSnapshot(DateTime nowUtc,
+            out BookDepthSnapshot snapshot, BookSampleDiagnostic diagnostic)
         {
             snapshot = null;
             try
             {
                 DepthOfMarketAggregatedCollections dom = RuntimeSymbol.DepthOfMarket?
                     .GetDepthOfMarketAggregatedCollections(_domParameters);
-                if (dom == null || ((dom.Bids == null || dom.Bids.Length == 0)
-                    && (dom.Asks == null || dom.Asks.Length == 0)))
+                if (dom == null)
+                {
+                    diagnostic.Reason = "dom_unavailable";
                     return false;
-                if (!L1Agrees(dom))
+                }
+                diagnostic.BidLevels = dom.Bids?.Length ?? 0;
+                diagnostic.AskLevels = dom.Asks?.Length ?? 0;
+                diagnostic.DomBid = NullableFinite(FirstValidPrice(dom.Bids));
+                diagnostic.DomAsk = NullableFinite(FirstValidPrice(dom.Asks));
+                if (diagnostic.BidLevels == 0 && diagnostic.AskLevels == 0)
+                {
+                    diagnostic.Reason = "dom_empty";
                     return false;
+                }
+                if (!L1Agrees(diagnostic))
+                {
+                    diagnostic.Reason = "l1_dom_mismatch";
+                    return false;
+                }
                 snapshot = new BookDepthSnapshot
                 {
                     TimeUtc = nowUtc,
@@ -1215,23 +1361,28 @@ namespace ExecAssistantRuntime
             }
             catch (Exception ex)
             {
+                diagnostic.Reason = "dom_read_error";
+                diagnostic.Error = ex.Message;
                 _events.Write("book_sample_error", ("message", ex.Message));
                 return false;
             }
         }
 
-        private bool L1Agrees(DepthOfMarketAggregatedCollections dom)
+        private bool L1Agrees(BookSampleDiagnostic diagnostic)
         {
-            double domBid = FirstValidPrice(dom.Bids);
-            double domAsk = FirstValidPrice(dom.Asks);
-            if (double.IsFinite(domBid) && double.IsFinite(RuntimeSymbol.Bid)
-                && Math.Abs(PriceToTick(domBid) - PriceToTick(RuntimeSymbol.Bid)) > L1ToleranceTicks)
+            if (diagnostic.DomBid.HasValue && diagnostic.SymbolBid.HasValue
+                && Math.Abs(PriceToTick(diagnostic.DomBid.Value)
+                    - PriceToTick(diagnostic.SymbolBid.Value)) > L1ToleranceTicks)
                 return false;
-            if (double.IsFinite(domAsk) && double.IsFinite(RuntimeSymbol.Ask)
-                && Math.Abs(PriceToTick(domAsk) - PriceToTick(RuntimeSymbol.Ask)) > L1ToleranceTicks)
+            if (diagnostic.DomAsk.HasValue && diagnostic.SymbolAsk.HasValue
+                && Math.Abs(PriceToTick(diagnostic.DomAsk.Value)
+                    - PriceToTick(diagnostic.SymbolAsk.Value)) > L1ToleranceTicks)
                 return false;
             return true;
         }
+
+        private static double? NullableFinite(double value)
+            => double.IsFinite(value) ? value : null;
 
         private static IReadOnlyList<DepthLevelSnapshot> ConvertLevels(Level2Item[] levels)
             => (levels ?? Array.Empty<Level2Item>())
@@ -1279,6 +1430,13 @@ namespace ExecAssistantRuntime
                 _lastShadowLivePositionSignature = null;
                 return false;
             }
+
+            SaveCheckpointIfDue(
+                DateTime.UtcNow,
+                force: false,
+                positionOverride: live,
+                stateOverride: "RecoveryActionRequired",
+                recoveryActionRequired: true);
 
             string signature = $"{live.PositionId}|{live.Direction}|{live.Quantity:R}|"
                 + $"{live.AveragePrice:R}|{ambiguous}";
@@ -1657,7 +1815,8 @@ namespace ExecAssistantRuntime
             _lastBookSampleUtc = DateTime.MinValue;
             _lastCheckpointUtc = DateTime.MinValue;
             _hadEvidenceSample = false;
-            _bookWasFresh = false;
+            _evidenceActionsPaused = true;
+            _bookContinuity.Reset();
             _runTradingEnabled = TradingEnabled;
             _lastDirectiveFileHash = null;
             _lastControlFileHash = null;
@@ -1783,6 +1942,20 @@ namespace ExecAssistantRuntime
             public bool CancelRequested;
             public bool ReconciliationFailureLogged;
             public DateTime LastCancelAttemptUtc;
+        }
+
+        private sealed class BookSampleDiagnostic
+        {
+            public string Reason;
+            public string Error;
+            public DateTime? LastL2Utc;
+            public double? L2AgeMs;
+            public int? BidLevels;
+            public int? AskLevels;
+            public double? SymbolBid;
+            public double? SymbolAsk;
+            public double? DomBid;
+            public double? DomAsk;
         }
 
         private sealed class BrokerEvent

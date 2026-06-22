@@ -161,6 +161,15 @@ substituted into an accepted evidence snapshot; if L2 cannot provide the book,
 evidence processing fails closed while existing execution protection may keep
 using L1.
 
+An individual rejected sample pauses evidence-dependent entry, add, retry, and
+semantic-stop evaluation for that worker cycle. It does not erase candidates or
+invoke recovery. Forward continuity is considered lost only when the book stays
+unusable continuously through the configured confirmation grace. Unusable means
+the real-L2 heartbeat is already beyond its freshness threshold, the aggregated
+DOM is missing/empty, L1 and DOM disagree beyond tolerance, or the DOM read
+fails. A usable sample before confirmation clears the grace. A usable sample
+after confirmed loss starts a new evidence epoch; it never revives the old one.
+
 MarketRecorder/parquet and MCP are for replay, audit, backtest, and research.
 They are not the live execution feed.
 
@@ -1025,6 +1034,13 @@ the runtime's evidence memory. Level 2 is forward-only, so old rails, candidate
 timers, LF/HF baselines, retries, and resolution epochs cannot be reconstructed
 reliably from the live feed. The runtime must not resume normal management from
 the directive file alone.
+
+Runtime continuity loss is debounced separately from heartbeat freshness. The
+`L2 Freshness` setting decides when a missing real-L2 callback first makes the
+book unusable. `L2 Stale/Mismatch Grace` decides how long any unusable condition
+must then remain continuous before this recovery contract runs. DOM
+missing/empty, L1/DOM mismatch, and DOM-read failure start that grace
+immediately; they do not become terminal from one sample.
 
 Recovery is account-and-symbol scoped:
 

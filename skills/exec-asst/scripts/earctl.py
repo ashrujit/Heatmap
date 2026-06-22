@@ -18,6 +18,17 @@ from uuid import uuid4
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 OFFSET_RE = re.compile(r"(?:Z|[+-][0-9]{2}:[0-9]{2})$")
 RESOLUTIONS = {"direct_conversion", "supported_reclaim"}
+ACTIVE_RUNTIME_STATES = {
+    "Waiting", "Armed", "BaseOnly", "Leveraged", "RecoveryProtected", "Halting",
+}
+RUNTIME_EVENTS = {"runtime_started", "runtime_stopped", "runtime_removed", "runtime_start_error"}
+MATERIAL_EVENTS = {
+    "ambiguous_position_detected",
+    "entry_order_unresolved",
+    "entry_cancel_reconciliation_timeout",
+    "recovery_action_required",
+    "worker_shutdown_timeout",
+}
 
 
 class ContractError(ValueError):
@@ -33,15 +44,22 @@ def _pairs_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def load_json_text(text: str, source: str) -> dict[str, Any]:
     try:
-        with path.open("r", encoding="utf-8-sig") as handle:
-            value = json.load(handle, object_pairs_hook=_pairs_no_duplicates)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ContractError(f"cannot read JSON from {path}: {exc}") from exc
+        value = json.loads(text.lstrip("\ufeff"), object_pairs_hook=_pairs_no_duplicates)
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"cannot read JSON from {source}: {exc}") from exc
     if not isinstance(value, dict):
         raise ContractError("JSON root must be an object")
     return value
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ContractError(f"cannot read JSON from {path}: {exc}") from exc
+    return load_json_text(text, str(path))
 
 
 def _keys(value: Any, path: str, allowed: set[str], required: set[str]) -> dict[str, Any]:
@@ -118,7 +136,7 @@ def _range(value: Any, path: str) -> tuple[float, float]:
     return lower, upper
 
 
-def validate_directive(data: dict[str, Any], instance_max_quantity: int = 5) -> None:
+def validate_directive(data: dict[str, Any], instance_max_quantity: int | None = None) -> None:
     required = {
         "schema_version", "kind", "id", "status", "created_at", "side",
         "window", "entry", "sizing", "retries", "stop", "target",
@@ -180,12 +198,21 @@ def validate_directive(data: dict[str, Any], instance_max_quantity: int = 5) -> 
     maximum = _integer(sizing["max_position_quantity"], "max_position_quantity", 1)
     if not isinstance(sizing["adds_allowed"], bool):
         raise ContractError("adds_allowed must be boolean")
-    if base > maximum or maximum > max(1, instance_max_quantity):
-        raise ContractError("position quantities exceed their allowed ceiling")
+    if base > maximum:
+        raise ContractError("base_quantity must not exceed max_position_quantity")
+    if instance_max_quantity is not None:
+        if instance_max_quantity < 1:
+            raise ContractError("instance maximum quantity must be positive")
+        if maximum > instance_max_quantity:
+            raise ContractError("max_position_quantity exceeds the strategy instance ceiling")
     if sizing["adds_allowed"] and (add < 1 or add_range is None):
         raise ContractError("enabled scaling requires add quantity and add range")
+    if sizing["adds_allowed"] and base + add > maximum:
+        raise ContractError("enabled scaling requires capacity for one complete add")
     if not sizing["adds_allowed"] and (add != 0 or add_range is not None):
         raise ContractError("disabled scaling requires add_quantity=0 and null add range")
+    if not sizing["adds_allowed"] and maximum != base:
+        raise ContractError("disabled scaling requires max_position_quantity=base_quantity")
 
     retries = _keys(root["retries"], "directive.retries",
                     {"max_base_reentries"}, {"max_base_reentries"})
@@ -290,33 +317,141 @@ def runtime_paths(runtime_dir: Path) -> dict[str, Path]:
     }
 
 
-def tail_jsonl(path: Path, max_lines: int = 200) -> list[dict[str, Any]]:
+def iter_jsonl_reverse(path: Path):
     if not path.exists():
-        return []
+        return
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
         position = handle.tell()
-        chunks: list[bytes] = []
-        lines = 0
-        while position > 0 and lines <= max_lines:
+        remainder = b""
+        while position > 0:
             size = min(65536, position)
             position -= size
             handle.seek(position)
-            chunk = handle.read(size)
-            chunks.append(chunk)
-            lines += chunk.count(b"\n")
-    output: list[dict[str, Any]] = []
-    for raw in b"".join(reversed(chunks)).splitlines()[-max_lines:]:
-        try:
-            value = json.loads(raw)
-            if isinstance(value, dict):
-                output.append(value)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
-    return output
+            parts = (handle.read(size) + remainder).split(b"\n")
+            remainder = parts[0]
+            for raw in reversed(parts[1:]):
+                if not raw.strip():
+                    continue
+                try:
+                    value = json.loads(raw)
+                    if isinstance(value, dict):
+                        yield value
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+        if remainder.strip():
+            try:
+                value = json.loads(remainder)
+                if isinstance(value, dict):
+                    yield value
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
 
 
-def status_snapshot(runtime_dir: Path, recent_count: int = 12) -> dict[str, Any]:
+def tail_jsonl(path: Path, max_lines: int = 200) -> list[dict[str, Any]]:
+    newest_first: list[dict[str, Any]] = []
+    for value in iter_jsonl_reverse(path):
+        newest_first.append(value)
+        if len(newest_first) >= max_lines:
+            break
+    return list(reversed(newest_first))
+
+
+def is_material_event(event: dict[str, Any]) -> bool:
+    name = str(event.get("event", ""))
+    return (name in MATERIAL_EVENTS
+            or name.endswith(("_error", "_rejected", "_unresolved", "_timeout"))
+            or "exception" in name)
+
+
+def scan_current_session(path: Path, recent_count: int) -> dict[str, Any]:
+    latest: dict[str, Any] = {
+        "runtime": None,
+        "directive": None,
+        "control": None,
+        "state": None,
+    }
+    recent: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for event in iter_jsonl_reverse(path):
+        if len(recent) < recent_count:
+            recent.append(event)
+        if len(errors) < recent_count and is_material_event(event):
+            errors.append(event)
+        name = event.get("event")
+        if latest["runtime"] is None and name in RUNTIME_EVENTS:
+            latest["runtime"] = event
+        if latest["directive"] is None and name in {
+            "directive_accepted", "directive_rejected", "directive_mutation_rejected",
+        }:
+            latest["directive"] = event
+        if latest["control"] is None and name in {
+            "control_accepted", "control_rejected", "control_mutation_rejected",
+        }:
+            latest["control"] = event
+        if latest["state"] is None and name in {
+            "runtime_state", "position_reconciled", "recovery_action_required",
+        }:
+            latest["state"] = event
+        if name == "runtime_started":
+            break
+    return {
+        "latest": latest,
+        "recent_errors": errors,
+        "recent_events": list(reversed(recent)),
+    }
+
+
+def checkpoint_age_seconds(checkpoint: dict[str, Any] | None) -> float | None:
+    if not checkpoint or not checkpoint.get("updated_utc"):
+        return None
+    try:
+        updated = _timestamp(checkpoint["updated_utc"], "checkpoint.updated_utc")
+    except ContractError:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+
+
+def directive_summary(data: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not data:
+        return None
+    return {
+        "id": data.get("id"),
+        "side": data.get("side"),
+        "window": data.get("window"),
+        "entry": data.get("entry"),
+        "sizing": data.get("sizing"),
+        "retries": data.get("retries"),
+        "target": data.get("target"),
+    }
+
+
+def accepted_directive_from_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    raw = None if checkpoint is None else checkpoint.get("last_directive_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ContractError("checkpoint does not contain a last accepted directive")
+    data = load_json_text(raw, "checkpoint.last_directive_json")
+    validate_directive(data)
+    return data
+
+
+def runtime_instance_ceiling(runtime_dir: Path, override: int | None) -> int | None:
+    if override is not None:
+        if override < 1:
+            raise ContractError("--instance-max-quantity must be positive")
+        return override
+    path = runtime_paths(runtime_dir)["checkpoint"]
+    if not path.exists():
+        return None
+    checkpoint = load_json(path)
+    value = checkpoint.get("instance_max_quantity")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def status_snapshot(runtime_dir: Path, recent_count: int = 12,
+                    include_raw: bool = False) -> dict[str, Any]:
     paths = runtime_paths(runtime_dir)
     checkpoint = None
     checkpoint_error = None
@@ -325,43 +460,126 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12) -> dict[str, Any]
             checkpoint = load_json(paths["checkpoint"])
         except ContractError as exc:
             checkpoint_error = str(exc)
+
     directive_file = None
     directive_error = None
     if paths["directive"].exists():
         try:
             directive_file = load_json(paths["directive"])
-            validate_directive(directive_file, instance_max_quantity=10_000)
+            validate_directive(directive_file)
         except ContractError as exc:
             directive_error = str(exc)
-    events = tail_jsonl(paths["events"], 500)
-    important = {
-        "runtime": {"runtime_started", "runtime_stopped", "runtime_removed", "runtime_start_error"},
-        "directive": {"directive_accepted", "directive_rejected", "directive_mutation_rejected"},
-        "control": {"control_accepted", "control_rejected", "control_mutation_rejected"},
-        "state": {"runtime_state", "position_reconciled", "recovery_action_required"},
-    }
-    latest: dict[str, Any] = {}
-    for label, names in important.items():
-        latest[label] = next((event for event in reversed(events)
-                              if event.get("event") in names), None)
-    latest_start = next((event for event in reversed(events)
-                         if event.get("event") == "runtime_started"), None)
+
+    event_scan = scan_current_session(paths["events"], recent_count)
+    latest = event_scan["latest"]
     runtime_event = latest["runtime"]
-    errors = [event for event in events if str(event.get("event", "")).endswith("error")
-              or "exception" in str(event.get("event", ""))][-recent_count:]
-    return {
+    age = checkpoint_age_seconds(checkpoint)
+    worker_poll_ms = checkpoint.get("worker_poll_ms") if checkpoint else None
+    freshness_limit = max(10.0, (worker_poll_ms / 1000.0) * 3.0) \
+        if isinstance(worker_poll_ms, (int, float)) and not isinstance(worker_poll_ms, bool) \
+        else 10.0
+    lifecycle = None if runtime_event is None else runtime_event.get("event")
+    if checkpoint_error or lifecycle == "runtime_start_error":
+        health = "error"
+    elif lifecycle in {"runtime_stopped", "runtime_removed"}:
+        health = "stopped"
+    elif age is not None and age <= freshness_limit:
+        health = "running"
+    elif lifecycle == "runtime_started" and checkpoint is None:
+        health = "starting"
+    elif lifecycle == "runtime_started" or checkpoint is not None:
+        health = "stale"
+    else:
+        health = "unknown"
+
+    state = checkpoint.get("runtime_state") if checkpoint else None
+    last_accepted = None
+    accepted_error = None
+    if checkpoint and checkpoint.get("last_directive_json"):
+        try:
+            last_accepted = accepted_directive_from_checkpoint(checkpoint)
+        except ContractError as exc:
+            accepted_error = str(exc)
+    last_accepted_id = checkpoint.get("last_directive_id") if checkpoint else None
+    active_id = last_accepted_id if state in ACTIVE_RUNTIME_STATES else None
+    last_outcome = latest["directive"]
+    if last_outcome is None and last_accepted_id:
+        last_outcome = {
+            "event": "checkpoint_runtime_state",
+            "directive_id": last_accepted_id,
+            "runtime_state": state,
+        }
+    trading_enabled = checkpoint.get("trading_enabled") if checkpoint else None
+    if not isinstance(trading_enabled, bool) and runtime_event is not None:
+        trading_enabled = runtime_event.get("trading_enabled")
+    mode = "LIVE" if trading_enabled is True else "SHADOW" if trading_enabled is False else None
+
+    position_quantity = checkpoint.get("position_quantity", 0) if checkpoint else 0
+    working_count = checkpoint.get("bound_working_order_count", 0) if checkpoint else 0
+    unresolved_count = checkpoint.get("unresolved_entry_count", 0) if checkpoint else 0
+    recovery_required = bool(checkpoint and checkpoint.get("recovery_action_required"))
+    blockers: list[dict[str, Any]] = []
+
+    def block(code: str, message: str, **details: Any) -> None:
+        blockers.append({"code": code, "message": message, **details})
+
+    if health != "running":
+        block("runtime_not_ready", f"runtime health is {health}", health=health)
+    if recovery_required:
+        block("recovery_action_required",
+              "flatten the bound live position in Quantower before issuing directives")
+    if isinstance(position_quantity, (int, float)) and position_quantity != 0:
+        block("bound_position_not_flat", "bound position is not flat",
+              quantity=position_quantity)
+    if isinstance(working_count, int) and working_count > 0:
+        block("bound_working_orders_exist", "bound working orders exist",
+              count=working_count)
+    if isinstance(unresolved_count, int) and unresolved_count > 0:
+        block("entry_reconciliation_unresolved", "entry reconciliation is unresolved",
+              count=unresolved_count)
+    if active_id:
+        block("prior_directive_active", "a prior directive is active",
+              directive_id=active_id)
+    if checkpoint_error:
+        block("checkpoint_invalid", checkpoint_error)
+
+    result: dict[str, Any] = {
         "runtime_dir": str(runtime_dir),
-        "runtime_running": runtime_event is not None
-        and runtime_event.get("event") == "runtime_started",
-        "latest_runtime_start": latest_start,
-        "checkpoint": checkpoint,
-        "checkpoint_error": checkpoint_error,
-        "directive_file": directive_file,
-        "directive_error": directive_error,
-        "latest": latest,
-        "recent_errors": errors,
-        "recent_events": events[-recent_count:],
+        "runtime": {
+            "health": health,
+            "checkpoint_age_seconds": None if age is None else round(age, 3),
+            "state": state,
+            "mode": mode,
+            "instance_max_quantity": checkpoint.get("instance_max_quantity") if checkpoint else None,
+        },
+        "directive": {
+            "active_id": active_id,
+            "last_accepted_id": last_accepted_id,
+            "last_outcome": last_outcome,
+            "last_accepted_contract": directive_summary(last_accepted),
+            "accepted_contract_error": accepted_error,
+            "latest_input_error": directive_error,
+        },
+        "position": {
+            "id": checkpoint.get("position_id") if checkpoint else None,
+            "direction": checkpoint.get("position_direction") if checkpoint else None,
+            "quantity": position_quantity,
+            "average_price": checkpoint.get("position_average_price", 0) if checkpoint else 0,
+        },
+        "blockers": blockers,
+        "last_control_outcome": latest["control"],
+        "recent_errors": event_scan["recent_errors"],
     }
+    if include_raw:
+        result["raw"] = {
+            "checkpoint": checkpoint,
+            "checkpoint_error": checkpoint_error,
+            "directive_file": directive_file,
+            "directive_error": directive_error,
+            "latest": latest,
+            "recent_events": event_scan["recent_events"],
+        }
+    return result
 
 
 def wait_for_event(path: Path, predicate: Callable[[dict[str, Any]], bool],
@@ -378,7 +596,7 @@ def wait_for_event(path: Path, predicate: Callable[[dict[str, Any]], bool],
 
 
 def dispatch_payload(data: dict[str, Any], runtime_dir: Path,
-                     instance_max_quantity: int, wait_seconds: float,
+                     instance_max_quantity: int | None, wait_seconds: float,
                      dry_run: bool = False) -> dict[str, Any]:
     validate_directive(data, instance_max_quantity)
     if dry_run:
@@ -410,10 +628,25 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
     not_before = _timestamp(args.not_before, "not_before") if args.not_before else current
     expires = not_before + timedelta(minutes=args.ttl_minutes)
     adds = not args.no_adds
-    if adds and args.add_range is None:
-        raise ContractError("--add-range is required unless --no-adds is used")
     if not adds and args.add_quantity != 0:
         raise ContractError("--no-adds requires --add-quantity 0")
+    if not adds:
+        add_range = None
+    elif args.add_range is not None:
+        add_range = args.add_range
+    elif args.side == "long":
+        add_range = [args.order_range[0], args.target_price]
+    else:
+        add_range = [args.target_price, args.order_range[1]]
+    if args.context_range is not None:
+        context_range = args.context_range
+    elif adds:
+        context_range = [
+            min(args.order_range[0], add_range[0]),
+            max(args.order_range[1], add_range[1]),
+        ]
+    else:
+        context_range = args.order_range
     invalidation = None
     if args.pre_entry_invalidation is not None:
         invalidation = {
@@ -435,9 +668,9 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
         "entry": {
             "mode": "contest_transition",
             "order_price_range": {"lower": args.order_range[0], "upper": args.order_range[1]},
-            "context_price_range": {"lower": args.context_range[0], "upper": args.context_range[1]},
+            "context_price_range": {"lower": context_range[0], "upper": context_range[1]},
             "add_price_range": None if not adds else {
-                "lower": args.add_range[0], "upper": args.add_range[1]
+                "lower": add_range[0], "upper": add_range[1]
             },
             "pre_entry_invalidation": invalidation,
             "allowed_resolutions": resolutions,
@@ -469,20 +702,33 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_dispatch(args: argparse.Namespace) -> dict[str, Any]:
     data = build_directive(args)
-    return dispatch_payload(data, args.runtime_dir, args.instance_max_quantity,
+    ceiling = runtime_instance_ceiling(args.runtime_dir, args.instance_max_quantity)
+    return dispatch_payload(data, args.runtime_dir, ceiling,
                             args.wait_seconds, args.dry_run)
 
 
 def command_validate(args: argparse.Namespace) -> dict[str, Any]:
     data = load_json(args.input)
-    validate_directive(data, args.instance_max_quantity)
+    ceiling = runtime_instance_ceiling(args.runtime_dir, args.instance_max_quantity)
+    validate_directive(data, ceiling)
     return {"outcome": "valid", "directive_id": data["id"]}
 
 
 def command_reissue(args: argparse.Namespace) -> dict[str, Any]:
-    source = args.source or runtime_paths(args.runtime_dir)["directive"]
-    data = copy.deepcopy(load_json(source))
-    validate_directive(data, args.instance_max_quantity)
+    snapshot = status_snapshot(args.runtime_dir)
+    if not args.dry_run and snapshot["blockers"]:
+        codes = ", ".join(item["code"] for item in snapshot["blockers"])
+        raise ContractError(f"reissue blocked by runtime state: {codes}")
+    source = getattr(args, "source", None)
+    if source is not None:
+        data = copy.deepcopy(load_json(source))
+    else:
+        checkpoint_path = runtime_paths(args.runtime_dir)["checkpoint"]
+        if not checkpoint_path.exists():
+            raise ContractError("runtime checkpoint does not exist")
+        data = copy.deepcopy(accepted_directive_from_checkpoint(load_json(checkpoint_path)))
+    ceiling = runtime_instance_ceiling(args.runtime_dir, args.instance_max_quantity)
+    validate_directive(data, ceiling)
     current = now_et()
     data["id"] = args.id or new_id("reissue", data["side"])
     data["created_at"] = timestamp(current)
@@ -493,57 +739,77 @@ def command_reissue(args: argparse.Namespace) -> dict[str, Any]:
     if note:
         prior = data.get("notes", "").strip()
         data["notes"] = f"{prior} | Reissue: {note}".strip(" |")
-    return dispatch_payload(data, args.runtime_dir, args.instance_max_quantity,
+    return dispatch_payload(data, args.runtime_dir, ceiling,
                             args.wait_seconds, args.dry_run)
 
 
-def command_control(args: argparse.Namespace) -> dict[str, Any]:
+def issue_control(runtime_dir: Path, action: str, directive_id: str | None,
+                  command_id: str | None, reason: str | None,
+                  wait_seconds: float, dry_run: bool) -> dict[str, Any]:
     current = now_et()
     data: dict[str, Any] = {
         "schema_version": 1,
         "kind": "CONTROL",
-        "command_id": args.id or new_id(args.action.lower()),
+        "command_id": command_id or new_id(action.lower()),
         "issued_at": timestamp(current),
-        "action": args.action,
+        "action": action,
     }
-    if args.action == "CANCEL_DIRECTIVE":
-        if not args.directive_id:
+    if action == "CANCEL_DIRECTIVE":
+        if not directive_id:
             raise ContractError("CANCEL_DIRECTIVE requires --directive-id")
-        data["directive_id"] = args.directive_id
-    if args.reason:
-        data["reason"] = args.reason
+        data["directive_id"] = directive_id
+    if reason:
+        data["reason"] = reason
     validate_control(data)
-    if args.dry_run:
+    if dry_run:
         return {"outcome": "validated", "control": data}
-    paths = runtime_paths(args.runtime_dir)
+    paths = runtime_paths(runtime_dir)
     atomic_write(paths["control"], data)
-    command_id = data["command_id"]
+    written_id = data["command_id"]
     event = wait_for_event(
         paths["events"],
-        lambda item: item.get("command_id") == command_id
+        lambda item: item.get("command_id") == written_id
         and item.get("event") in {"control_accepted", "control_rejected", "control_mutation_rejected"},
-        args.wait_seconds,
+        wait_seconds,
     )
     outcome = "pending" if event is None else (
         "accepted" if event.get("event") == "control_accepted" else "rejected")
     return {
         "outcome": outcome,
-        "command_id": command_id,
+        "command_id": written_id,
         "path": str(paths["control"]),
         "runtime_event": event,
         "control": data,
     }
 
 
+def command_control(args: argparse.Namespace) -> dict[str, Any]:
+    return issue_control(
+        args.runtime_dir, args.action, args.directive_id, args.id, args.reason,
+        args.wait_seconds, args.dry_run)
+
+
+def command_cancel_active(args: argparse.Namespace) -> dict[str, Any]:
+    snapshot = status_snapshot(args.runtime_dir)
+    directive_id = snapshot["directive"]["active_id"]
+    if not directive_id:
+        raise ContractError("no active directive is present in the runtime checkpoint")
+    return issue_control(
+        args.runtime_dir, "CANCEL_DIRECTIVE", directive_id, args.id, args.reason,
+        args.wait_seconds, args.dry_run)
+
+
 def parser() -> argparse.ArgumentParser:
     default_dir = Path(os.path.expandvars(r"%USERPROFILE%\Documents\ExecAssistantRuntime"))
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--runtime-dir", type=Path, default=default_dir)
-    root.add_argument("--instance-max-quantity", type=int, default=5)
+    root.add_argument("--instance-max-quantity", type=int,
+                      help="override the strategy ceiling; defaults to checkpoint metadata")
     sub = root.add_subparsers(dest="command", required=True)
 
     status = sub.add_parser("status")
     status.add_argument("--recent-events", type=int, default=12)
+    status.add_argument("--raw", action="store_true")
 
     validate = sub.add_parser("validate")
     validate.add_argument("--input", type=Path, required=True)
@@ -552,9 +818,11 @@ def parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--side", choices=["long", "short"], required=True)
     dispatch.add_argument("--order-range", type=float, nargs=2, required=True,
                           metavar=("LOWER", "UPPER"))
-    dispatch.add_argument("--context-range", type=float, nargs=2, required=True,
-                          metavar=("LOWER", "UPPER"))
-    dispatch.add_argument("--add-range", type=float, nargs=2, metavar=("LOWER", "UPPER"))
+    dispatch.add_argument("--context-range", type=float, nargs=2,
+                          metavar=("LOWER", "UPPER"),
+                          help="advanced override; defaults to the minimal order/add envelope")
+    dispatch.add_argument("--add-range", type=float, nargs=2, metavar=("LOWER", "UPPER"),
+                          help="optional override; defaults to the base-to-target campaign envelope")
     dispatch.add_argument("--base-quantity", type=int, required=True)
     dispatch.add_argument("--add-quantity", type=int, required=True)
     dispatch.add_argument("--max-position", type=int, required=True)
@@ -571,13 +839,18 @@ def parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--wait-seconds", type=float, default=3.0)
     dispatch.add_argument("--dry-run", action="store_true")
 
-    reissue = sub.add_parser("reissue")
-    reissue.add_argument("--source", type=Path)
-    reissue.add_argument("--ttl-minutes", type=int, default=30)
-    reissue.add_argument("--id")
-    reissue.add_argument("--reason")
-    reissue.add_argument("--wait-seconds", type=float, default=3.0)
-    reissue.add_argument("--dry-run", action="store_true")
+    def add_reissue_arguments(command: argparse.ArgumentParser, allow_source: bool) -> None:
+        if allow_source:
+            command.add_argument("--source", type=Path,
+                                 help="explicit accepted directive source override")
+        command.add_argument("--ttl-minutes", type=int, default=30)
+        command.add_argument("--id")
+        command.add_argument("--reason")
+        command.add_argument("--wait-seconds", type=float, default=3.0)
+        command.add_argument("--dry-run", action="store_true")
+
+    add_reissue_arguments(sub.add_parser("reissue"), allow_source=True)
+    add_reissue_arguments(sub.add_parser("reissue-last-accepted"), allow_source=False)
 
     control = sub.add_parser("control")
     control.add_argument("--action", choices=["FLAT", "CANCEL_DIRECTIVE"], required=True)
@@ -586,6 +859,12 @@ def parser() -> argparse.ArgumentParser:
     control.add_argument("--reason")
     control.add_argument("--wait-seconds", type=float, default=3.0)
     control.add_argument("--dry-run", action="store_true")
+
+    cancel = sub.add_parser("cancel-active")
+    cancel.add_argument("--id")
+    cancel.add_argument("--reason")
+    cancel.add_argument("--wait-seconds", type=float, default=3.0)
+    cancel.add_argument("--dry-run", action="store_true")
     return root
 
 
@@ -593,13 +872,15 @@ def main() -> int:
     args = parser().parse_args()
     try:
         if args.command == "status":
-            result = status_snapshot(args.runtime_dir, args.recent_events)
+            result = status_snapshot(args.runtime_dir, args.recent_events, args.raw)
         elif args.command == "validate":
             result = command_validate(args)
         elif args.command == "dispatch":
             result = command_dispatch(args)
-        elif args.command == "reissue":
+        elif args.command in {"reissue", "reissue-last-accepted"}:
             result = command_reissue(args)
+        elif args.command == "cancel-active":
+            result = command_cancel_active(args)
         else:
             result = command_control(args)
         print(json.dumps(result, indent=2, ensure_ascii=True))

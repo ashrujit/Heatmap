@@ -38,8 +38,9 @@ python skills\exec-asst\scripts\earctl.py status
 ### STATUS
 
 Run `status`. Report the checkpoint age, runtime state, last directive outcome,
-position quantity/average, trading mode when visible, and material recent
-errors. Do not dispatch anything.
+position quantity/average, trading mode, dispatch blockers, and material recent
+errors. The compact status is the operator view; use `status --raw` only when
+diagnosing the underlying files or event history. Do not dispatch anything.
 
 ### FLAT
 
@@ -54,9 +55,14 @@ state that the file was written but runtime acknowledgement is pending.
 
 ### CANCEL
 
-Read status to obtain the active directive ID, then issue
-`CANCEL_DIRECTIVE`. Cancellation also flattens a position owned by that
-directive.
+Use the checkpoint-resolved active directive command:
+
+```powershell
+python skills\exec-asst\scripts\earctl.py cancel-active --reason "Human strategy reassessment"
+```
+
+Cancellation also flattens a position owned by that directive. Do not copy an
+ID from the mutable directive file.
 
 ### REISSUE
 
@@ -66,11 +72,14 @@ fresh ID and timestamps. Default to a new 30-minute window unless the user says
 one hour or gives an exact expiry.
 
 ```powershell
-python skills\exec-asst\scripts\earctl.py reissue --ttl-minutes 30
+python skills\exec-asst\scripts\earctl.py reissue-last-accepted --ttl-minutes 30
 ```
 
-Do not reissue around a runtime rejection caused by an open position, working
-order, or active prior directive. Surface that state instead.
+The command reads the last accepted immutable payload from the checkpoint, not
+the mutable directive file. It refuses dispatch while status reports a stopped
+or stale runtime, an open position, working orders, unresolved entry
+reconciliation, recovery action, or an active prior directive. Surface that
+state instead of working around it.
 
 ## New Directive Workflow
 
@@ -80,10 +89,8 @@ Extract these behavioral fields from the user's instruction:
 
 - long or short;
 - inclusive order price range;
-- wider context range containing the order range;
 - base quantity, add quantity, maximum position quantity, and whether adds are
   enabled;
-- add range when adds are enabled;
 - optional pre-entry invalidation price;
 - hard-target price and optional reference label;
 - activation time and expiry.
@@ -93,26 +100,46 @@ Never guess quantity, price boundaries, invalidation, or target price.
 
 Settled defaults that do not require another question:
 
+- add range when adds are enabled: for a long, order-range low through
+  `HARD_TP`; for a short, `HARD_TP` through order-range high. An explicitly
+  stated add restriction overrides this campaign envelope;
+- context range: the smallest envelope containing the order and add ranges;
 - resolutions: `direct_conversion` and `supported_reclaim`;
 - retries: three base reentries;
 - stop grammar: reverse entry resolution, weighted breakeven after leverage,
-  and LF/HF whole-position flatten;
+  LF/HF whole-position flatten, and exact-current-sponsor failure flatten;
 - activation: now;
 - expiry: 30 minutes.
 
 Always emit `HARD_TP`; it is the sole target contract in both shadow and live
 operation.
 
+### Session Conventions
+
+The user may explicitly establish price-abbreviation and sizing/retry defaults
+for the trading day. Reuse those defaults for later directives that day without
+asking again. A field stated for one directive overrides the session default
+for that directive only unless the user explicitly changes the daily default.
+For a per-directive `no add` override, emit `add_quantity=0`,
+`max_position_quantity=base_quantity`, and a null add range regardless of the
+session's scaling defaults.
+
+Expand abbreviated prices only when the stated convention and directional
+contract resolve them unambiguously. Ask one concise question when an absolute
+price remains ambiguous. Never invent a daily convention or carry one into a
+different trading day.
+
 ### 2. Audit Before Dispatch
 
 Run `status`. EAR itself rejects a directive when its bound account/symbol has
-an open position, any working order, or an active prior directive. Do not work
-around those guards.
+an open position, any working order, unresolved entry reconciliation, recovery
+action, or an active prior directive. It also rejects a hard target with no
+current executable runway. Do not work around those guards.
 
 Give the user a compact contract recap when interpretation was required:
 
 ```text
-SHORT 30475-30550 | context 30380-30550
+SHORT 30475-30550
 Base 2, add 1, max 5 | 3 retries
 Invalid above 30560 before entry
 HARD_TP 30380 (rail) | expires 10:42 ET
@@ -126,7 +153,7 @@ recap without asking for ceremonial confirmation.
 Use `earctl.py dispatch`; do not hand-edit the runtime file. Example:
 
 ```powershell
-python skills\exec-asst\scripts\earctl.py dispatch --side short --order-range 30475 30550 --context-range 30380 30550 --add-range 30380 30550 --base-quantity 2 --add-quantity 1 --max-position 5 --pre-entry-invalidation 30560 --target-price 30380 --target-reference rail --ttl-minutes 30 --notes "Short below the upper supply complex"
+python skills\exec-asst\scripts\earctl.py dispatch --side short --order-range 30475 30550 --base-quantity 2 --add-quantity 1 --max-position 5 --pre-entry-invalidation 30560 --target-price 30380 --target-reference rail --ttl-minutes 30 --notes "Short below the upper supply complex"
 ```
 
 The utility validates the payload, writes with atomic replacement, and waits

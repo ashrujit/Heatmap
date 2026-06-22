@@ -218,6 +218,12 @@ be used to resume old evidence.
 - restart with a profitable position installs breakeven and retains/recreates
   only fixed hard-target protection in `RECOVERY_PROTECTED`;
 - old candidates, rails, LF/HF baselines, retries, and epochs never resume.
+- one rejected DOM sample pauses evidence actions without changing directive or
+  position state; restart-style recovery runs only after the configured
+  stale/mismatch grace remains continuously breached;
+- every unusable interval records its initial/latest reason and recovery, and a
+  confirmed positioned recovery explicitly cancels runtime orders before
+  establishing breakeven and hard-target protection.
 
 ## Build Sequence
 

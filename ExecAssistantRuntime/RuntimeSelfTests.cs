@@ -9,8 +9,55 @@ namespace ExecAssistantRuntime
         public static void RunAll()
         {
             ContractTests();
+            BookContinuityTests();
             EvidenceEngineTests();
             CoordinatorTests();
+        }
+
+        private static void BookContinuityTests()
+        {
+            var tracker = new BookContinuityTracker();
+            DateTime start = new(2026, 6, 22, 13, 30, 0, DateTimeKind.Utc);
+
+            BookContinuityUpdate startup = tracker.ObserveUnusable(
+                start, "l2_heartbeat_stale", confirmationSeconds: 5);
+            Require(!startup.ConfirmedLoss,
+                "startup warmup does not declare forward loss");
+
+            BookContinuityUpdate firstUsable = tracker.ObserveUsable(
+                start.AddSeconds(1));
+            Require(!firstUsable.Recovered,
+                "first usable book completes warmup without recovery event");
+            BookContinuityUpdate transient = tracker.ObserveUnusable(
+                start.AddSeconds(2), "l1_dom_mismatch", confirmationSeconds: 5);
+            Require(transient.StartedUnusable && !transient.ConfirmedLoss,
+                "first mismatch starts grace without confirming loss");
+            BookContinuityUpdate transientRecovery = tracker.ObserveUsable(
+                start.AddSeconds(4));
+            Require(transientRecovery.Recovered
+                && !transientRecovery.RecoveredAfterConfirmedLoss,
+                "good sample clears transient mismatch");
+
+            tracker.ObserveUnusable(
+                start.AddSeconds(10), "dom_empty", confirmationSeconds: 5);
+            BookContinuityUpdate changed = tracker.ObserveUnusable(
+                start.AddSeconds(12), "l2_heartbeat_stale", confirmationSeconds: 5);
+            Require(changed.ReasonChanged && !changed.ConfirmedLoss,
+                "reason change preserves one continuous grace window");
+            BookContinuityUpdate confirmed = tracker.ObserveUnusable(
+                start.AddSeconds(15), "l2_heartbeat_stale", confirmationSeconds: 5);
+            Require(confirmed.ConfirmedLoss
+                && confirmed.InitialReason == "dom_empty"
+                && confirmed.LatestReason == "l2_heartbeat_stale",
+                "continuous unusable book confirms once after grace");
+            Require(!tracker.ObserveUnusable(
+                    start.AddSeconds(16), "l2_heartbeat_stale", confirmationSeconds: 5)
+                    .ConfirmedLoss,
+                "confirmed loss does not repeat while unusable");
+            BookContinuityUpdate confirmedRecovery = tracker.ObserveUsable(
+                start.AddSeconds(17));
+            Require(confirmedRecovery.RecoveredAfterConfirmedLoss,
+                "usable book marks confirmed-loss recovery");
         }
 
         private static void EvidenceEngineTests()
@@ -100,8 +147,24 @@ namespace ExecAssistantRuntime
                 "contradictory scaling");
             ExpectInvalid(valid.Replace(
                 "\"max_position_quantity\": 5",
+                "\"max_position_quantity\": 2"),
+                "scaling without capacity for one add");
+            string disabledWithExcessMaximum = valid
+                .Replace(
+                    "\"add_price_range\": { \"lower\": 30000, \"upper\": 30900 }",
+                    "\"add_price_range\": null")
+                .Replace("\"add_quantity\": 1", "\"add_quantity\": 0")
+                .Replace("\"adds_allowed\": true", "\"adds_allowed\": false");
+            ExpectInvalid(disabledWithExcessMaximum,
+                "disabled scaling maximum differs from base");
+            ExpectInvalid(valid.Replace(
+                "\"max_position_quantity\": 5",
                 "\"max_position_quantity\": 6"),
                 "instance quantity ceiling");
+            ExpectInvalid(valid.Replace(
+                "\"add_price_range\": { \"lower\": 30000, \"upper\": 30900 }",
+                "\"add_price_range\": { \"lower\": 29800, \"upper\": 30900 }"),
+                "add range outside context");
             foreach (string legacyMode in new[]
             {
                 "TARGET_DECISION",
