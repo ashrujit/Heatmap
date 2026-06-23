@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using TradingPlatform.BusinessLayer;
+using TradingPlatform.BusinessLayer.Integration;
 
 namespace MarketRecorder
 {
@@ -17,57 +18,68 @@ namespace MarketRecorder
         [InputParameter("Write Snapshot Stream", sortIndex: 1102)]
         public bool WriteSnapshots = true;
 
-        [InputParameter("Snapshot Interval (ms)", sortIndex: 1103,
+        [InputParameter("Write Raw L2 Event Stream", sortIndex: 1103)]
+        public bool WriteBookEvents = true;
+
+        [InputParameter("Snapshot Interval (ms)", sortIndex: 1104,
             minimum: 250, maximum: 10000, increment: 250, decimalPlaces: 0)]
         public int SnapshotIntervalMs = 1000;
 
-        [InputParameter("Levels Per Side", sortIndex: 1104,
+        [InputParameter("Levels Per Side", sortIndex: 1105,
             minimum: 30, maximum: 200, increment: 10, decimalPlaces: 0)]
         public int LevelsPerSide = 30;
 
-        [InputParameter("Chunk Seconds", sortIndex: 1105,
+        [InputParameter("Snapshot/Tick Chunk Seconds", sortIndex: 1106,
             minimum: 60, maximum: 1800, increment: 60, decimalPlaces: 0)]
         public int ChunkSeconds = 300;
 
-        [InputParameter("Flush Seconds", sortIndex: 1106,
+        [InputParameter("L2 Event Chunk Seconds", sortIndex: 1107,
+            minimum: 10, maximum: 300, increment: 10, decimalPlaces: 0)]
+        public int BookEventChunkSeconds = 30;
+
+        [InputParameter("Flush Seconds", sortIndex: 1108,
             minimum: 1, maximum: 30, increment: 1, decimalPlaces: 0)]
         public int FlushSeconds = 5;
 
-        [InputParameter("Capture Retention (days)", sortIndex: 1107,
+        [InputParameter("Capture Retention (days)", sortIndex: 1109,
             minimum: 1, maximum: 365, increment: 1, decimalPlaces: 0)]
         public int RetentionDays = 30;
 
-        [InputParameter("Capture Root Path", sortIndex: 1108)]
+        [InputParameter("Capture Root Path", sortIndex: 1110)]
         public string CaptureRootPath = @"C:\Quantower\Settings\Scripts\Indicators\MarketRecorder\captures";
 
-        [InputParameter("Max Queued Rows Per Stream", sortIndex: 1109,
+        [InputParameter("Max Queued Tick/Snapshot Rows", sortIndex: 1111,
             minimum: 1000, maximum: 1000000, increment: 1000, decimalPlaces: 0)]
         public int MaxQueuedRowsPerStream = 200000;
 
-        [InputParameter("Book Freshness (sec)", sortIndex: 1110,
+        [InputParameter("Max Queued L2 Event Rows", sortIndex: 1112,
+            minimum: 10000, maximum: 2000000, increment: 10000, decimalPlaces: 0)]
+        public int MaxQueuedBookEventRows = 250000;
+
+        [InputParameter("Book Freshness (sec)", sortIndex: 1120,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
-        [InputParameter("L1 Tolerance Ticks", sortIndex: 1111,
+        [InputParameter("L1 Tolerance Ticks", sortIndex: 1121,
             minimum: 0, maximum: 20, increment: 1, decimalPlaces: 0)]
         public int L1ToleranceTicks = L1ToleranceTicksDefault;
 
-        [InputParameter("Panel Enabled", sortIndex: 1120)]
+        [InputParameter("Panel Enabled", sortIndex: 1140)]
         public bool PanelEnabled = true;
 
-        [InputParameter("Panel Left Offset (px)", sortIndex: 1121,
+        [InputParameter("Panel Left Offset (px)", sortIndex: 1141,
             minimum: 0, maximum: 3000, increment: 5, decimalPlaces: 0)]
         public int PanelLeftOffsetPx = 90;
 
-        [InputParameter("Panel Top Offset (px)", sortIndex: 1122,
+        [InputParameter("Panel Top Offset (px)", sortIndex: 1142,
             minimum: 0, maximum: 2000, increment: 5, decimalPlaces: 0)]
         public int PanelTopOffsetPx = 90;
 
-        [InputParameter("Panel Width (px)", sortIndex: 1123,
+        [InputParameter("Panel Width (px)", sortIndex: 1143,
             minimum: 220, maximum: 700, increment: 10, decimalPlaces: 0)]
         public int PanelWidthPx = 340;
 
-        [InputParameter("Font Size", sortIndex: 1124,
+        [InputParameter("Font Size", sortIndex: 1144,
             minimum: 7, maximum: 18, increment: 0.5, decimalPlaces: 1)]
         public double FontSize = 9.0;
 
@@ -79,6 +91,7 @@ namespace MarketRecorder
         private bool _lastSubscribed;
         private DateTime _lastL2EventUtc = DateTime.MinValue;
         private DateTime _lastSnapshotAttemptUtc = DateTime.MinValue;
+        private DateTime _lastBookSeedAttemptUtc = DateTime.MinValue;
         private string _lastBookState = "starting";
 
         public MarketRecorder() : base()
@@ -95,16 +108,16 @@ namespace MarketRecorder
                 if (settings != null)
                 {
                     var capture = new SettingItemSeparatorGroup("Market Recorder - Capture", 1100);
-                    var health = new SettingItemSeparatorGroup("Market Recorder - Health", 1110);
-                    var panel = new SettingItemSeparatorGroup("Market Recorder - Panel", 1120);
+                    var health = new SettingItemSeparatorGroup("Market Recorder - Health", 1120);
+                    var panel = new SettingItemSeparatorGroup("Market Recorder - Panel", 1140);
                     foreach (var item in settings)
                     {
                         if (item == null) continue;
-                        if (item.SortIndex >= 1100 && item.SortIndex < 1110)
+                        if (item.SortIndex >= 1100 && item.SortIndex < 1120)
                             item.SeparatorGroup = capture;
-                        else if (item.SortIndex >= 1110 && item.SortIndex < 1120)
+                        else if (item.SortIndex >= 1120 && item.SortIndex < 1140)
                             item.SeparatorGroup = health;
-                        else if (item.SortIndex >= 1120 && item.SortIndex < 1130)
+                        else if (item.SortIndex >= 1140 && item.SortIndex < 1150)
                             item.SeparatorGroup = panel;
                     }
                 }
@@ -142,8 +155,11 @@ namespace MarketRecorder
                     FlushSeconds,
                     RetentionDays,
                     MaxQueuedRowsPerStream,
+                    MaxQueuedBookEventRows,
+                    BookEventChunkSeconds,
                     WriteTicks,
-                    WriteSnapshots);
+                    WriteSnapshots,
+                    WriteBookEvents);
                 _writer.Start();
 
                 if (WriteTicks)
@@ -151,14 +167,19 @@ namespace MarketRecorder
                     Symbol.NewLast += Symbol_NewLast;
                     _lastSubscribed = true;
                 }
-                if (WriteSnapshots)
+                if (WriteSnapshots || WriteBookEvents)
                 {
-                    Symbol.NewLevel2 += Symbol_NewLevel2Heartbeat;
+                    Symbol.NewLevel2 += Symbol_NewLevel2;
                     _l2Subscribed = true;
                 }
 
+                if (!WriteSnapshots)
+                    SetBookState("snapshot disabled");
+
                 Core.Instance.Loggers.Log(
-                    $"[MarketRecorder] enabled root={CaptureRootPath} symbol={Symbol.Name} levels={levels} chunkSec={ChunkSeconds}",
+                    $"[MarketRecorder] enabled root={CaptureRootPath} symbol={Symbol.Name} "
+                    + $"levels={levels} chunkSec={ChunkSeconds} events={WriteBookEvents} "
+                    + $"eventChunkSec={BookEventChunkSeconds}",
                     LoggingLevel.System);
             }
             catch (Exception ex)
@@ -167,10 +188,19 @@ namespace MarketRecorder
             }
         }
 
-        private void Symbol_NewLevel2Heartbeat(Symbol symbol, Level2Quote l2, DOMQuote dom)
+        private void Symbol_NewLevel2(Symbol symbol, Level2Quote l2, DOMQuote dom)
         {
             if (IsSyntheticLevel1Quote(l2)) return;
-            _lastL2EventUtc = DateTime.UtcNow;
+            DateTime receiptUtc = DateTime.UtcNow;
+            _lastL2EventUtc = receiptUtc;
+            try
+            {
+                _writer?.EnqueueBookUpdate(receiptUtc, l2, dom, _tickSize);
+            }
+            catch (Exception ex)
+            {
+                _writer?.NoteBookEventCaptureFailure(ex.Message);
+            }
         }
 
         private void Symbol_NewLast(Symbol symbol, Last last)
@@ -181,9 +211,12 @@ namespace MarketRecorder
 
         protected override void OnUpdate(UpdateArgs args)
         {
-            if (_writer == null || Symbol == null || !WriteSnapshots) return;
+            if (_writer == null || Symbol == null) return;
 
             DateTime now = DateTime.UtcNow;
+            TrySeedBook(now);
+            if (!WriteSnapshots) return;
+
             if (_lastSnapshotAttemptUtc != DateTime.MinValue
                 && (now - _lastSnapshotAttemptUtc).TotalMilliseconds < Math.Max(250, SnapshotIntervalMs))
                 return;
@@ -230,6 +263,34 @@ namespace MarketRecorder
             _writer.EnqueueSnapshot(now, dom, _tickSize);
         }
 
+        private void TrySeedBook(DateTime nowUtc)
+        {
+            if (!WriteBookEvents || !_writer.NeedsBookSeed) return;
+            if (_lastBookSeedAttemptUtc != DateTime.MinValue
+                && (nowUtc - _lastBookSeedAttemptUtc).TotalSeconds < 2.0)
+                return;
+            _lastBookSeedAttemptUtc = nowUtc;
+
+            try
+            {
+                var builder = Symbol.DepthOfMarket as IMessageBuilder<DOMQuote>;
+                DOMQuote seed = builder?.BuildMessage();
+                if (seed == null
+                    || (seed.Bids == null || seed.Bids.Count == 0)
+                    && (seed.Asks == null || seed.Asks.Count == 0))
+                {
+                    SetBookState("book seed empty");
+                    return;
+                }
+
+                _writer.EnqueueBookSeed(nowUtc, seed, _tickSize);
+            }
+            catch (Exception ex)
+            {
+                SetBookState("book seed failed: " + ex.Message);
+            }
+        }
+
         public override void OnPaintChart(PaintChartEventArgs args)
         {
             try
@@ -252,7 +313,7 @@ namespace MarketRecorder
             {
                 if (_l2Subscribed && Symbol != null)
                 {
-                    try { Symbol.NewLevel2 -= Symbol_NewLevel2Heartbeat; } catch { }
+                    try { Symbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
                     _l2Subscribed = false;
                 }
                 if (_lastSubscribed && Symbol != null)
@@ -322,23 +383,27 @@ namespace MarketRecorder
         private static bool IsSyntheticLevel1Quote(Level2Quote l2)
         {
             if (l2 == null) return false;
-            if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
-                return true;
-            return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
+            return string.Equals(
+                l2.Id,
+                "generated_from_level1",
+                StringComparison.OrdinalIgnoreCase);
         }
 
         private RecorderStatusSnapshot DisabledStatus()
         {
             return new RecorderStatusSnapshot
             {
-                Version = "0.1.0",
+                Version = "0.2.1",
                 NowUtc = DateTime.UtcNow.ToString("O"),
                 Symbol = Symbol?.Name ?? "UNKNOWN",
                 TicksEnabled = WriteTicks,
                 SnapshotsEnabled = WriteSnapshots,
+                BookEventsEnabled = WriteBookEvents,
+                BookEventChunkSeconds = Math.Max(10, BookEventChunkSeconds),
                 BookState = RecorderEnabled ? _lastBookState : "disabled",
                 LastError = RecorderEnabled ? "" : "recorder disabled",
                 QueueCapRows = Math.Max(1000, MaxQueuedRowsPerStream),
+                BookEventQueueCapRows = Math.Max(10000, MaxQueuedBookEventRows),
             };
         }
     }

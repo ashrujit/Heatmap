@@ -41,7 +41,7 @@ namespace MarketRecorder
             int rowH = Math.Max(15, (int)Math.Ceiling(FontSize + 7));
             int headerH = Math.Max(22, rowH + 5);
             int w = Math.Max(220, PanelWidthPx);
-            int rows = string.IsNullOrWhiteSpace(status.LastError) ? 5 : 6;
+            int rows = string.IsNullOrWhiteSpace(status.LastError) ? 6 : 7;
             int h = headerH + rows * rowH + 8;
             int x = Math.Min(rect.Right - w - 4, Math.Max(rect.Left + 4, rect.Left + LeftOffsetPx));
             int y = Math.Min(rect.Bottom - h - 4, Math.Max(rect.Top + 4, rect.Top + TopOffsetPx));
@@ -73,7 +73,9 @@ namespace MarketRecorder
             rowY += rowH;
             DrawRow(g, rowFont, "SNAP", StreamText(status.LastSnapshotUtc, status.SnapshotRowsWritten, status.SnapshotQueueRows, status.SnapshotFiles, status.SnapshotRowsDropped), x + 8, rowY, w - 16, SnapshotColor(status));
             rowY += rowH;
-            DrawRow(g, rowFont, "CFG", $"{status.LevelsPerSide}lv {status.ChunkSeconds}s chunks", x + 8, rowY, w - 16, Neutral);
+            DrawRow(g, rowFont, "EVNT", EventStreamText(status), x + 8, rowY, w - 16, BookEventColor(status));
+            rowY += rowH;
+            DrawRow(g, rowFont, "CFG", $"{status.LevelsPerSide}lv snap={status.ChunkSeconds}s evt={status.BookEventChunkSeconds}s", x + 8, rowY, w - 16, Neutral);
             rowY += rowH;
             DrawRow(g, rowFont, "ROOT", LastPathPart(status.Root), x + 8, rowY, w - 16, Muted);
             rowY += rowH;
@@ -99,10 +101,27 @@ namespace MarketRecorder
             return $"{last} rows={rowsWritten} q={queuedRows} files={files}{drops}";
         }
 
+        private static string EventStreamText(RecorderStatusSnapshot status)
+        {
+            if (!status.BookEventsEnabled) return "disabled";
+            string last = ShortTime(status.LastBookEventUtc);
+            string reset = status.BookSeedRequired
+                ? " seed-needed"
+                : $" reset={status.BookResetEpoch}";
+            string gaps = status.BookContinuityGaps > 0 || status.BookGapPending
+                ? $" gap={status.BookContinuityGaps}{(status.BookGapPending ? "+" : "")}" : "";
+            string drops = status.BookEventRowsDropped > 0 ? $" drop={status.BookEventRowsDropped}" : "";
+            return $"{last} rows={status.BookEventRowsWritten} "
+                + $"q={status.BookEventQueueRows}/{status.BookEventQueueHighWaterRows} "
+                + $"rate={status.BookCallbackRatePerSec:F0}/s files={status.BookEventFiles}"
+                + $"{reset}{gaps}{drops}";
+        }
+
         private static string Overall(RecorderStatusSnapshot s)
         {
             if (!string.IsNullOrWhiteSpace(s.LastError)) return "ERROR";
             if (HasDrops(s)) return "DROP";
+            if (s.BookEventsEnabled && s.BookResetEpoch <= 0) return "WAIT";
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return "OK";
             if ((s.BookState ?? "").IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0) return "OFF";
             return "WAIT";
@@ -112,13 +131,15 @@ namespace MarketRecorder
         {
             if (!string.IsNullOrWhiteSpace(s.LastError)) return Bad;
             if (HasDrops(s)) return Bad;
+            if (s.BookEventsEnabled && s.BookResetEpoch <= 0) return Warning;
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return Good;
             if ((s.BookState ?? "").IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0) return Muted;
             return Warning;
         }
 
         private static bool HasDrops(RecorderStatusSnapshot s)
-            => s.TickRowsDropped > 0 || s.SnapshotRowsDropped > 0;
+            => s.TickRowsDropped > 0 || s.SnapshotRowsDropped > 0
+                || s.BookEventRowsDropped > 0 || s.BookGapPending;
 
         private static Color BookColor(RecorderStatusSnapshot s)
         {
@@ -142,6 +163,15 @@ namespace MarketRecorder
             if (s.SnapshotWriteFailures > 0 || s.SnapshotRowsDropped > 0) return Bad;
             if ((s.BookState ?? "").IndexOf("ok", StringComparison.OrdinalIgnoreCase) >= 0) return Good;
             return Warning;
+        }
+
+        private static Color BookEventColor(RecorderStatusSnapshot s)
+        {
+            if (!s.BookEventsEnabled) return Muted;
+            if (s.BookEventWriteFailures > 0 || s.BookEventRowsDropped > 0 || s.BookGapPending)
+                return Bad;
+            if (s.BookResetEpoch <= 0) return Warning;
+            return Good;
         }
 
         private static string ShortTime(string utc)
