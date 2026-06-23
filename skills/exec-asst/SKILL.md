@@ -122,7 +122,8 @@ asking again. A field stated for one directive overrides the session default
 for that directive only unless the user explicitly changes the daily default.
 For a per-directive `no add` override, emit `add_quantity=0`,
 `max_position_quantity=base_quantity`, and a null add range regardless of the
-session's scaling defaults.
+session's scaling defaults. With `earctl.py dispatch`, also pass `--no-adds`;
+zero quantities alone do not disable scaling in the CLI.
 
 Expand abbreviated prices only when the stated convention and directional
 contract resolve them unambiguously. Ask one concise question when an absolute
