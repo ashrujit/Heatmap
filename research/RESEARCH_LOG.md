@@ -960,6 +960,34 @@ was the evidence, and what exactly caused the band?"
 
 ---
 
+## 2026-06-22 - OFI Research Precedent: Udit's Skurry Panel
+
+When event-level OFI, queue imbalance, or book-resiliency research resumes,
+review the local `Skurry-Panel*` branches for hypotheses and implementation
+lessons. Particularly relevant ideas are the bounded raw-L2 recorder,
+order-id book lifecycle, cancellation-driven book thinning, tape-correlated
+level clearing, and post-clear refill latency/ratio.
+
+Treat this as inspiration, not inherited validation. Udit's implemented
+Pressure HUD deliberately chose visible, depth-weighted snapshot QI over
+canonical flow OFI for a human-facing indicator; its product constraints and
+later default-off status do not answer EAR's execution-policy questions. Any
+borrowed feature must be reformulated around our specific entry/add/protection
+decisions, tested on our own replayable event stream, reconciled against
+canonical DOM snapshots, rejected across continuity gaps, and validated on
+held-out sessions before it can affect LL or EAR.
+
+Useful local starting points:
+
+- `Skurry-Panel/Detection/L2/PressureAccumulator.cs`
+- `Skurry-Panel/Detection/L2/BookThinningDetector.cs`
+- `Skurry-Panel/Detection/L2/LevelRefillTracker.cs`
+- `Skurry-Panel/Detection/L2/BookState.cs`
+- `Skurry-Panel/Diagnostic/L2Recorder.cs`
+- `Skurry-Panel/docs/tier-1-indicator/calibration/v0.26-pressure-hud.md`
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.
