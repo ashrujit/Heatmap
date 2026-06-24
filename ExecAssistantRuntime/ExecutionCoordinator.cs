@@ -9,6 +9,7 @@ namespace ExecAssistantRuntime
         Idle,
         Waiting,
         Armed,
+        Paused,
         BaseOnly,
         Leveraged,
         RecoveryProtected,
@@ -123,6 +124,7 @@ namespace ExecAssistantRuntime
         private readonly double _tickSize;
         private readonly HashSet<int> _usedRootObjectIds = new();
         private readonly HashSet<int> _baselineFailureIds = new();
+        private readonly HashSet<int> _activeAdverseFailureIds = new();
         private TradeDirective _directive;
         private DateTime _activatedUtc;
         private DateTime _freshRootAfterUtc;
@@ -131,6 +133,7 @@ namespace ExecAssistantRuntime
         private int _baseAttempts;
         private bool _everLeveraged;
         private bool _entryAnchorFailed;
+        private bool _awaitingSponsorAlignedFailure;
         private ResolutionContext _entryContext;
         private PendingReclaim _pendingReclaim;
         private PendingDirectRetest _pendingRetest;
@@ -155,6 +158,9 @@ namespace ExecAssistantRuntime
         public SponsorContext CurrentSponsor => _currentSponsor;
         public SponsorClearContext LastSponsorClear => _lastSponsorClear;
         public int SponsorVersion => _sponsorVersion;
+        public bool EntryPaused => State == RuntimeExecutionState.Paused;
+        public IReadOnlyCollection<int> ActiveAdverseFailureIds
+            => _activeAdverseFailureIds;
 
         public void AcceptDirective(
             TradeDirective directive,
@@ -175,6 +181,7 @@ namespace ExecAssistantRuntime
             _baseAttempts = 0;
             _everLeveraged = false;
             _entryAnchorFailed = false;
+            _awaitingSponsorAlignedFailure = false;
             _entryContext = null;
             _pendingReclaim = null;
             _pendingRetest = null;
@@ -187,6 +194,7 @@ namespace ExecAssistantRuntime
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
+            _activeAdverseFailureIds.Clear();
             if (existingHeldFailureIds != null)
             {
                 foreach (int id in existingHeldFailureIds)
@@ -195,6 +203,24 @@ namespace ExecAssistantRuntime
             State = directive.NotBefore.UtcDateTime > _activatedUtc
                 ? RuntimeExecutionState.Waiting
                 : RuntimeExecutionState.Armed;
+        }
+
+        public void BaselineHeldFailures(IEnumerable<int> heldFailureIds, DateTime nowUtc)
+        {
+            if (heldFailureIds == null)
+                return;
+            foreach (int id in heldFailureIds)
+            {
+                _baselineFailureIds.Add(id);
+                _activeAdverseFailureIds.Remove(id);
+            }
+            if (State == RuntimeExecutionState.Paused
+                && _activeAdverseFailureIds.Count == 0)
+            {
+                State = NormalizeUtc(nowUtc) < _directive.NotBefore.UtcDateTime
+                    ? RuntimeExecutionState.Waiting
+                    : RuntimeExecutionState.Armed;
+            }
         }
 
         public IReadOnlyList<OrderIntent> Tick(
@@ -215,17 +241,23 @@ namespace ExecAssistantRuntime
             if (State == RuntimeExecutionState.Waiting
                 && nowUtc >= _directive.NotBefore.UtcDateTime)
             {
-                State = RuntimeExecutionState.Armed;
+                State = HasActiveAdverseFailures
+                    ? RuntimeExecutionState.Paused
+                    : RuntimeExecutionState.Armed;
             }
 
             if (position.IsFlat && nowUtc > _directive.ExpiresAt.UtcDateTime
-                && (State == RuntimeExecutionState.Armed || State == RuntimeExecutionState.Waiting))
+                && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.Paused
+                    || State == RuntimeExecutionState.Waiting))
             {
                 State = RuntimeExecutionState.Expired;
                 return intents;
             }
 
-            if (position.IsFlat && State == RuntimeExecutionState.Armed
+            if (position.IsFlat
+                && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.Paused)
                 && PreEntryInvalidated(market))
             {
                 State = RuntimeExecutionState.Invalidated;
@@ -280,38 +312,57 @@ namespace ExecAssistantRuntime
             nowUtc = NormalizeUtc(nowUtc);
             if (position.IsFlat && nowUtc > _directive.ExpiresAt.UtcDateTime
                 && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.Paused
                     || State == RuntimeExecutionState.Waiting))
             {
                 State = RuntimeExecutionState.Expired;
                 return intents;
             }
-            if (position.IsFlat && State == RuntimeExecutionState.Armed
+            if (position.IsFlat
+                && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.Paused)
                 && PreEntryInvalidated(market))
             {
                 State = RuntimeExecutionState.Invalidated;
                 return intents;
             }
-            EvidenceTransition terminalFailure = transitions.FirstOrDefault(transition =>
-                transition?.Kind == EvidenceTransitionKind.FailureHeld
-                && transition.Band != null
-                && !_baselineFailureIds.Contains(transition.Band.Id)
-                && transition.TimeUtc >= _activatedUtc
-                && OppositeFailureFlattens(transition.Band));
-            if (terminalFailure != null)
+            bool hadActiveAdverseFailures = HasActiveAdverseFailures;
+            ObserveAdverseFailures(transitions);
+            if (position.IsFlat)
             {
-                string reason = terminalFailure.Band.Side == EvidenceSide.Demand ? "LF" : "HF";
-                if (position.IsFlat)
+                EvidenceTransition freshAdverseFailure = transitions.FirstOrDefault(
+                    IsFreshAdverseFailureHeld);
+                if (_awaitingSponsorAlignedFailure && freshAdverseFailure != null)
                 {
+                    string reason = freshAdverseFailure.Band.Side == EvidenceSide.Demand
+                        ? "LF_sponsor_failed_while_flat"
+                        : "HF_sponsor_failed_while_flat";
+                    _awaitingSponsorAlignedFailure = false;
                     InvalidateWhileFlat();
                     intents.Add(CreateCancelOrdersIntent(
-                        terminalFailure.TimeUtc, market, $"{reason}_while_flat"));
+                        freshAdverseFailure.TimeUtc, market, reason));
+                    return intents;
                 }
-                else
+                if (HasActiveAdverseFailures)
                 {
-                    intents.Add(CreateFlattenIntent(terminalFailure.TimeUtc, market,
-                        reason, terminal: true, rearm: false));
+                    if (State == RuntimeExecutionState.Armed)
+                        PauseWhileFlat();
+                    if (!hadActiveAdverseFailures && State == RuntimeExecutionState.Paused)
+                    {
+                        EvidenceTransition pause = transitions.First(transition =>
+                            IsFreshAdverseFailureHeld(transition));
+                        string reason = pause.Band.Side == EvidenceSide.Demand ? "LF" : "HF";
+                        intents.Add(CreateCancelOrdersIntent(
+                            pause.TimeUtc, market, $"{reason}_pause_while_flat"));
+                        return intents;
+                    }
                 }
-                return intents;
+                else if (State == RuntimeExecutionState.Paused)
+                {
+                    State = nowUtc < _directive.NotBefore.UtcDateTime
+                        ? RuntimeExecutionState.Waiting
+                        : RuntimeExecutionState.Armed;
+                }
             }
             foreach (EvidenceTransition transition in transitions)
             {
@@ -409,6 +460,7 @@ namespace ExecAssistantRuntime
                 _entryAnchorFailed = false;
                 if (filledIntent.Kind == OrderIntentKind.EnterBase)
                 {
+                    _awaitingSponsorAlignedFailure = false;
                     _entryContext = filledIntent.Resolution;
                     State = RuntimeExecutionState.BaseOnly;
                     PromoteFilledResolution(filledIntent.Resolution, nowUtc, "filled_entry");
@@ -473,6 +525,9 @@ namespace ExecAssistantRuntime
             if (position.IsFlat && previousQuantity > 0)
             {
                 FlattenDisposition disposition = _flattenDisposition;
+                bool sponsorAlignedTerminal = disposition?.RearmAfterFlat == true
+                    && _awaitingSponsorAlignedFailure
+                    && HasActiveAdverseFailures;
                 _flattenDisposition = null;
                 _pendingEntryIntent = null;
                 _entryContext = null;
@@ -494,16 +549,21 @@ namespace ExecAssistantRuntime
 
                 if (disposition?.HaltAfterFlat == true)
                     State = RuntimeExecutionState.Halted;
-                else if (disposition?.TerminalAfterFlat == true)
+                else if (disposition?.TerminalAfterFlat == true || sponsorAlignedTerminal)
+                {
+                    _awaitingSponsorAlignedFailure = false;
                     State = disposition.Cancelled
                         ? RuntimeExecutionState.Cancelled
                         : RuntimeExecutionState.Completed;
+                }
                 else if (disposition?.RearmAfterFlat == true
                     && !_everLeveraged
                     && _baseAttempts <= _directive.MaxBaseReentries
                     && nowUtc <= _directive.ExpiresAt.UtcDateTime)
                 {
-                    State = RuntimeExecutionState.Armed;
+                    State = HasActiveAdverseFailures
+                        ? RuntimeExecutionState.Paused
+                        : RuntimeExecutionState.Armed;
                     _freshRootAfterUtc = nowUtc;
                 }
                 else
@@ -540,6 +600,10 @@ namespace ExecAssistantRuntime
 
         public OrderIntent TerminalFlatten(DateTime nowUtc, ExecutableMarket market, string reason)
             => CreateFlattenIntent(nowUtc, market, reason, terminal: true, rearm: false);
+
+        public OrderIntent FlattenPausedFill(DateTime nowUtc, ExecutableMarket market)
+            => CreateFlattenIntent(nowUtc, market, "entry_filled_while_paused",
+                terminal: false, rearm: true);
 
         public OrderIntent SafetyFlatten(DateTime nowUtc, ExecutableMarket market, string reason)
         {
@@ -857,11 +921,13 @@ namespace ExecAssistantRuntime
                 : $"sponsor_failed:{_currentSponsor.ObjectId}";
             if (position == null || position.IsFlat)
             {
+                _awaitingSponsorAlignedFailure = false;
                 InvalidateWhileFlat();
                 return CreateCancelOrdersIntent(transition.TimeUtc, market, reason);
             }
 
-            bool terminal = _everLeveraged;
+            bool terminal = _everLeveraged || HasActiveAdverseFailures;
+            _awaitingSponsorAlignedFailure = !terminal;
             return CreateFlattenIntent(transition.TimeUtc, market, reason,
                 terminal: terminal, rearm: !terminal);
         }
@@ -948,6 +1014,14 @@ namespace ExecAssistantRuntime
                 ? transition.CurrentMidTick > band.MaxTick
                 : transition.CurrentMidTick < band.MinTick;
 
+        private void PauseWhileFlat()
+        {
+            State = RuntimeExecutionState.Paused;
+            _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+        }
+
         private void InvalidateWhileFlat()
         {
             State = RuntimeExecutionState.Invalidated;
@@ -955,6 +1029,34 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
         }
+
+        private bool HasActiveAdverseFailures
+            => _activeAdverseFailureIds.Count > 0;
+
+        private void ObserveAdverseFailures(IReadOnlyList<EvidenceTransition> transitions)
+        {
+            foreach (EvidenceTransition transition in transitions)
+            {
+                if (transition?.Band == null || !IsAdverseFailure(transition.Band))
+                    continue;
+                if (transition.Kind == EvidenceTransitionKind.FailureInvalidated)
+                {
+                    _activeAdverseFailureIds.Remove(transition.Band.Id);
+                    _baselineFailureIds.Remove(transition.Band.Id);
+                }
+                else if (IsFreshAdverseFailureHeld(transition))
+                {
+                    _activeAdverseFailureIds.Add(transition.Band.Id);
+                }
+            }
+        }
+
+        private bool IsFreshAdverseFailureHeld(EvidenceTransition transition)
+            => transition?.Kind == EvidenceTransitionKind.FailureHeld
+                && transition.Band != null
+                && !_baselineFailureIds.Contains(transition.Band.Id)
+                && transition.TimeUtc >= _activatedUtc
+                && IsAdverseFailure(transition.Band);
 
         internal static bool IsCandidateSupportConsumed(
             ResolutionContext entryContext,
@@ -1149,7 +1251,7 @@ namespace ExecAssistantRuntime
                 : supportCenter >= failedCenter;
         }
 
-        private bool OppositeFailureFlattens(EvidenceBandView band)
+        private bool IsAdverseFailure(EvidenceBandView band)
             => _directive.Direction == TradeDirection.Long
                 ? band.Side == EvidenceSide.Supply
                 : band.Side == EvidenceSide.Demand;

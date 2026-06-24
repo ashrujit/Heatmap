@@ -273,6 +273,14 @@ namespace ExecAssistantRuntime
 
             var lfCoordinator = new ExecutionCoordinator(0.25);
             lfCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent lfBase = lfCoordinator.ProcessEvidence(
+                new[] { baseTransition },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).Single();
+            lfCoordinator.OnOrderAttemptResult(lfBase, accepted: true);
+            lfCoordinator.OnPositionChanged(basePosition, now.AddSeconds(13), market);
             EvidenceTransition hf = new()
             {
                 Kind = EvidenceTransitionKind.FailureHeld,
@@ -290,13 +298,16 @@ namespace ExecAssistantRuntime
                     OwnedUtc = now.AddSeconds(20),
                 },
             };
-            OrderIntent flatten = lfCoordinator.ProcessEvidence(
+            Require(lfCoordinator.ProcessEvidence(
                 new[] { hf },
                 now.AddSeconds(30),
                 market,
                 basePosition,
-                evidence).SingleOrDefault();
-            Require(flatten?.Kind == OrderIntentKind.Flatten, "HF flatten");
+                evidence).Count == 0,
+                "local HF does not flatten while causal sponsor remains owned");
+            Require(lfCoordinator.State == RuntimeExecutionState.BaseOnly
+                    && lfCoordinator.CurrentSponsor?.ObjectId == 1,
+                "local HF preserves campaign state and sponsor");
 
             var flatHfCoordinator = new ExecutionCoordinator(0.25);
             flatHfCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
@@ -308,8 +319,113 @@ namespace ExecAssistantRuntime
                 evidence).SingleOrDefault();
             Require(flatHf?.Kind == OrderIntentKind.CancelRuntimeOrders,
                 "HF while flat cancels runtime entry orders without a close request");
-            Require(flatHfCoordinator.State == RuntimeExecutionState.Invalidated,
-                "HF while flat invalidates directive");
+            Require(flatHf?.Reason == "HF_pause_while_flat"
+                    && flatHfCoordinator.State == RuntimeExecutionState.Paused,
+                "HF while flat pauses rather than invalidates directive");
+
+            EvidenceTransition blockedEntry = ConsumedDemand(
+                id: 100,
+                formedUtc: now.AddSeconds(31),
+                eventUtc: now.AddSeconds(40),
+                lower: 30500,
+                upper: 30501);
+            Require(flatHfCoordinator.ProcessEvidence(
+                    new[] { blockedEntry }, now.AddSeconds(40), market,
+                    RuntimePosition.Flat, evidence).Count == 0,
+                "paused HF state blocks otherwise eligible entry");
+
+            EvidenceTransition hfInvalidated = new()
+            {
+                Kind = EvidenceTransitionKind.FailureInvalidated,
+                TimeUtc = now.AddSeconds(41),
+                CurrentMidTick = 122040,
+                Band = new EvidenceBandView
+                {
+                    Id = 99,
+                    Role = EvidenceRole.FailureZone,
+                    Side = EvidenceSide.Supply,
+                    State = EvidenceState.Removed,
+                    MinTick = 122000,
+                    MaxTick = 122004,
+                    FormedUtc = now.AddSeconds(20),
+                    OwnedUtc = now.AddSeconds(20),
+                },
+            };
+            Require(flatHfCoordinator.ProcessEvidence(
+                    new[] { hfInvalidated }, now.AddSeconds(41), market,
+                    RuntimePosition.Flat, evidence).Count == 0
+                    && flatHfCoordinator.State == RuntimeExecutionState.Armed,
+                "invalidated HF clears flat entry pause");
+
+            EvidenceTransition resumedEntry = ConsumedDemand(
+                id: 101,
+                formedUtc: now.AddSeconds(42),
+                eventUtc: now.AddSeconds(52),
+                lower: 30500,
+                upper: 30501);
+            Require(flatHfCoordinator.ProcessEvidence(
+                    new[] { resumedEntry }, now.AddSeconds(52), market,
+                    RuntimePosition.Flat, evidence).SingleOrDefault()?.Kind
+                    == OrderIntentKind.EnterBase,
+                "entry resumes from fresh evidence after HF invalidation");
+
+            var baselineHfCoordinator = new ExecutionCoordinator(0.25);
+            baselineHfCoordinator.AcceptDirective(directive, now, new[] { 99 });
+            Require(baselineHfCoordinator.ProcessEvidence(
+                    new[] { hf }, now.AddSeconds(30), market,
+                    RuntimePosition.Flat, evidence).Count == 0
+                    && baselineHfCoordinator.State == RuntimeExecutionState.Armed,
+                "held HF baselined at activation remains context only");
+
+            EvidenceTransition baseSponsorFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                1,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddSeconds(1),
+                now.AddSeconds(25),
+                30500,
+                30501);
+            var alignedAfterFlat = new ExecutionCoordinator(0.25);
+            alignedAfterFlat.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent alignedBase = alignedAfterFlat.ProcessEvidence(
+                new[] { baseTransition }, now.AddSeconds(12), market,
+                RuntimePosition.Flat, evidence).Single();
+            alignedAfterFlat.OnOrderAttemptResult(alignedBase, accepted: true);
+            alignedAfterFlat.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            OrderIntent retryableSponsorExit = alignedAfterFlat.ProcessEvidence(
+                new[] { baseSponsorFailure }, now.AddSeconds(25), market,
+                basePosition, evidence).Single();
+            Require(retryableSponsorExit.Kind == OrderIntentKind.Flatten
+                    && !retryableSponsorExit.TerminalAfterFlat
+                    && retryableSponsorExit.RearmAfterFlat,
+                "base sponsor failure remains retryable before aligned HF");
+            alignedAfterFlat.OnPositionChanged(
+                RuntimePosition.Flat, now.AddSeconds(26), market);
+            Require(alignedAfterFlat.State == RuntimeExecutionState.Armed,
+                "base sponsor failure rearms while no aligned HF is held");
+            OrderIntent alignedTerminal = alignedAfterFlat.ProcessEvidence(
+                new[] { hf }, now.AddSeconds(30), market,
+                RuntimePosition.Flat, evidence).Single();
+            Require(alignedTerminal.Kind == OrderIntentKind.CancelRuntimeOrders
+                    && alignedTerminal.Reason == "HF_sponsor_failed_while_flat"
+                    && alignedAfterFlat.State == RuntimeExecutionState.Invalidated,
+                "HF becomes terminal when the causal sponsor already failed");
+
+            var alignedSameBatch = new ExecutionCoordinator(0.25);
+            alignedSameBatch.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent sameBatchBase = alignedSameBatch.ProcessEvidence(
+                new[] { baseTransition }, now.AddSeconds(12), market,
+                RuntimePosition.Flat, evidence).Single();
+            alignedSameBatch.OnOrderAttemptResult(sameBatchBase, accepted: true);
+            alignedSameBatch.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            OrderIntent sameBatchTerminal = alignedSameBatch.ProcessEvidence(
+                new[] { hf, baseSponsorFailure }, now.AddSeconds(30), market,
+                basePosition, evidence).Single();
+            Require(sameBatchTerminal.Kind == OrderIntentKind.Flatten
+                    && sameBatchTerminal.TerminalAfterFlat
+                    && !sameBatchTerminal.RearmAfterFlat,
+                "same-batch HF plus current-sponsor failure is terminal");
 
             SponsorTests(directive, now, market, evidence);
             ShortSponsorTests(now, market, evidence);
@@ -512,6 +628,32 @@ namespace ExecAssistantRuntime
                 .Replace("\"price\": 31000", "\"price\": 29900")
                 .Replace("\"direction\": \"above\"", "\"direction\": \"below\"");
             TradeDirective directive = DirectiveContracts.ParseTradeDirective(shortJson, 5);
+            var flatPause = new ExecutionCoordinator(0.25);
+            flatPause.AcceptDirective(directive, now, Array.Empty<int>());
+            EvidenceTransition lf = new()
+            {
+                Kind = EvidenceTransitionKind.FailureHeld,
+                TimeUtc = now.AddSeconds(10),
+                CurrentMidTick = 121900,
+                Band = new EvidenceBandView
+                {
+                    Id = 699,
+                    Role = EvidenceRole.FailureZone,
+                    Side = EvidenceSide.Demand,
+                    State = EvidenceState.Held,
+                    MinTick = 121900,
+                    MaxTick = 121904,
+                    FormedUtc = now.AddSeconds(1),
+                    OwnedUtc = now.AddSeconds(1),
+                },
+            };
+            OrderIntent lfPause = flatPause.ProcessEvidence(
+                new[] { lf }, now.AddSeconds(10), market,
+                RuntimePosition.Flat, evidence).Single();
+            Require(lfPause.Reason == "LF_pause_while_flat"
+                    && flatPause.State == RuntimeExecutionState.Paused,
+                "short directive pauses on local LF while flat");
+
             var coordinator = new ExecutionCoordinator(0.25);
             coordinator.AcceptDirective(directive, now, Array.Empty<int>());
             coordinator.InitializeObservedPosition(RuntimePosition.Flat);

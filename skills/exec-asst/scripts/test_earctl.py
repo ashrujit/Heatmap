@@ -59,6 +59,14 @@ class EarctlTests(unittest.TestCase):
             "trading_enabled": False,
             "instance_max_quantity": 5,
             "worker_poll_ms": 250,
+            "evidence_state": "Ready",
+            "evidence_epoch_reason": "startup",
+            "evidence_epoch_started_utc": earctl.timestamp(
+                earctl.datetime.now(earctl.timezone.utc) - earctl.timedelta(seconds=30)),
+            "evidence_sample_count": 31,
+            "evidence_warmup_seconds": 30,
+            "evidence_warmup_required_samples": 30,
+            "evidence_warmup_remaining_seconds": 0,
             "recovery_action_required": False,
             "bound_working_order_count": 0,
             "unresolved_entry_count": 0,
@@ -216,6 +224,8 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual("Idle", status["runtime"]["state"])
             self.assertEqual("running", status["runtime"]["health"])
             self.assertEqual("SHADOW", status["runtime"]["mode"])
+            self.assertEqual("Ready", status["evidence"]["state"])
+            self.assertEqual(31, status["evidence"]["sample_count"])
             self.assertEqual("entry_order_unresolved",
                              status["recent_errors"][0]["event"])
 
@@ -272,6 +282,15 @@ class EarctlTests(unittest.TestCase):
             result = earctl.command_cancel_active(args)
             self.assertEqual("validated", result["outcome"])
             self.assertEqual(directive["id"], result["control"]["directive_id"])
+
+    def test_paused_directive_remains_active(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            directive = self.valid_directive()
+            earctl.atomic_write(root / "checkpoint.json",
+                                self.checkpoint(directive, state="Paused"))
+            status = earctl.status_snapshot(root)
+            self.assertEqual(directive["id"], status["directive"]["active_id"])
 
     def test_reissue_refuses_active_runtime_state(self):
         with tempfile.TemporaryDirectory() as raw:

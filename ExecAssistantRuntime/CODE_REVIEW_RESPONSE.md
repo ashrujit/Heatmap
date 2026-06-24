@@ -1,5 +1,10 @@
 # ExecAssistantRuntime Code Review Response
 
+> Historical review record. The 2026-06-23 sponsor-aware LF/HF change
+> supersedes assertions below that describe every positioned HF/LF as terminal
+> or every flat HF/LF as directive invalidation. Current policy lives in
+> `DESIGN.md`, `AGENTS.md`, and `OPERATOR_GUIDE.md`.
+
 Reconciliation for `CODE_REVIEW.md`. This pass prioritizes execution safety,
 shutdown correctness, broker-order reconciliation, and telemetry integrity.
 

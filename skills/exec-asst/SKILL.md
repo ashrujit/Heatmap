@@ -38,9 +38,10 @@ python skills\exec-asst\scripts\earctl.py status
 ### STATUS
 
 Run `status`. Report the checkpoint age, runtime state, last directive outcome,
-position quantity/average, trading mode, dispatch blockers, and material recent
-errors. The compact status is the operator view; use `status --raw` only when
-diagnosing the underlying files or event history. Do not dispatch anything.
+position quantity/average, trading mode, evidence state/warm-up remaining,
+dispatch blockers, and material recent errors. The compact status is the
+operator view; use `status --raw` only when diagnosing the underlying files or
+event history. Do not dispatch anything.
 
 ### FLAT
 
@@ -107,7 +108,8 @@ Settled defaults that do not require another question:
 - resolutions: `direct_conversion` and `supported_reclaim`;
 - retries: three base reentries;
 - stop grammar: reverse entry resolution, weighted breakeven after leverage,
-  LF/HF whole-position flatten, and exact-current-sponsor failure flatten;
+  exact-current-sponsor failure flatten, and local-first LF/HF handling (flat
+  pause; positioned termination only when sponsor-aligned);
 - activation: now;
 - expiry: 30 minutes.
 
@@ -135,7 +137,9 @@ different trading day.
 Run `status`. EAR itself rejects a directive when its bound account/symbol has
 an open position, any working order, unresolved entry reconciliation, recovery
 action, or an active prior directive. It also rejects a hard target with no
-current executable runway. Do not work around those guards.
+current executable runway. Surface `AwaitingBook`, `Warming`, or `BookUnusable`:
+an accepted directive remains non-actionable until evidence reports `Ready`.
+Do not work around those guards.
 
 Give the user a compact contract recap when interpretation was required:
 

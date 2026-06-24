@@ -222,6 +222,25 @@ removed the observed failures in that small sample. This exception belongs to
 ExecAssistantRuntime only; it is not a reason to shorten LevelLedger's visual
 confirmation.
 
+`research/event_ofi_probe.py` is the event-stream follow-up to the snapshot OFI
+gate. It keeps the snapshot-defined LL displacement population fixed, then
+samples reconstructed event-level OFI on wall-clock and event-count horizons.
+It also carries snapshot OFI, price progress, queue imbalance, and tape
+imbalance as controls. Rithmic's missing-close repair is reported separately
+and zeroed in a clean-OFI ablation; inferred crossed-level cleanup must never be
+silently counted as observed order flow. One session can be exploratory, but a
+confirmation-policy change requires held-out sessions and session-clustered
+uncertainty.
+
+`research/execution_ownership_ofi_fixture.py` overlays event OFI on exact EAR
+orders, sponsor changes, runtime LL transitions, and a one-second discovery
+grid. Its purpose is execution-state diagnosis, not threshold fitting. The
+2026-06-23 fixture showed why OFI sign cannot be treated as ownership direction:
+negative flow into a level can be the attack that proves absorption when price
+holds, while positive flow away from an untested lean band can precede immediate
+failure. Future ownership work must model response-conditioned initiative vs
+absorption and keep sponsor-lineage policy separate from raw OFI sign.
+
 Useful commands from repo root:
 
 ```powershell

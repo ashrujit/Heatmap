@@ -12,6 +12,8 @@ The deployed strategy supports the settled NQ execution path:
 - weighted-breakeven stop after the first add;
 - internal favorable-only sponsor handoff and market flatten on exact current
   sponsor failure;
+- local-first LF/HF handling that pauses flat entry and defers positioned
+  termination to causal sponsor failure;
 - resting `HARD_TP` limit;
 - `CANCEL_DIRECTIVE`, `FLAT`, and fail-closed restart recovery;
 - append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
@@ -95,14 +97,20 @@ instance quantity ceiling, position, active directive identity, and admission
 blockers. `directive.json` is only the latest attempted input; the checkpoint's
 last accepted JSON is authoritative for reissue.
 
+The status snapshot also reports evidence state, epoch reason/start, accumulated
+samples, and warm-up remaining. `AwaitingBook` means no usable sample has
+started the epoch; `Warming` is non-actionable; `Ready` permits evidence action;
+`BookUnusable` pauses it.
+
 ## First Shadow Run
 
 1. Restart Quantower and create one strategy instance for NQ and the demo
    account.
 2. Leave `Trading Enabled` unchecked.
-3. Start the strategy before the intended directive window so its forward-only
-   L2 engine can warm up. Thirty seconds is the statistical minimum; several
-   minutes gives it useful rail context.
+3. Start the strategy before the intended directive window. The runtime now
+   enforces one full configured book-lookback interval (30 seconds by default)
+   and the corresponding sample count before evidence may act; several minutes
+   still gives it more useful rail context.
 4. Write a new `TRADE_DIRECTIVE` with a unique ID, current timestamps, and
    `HARD_TP`.
 5. Confirm the Strategy Manager log reports an `[EAR] Directive ... accepted`
@@ -115,11 +123,13 @@ Repeated edits to an accepted ID are rejected as mutation. After completion,
 cancel, `FLAT`, or restart, issue a new directive ID even when the plan is the
 same.
 
-A fresh opposite HF/LF while the directive is armed but flat invalidates it,
-cancels any runtime entry order, and requires a new directive ID. Once a
-position exists, the initial filled entry support is its sponsor. The visible
-log reports later sponsor promotions and exact-sponsor failures; tests and holds
-do not move the weighted-BE order or flatten the position.
+A fresh opposite HF/LF while the directive is armed but flat cancels any runtime
+entry order and moves the directive to `Paused`. If that failure object
+invalidates, the same directive re-arms. Once a position exists, the initial
+filled entry support is its sponsor. A local opposite HF/LF does not flatten
+while that sponsor remains intact. Same-sequence sponsor failure is terminal;
+if a base sponsor fails first, a subsequently held adverse HF/LF invalidates the
+flat retry before another base fills. Tests and holds do not move weighted BE.
 
 ## Demo Live Run
 
@@ -161,14 +171,16 @@ repeat the action.
 ## Restart And Data Loss
 
 L2 state is forward-only. Restart never resumes candidates, rails, epochs, or
-LF/HF baselines.
+LF/HF baselines. The replacement engine processes samples during a visible,
+non-actionable warm-up of one configured book-lookback interval. Failure objects
+already held when warm-up completes are baselined as context.
 
 A rejected sample alone is not data loss. While a sample is unusable, EAR pauses
 evidence-dependent entry, add, retry, and semantic-stop decisions. If the book
 recovers inside the configured grace, the directive and evidence epoch remain
 intact. If the grace expires, EAR logs `forward_data_loss`, cancels runtime
-orders, and applies the restart-style rules below. Recovery afterward warms a
-new evidence epoch.
+orders, and applies the restart-style rules below. Recovery afterward starts a
+new visible evidence warm-up; it does not silently appear ready.
 
 - Flat on restart: cancel orphan runtime orders and require a fresh directive
   ID.

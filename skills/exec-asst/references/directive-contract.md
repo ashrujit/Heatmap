@@ -76,3 +76,8 @@ ceiling, position, active directive identity, working-order count, unresolved
 entry reconciliation, and the last accepted immutable directive. The event log
 is the outcome history. `directive.json` is only the latest attempted input and
 must never be treated as proof that EAR accepted it.
+
+Checkpoint evidence state is independent of directive state. `AwaitingBook` and
+`Warming` are non-actionable, `Ready` permits evidence decisions, and
+`BookUnusable` pauses them. Status includes epoch reason/start, sample count,
+required samples, and remaining warm-up time.

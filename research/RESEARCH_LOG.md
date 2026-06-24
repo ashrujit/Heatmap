@@ -988,6 +988,56 @@ Useful local starting points:
 
 ---
 
+## 2026-06-23 - First Full Event-Level OFI Session
+
+Added [`EVENT_OFI_2026-06-23.md`](EVENT_OFI_2026-06-23.md).
+
+The first full MarketRecorder event session passed the canonical-book gate only
+after two replay constraints were made explicit: seed state must carry across
+New York date partitions, and mechanically crossed stale levels must be evicted
+because Rithmic-via-Quantower omits a small number of quote-id closures. With
+that deterministic cleanup, all 41,616 June 23 snapshots matched replay through
+top five levels. Repair-triggering updates were only 0.0003% of valid deltas in
+the study, and excluding their OFI contribution did not change the early result.
+
+Event OFI showed positive confirmation separation at three and five seconds of
+LL displacement persistence and retained positive conditional/residual AUC
+after controlling for five-second price progress. It did not separate
+30-second post-confirmation continuation. The result supports continued data
+collection and a pre-registered multi-session confirmation study; it does not
+support changing LL or EAR confirmation timing from one session.
+
+Added [`EXECUTION_OWNERSHIP_OFI_2026-06-23_1130_1230.md`](EXECUTION_OWNERSHIP_OFI_2026-06-23_1130_1230.md)
+for the focused 11:30-12:30 execution fixture. The important refinement is that
+OFI sign is not an ownership direction oracle. The 11:40 long entered while
+best-book OFI was strongly negative, then held because demand absorbed the
+attack. Conversely, the 11:45 lean sponsor promotion had positive OFI and still
+failed immediately. Later review rejected sponsor-lineage and add/epoch changes:
+the late long showed favorable lean promotion and exact-sponsor failure
+working correctly, and the existing epoch guards deliberately use fresh causal
+lineage rather than spatial novelty. The supported execution defect is the
+global treatment of standalone local HFs without regard to the current sponsor.
+
+Added [`HYPOTHETICAL_SHORT_2026-06-23_1310.md`](HYPOTHETICAL_SHORT_2026-06-23_1310.md)
+for the missed short from the 29790-29950 directive range toward 29615. The
+durable entry was the 13:37 supply conversion, not the earlier short-lived
+13:13 or 13:29 supply rails. Under current policy the 13:43 LF would still have
+terminated the position, although its demand rail failed by 13:45 and the
+upstream 29882/29861 supply owners survived. This is a second fixture supporting
+local-first LF/HF handling that respects the existing sponsor lineage. OFI was
+mixed on the durable entry and strongly positive on the local LF, so an OFI
+direction gate would not solve the execution problem.
+
+Implemented the resulting EAR policy in `ExecAssistantRuntime`: flat adverse
+LF/HF objects now pause and later re-arm entry; positioned local failures defer
+to the tracked sponsor; same-sequence or prior base-sponsor failure makes the
+LF/HF terminal. Sponsor promotion and epoch qualification were left unchanged.
+Accepted directive telemetry now records all three price ranges. Restart still
+discards forward-only evidence, but the replacement engine enforces and exposes
+a full book-lookback warm-up instead of silently appearing ready.
+
+---
+
 ## Open questions / things to revisit
 
 These are deliberately not resolved; they need real-session observations before answering.

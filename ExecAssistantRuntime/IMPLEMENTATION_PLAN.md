@@ -18,8 +18,8 @@ The first live-capable cut must prove the complete mechanical path:
 7. protect leverage at weighted breakeven;
 8. hand campaign protection to fresh favorable sponsors without moving the
    broker breakeven stop;
-9. exit at a hard target, semantic stop, current-sponsor failure, LF/HF,
-   cancellation, or `FLAT`;
+9. exit at a hard target, semantic stop, current-sponsor failure, a
+   sponsor-aligned LF/HF, cancellation, or `FLAT`;
 10. reconcile every order, fill, and position change;
 11. produce enough telemetry to diagnose timing and fill quality afterward.
 
@@ -109,8 +109,9 @@ uninterrupted seconds of favorable eight-tick displacement.
 - immediate weighted breakeven after the first add;
 - irreversible favorable-only sponsor promotion and exact-current-sponsor
   failure flattening;
-- post-activation opposite LF/HF flattening;
-- armed-directive invalidation when a fresh opposite LF/HF appears while flat;
+- local opposite LF/HF tracking without overriding an intact sponsor;
+- flat entry pause until the adverse failure object invalidates, with terminal
+  invalidation only when the directive's causal sponsor already failed;
 - target and control precedence.
 
 The coordinator produces order intents. It does not call Quantower directly.
@@ -154,6 +155,10 @@ Each event includes UTC and monotonic timestamps. Order telemetry records:
 - detection drift, transport slippage, and total implementation cost;
 - rejection, cancellation, partial fill, and reconciliation outcomes.
 
+The `directive_accepted` event also persists the normalized order, context, and
+add range boundaries so a later constrained or missed execution can be
+reconstructed without consulting the mutable input path.
+
 `RuntimeCheckpoint.cs` atomically records only the state required for safe
 restart: accepted directive digest, processed control IDs, runtime state,
 position context, and owned protection IDs. It is not an L2 snapshot and cannot
@@ -181,8 +186,8 @@ be used to resume old evidence.
 - flatten the complete base quantity at market;
 - re-arm only after flat/order reconciliation and only from a fresh opposing
   candidate formed after that boundary;
-- stop re-arming after pre-entry invalidation, expiry, target, LF/HF, control,
-  retry exhaustion, or any prior leverage.
+- stop re-arming after pre-entry invalidation, expiry, target, sponsor-aligned
+  LF/HF, control, retry exhaustion, or any prior leverage.
 
 ### Adds And Protection
 
@@ -218,6 +223,9 @@ be used to resume old evidence.
 - restart with a profitable position installs breakeven and retains/recreates
   only fixed hard-target protection in `RECOVERY_PROTECTED`;
 - old candidates, rails, LF/HF baselines, retries, and epochs never resume.
+- each new engine remains non-actionable for one configured book-lookback
+  interval and its corresponding sample count; checkpoint telemetry exposes
+  `AwaitingBook`, `Warming`, `Ready`, or `BookUnusable`.
 - one rejected DOM sample pauses evidence actions without changing directive or
   position state; restart-style recovery runs only after the configured
   stale/mismatch grace remains continuously breached;
@@ -253,7 +261,10 @@ Before enabling orders:
 - leveraged fixtures arm breakeven immediately and terminate after flatten;
 - sponsor fixtures prove initial identity, favorable non-overlapping promotion,
   no fallback to an older sponsor, and exact-current-sponsor failure flatten;
-- a fresh opposite HF/LF while flat invalidates without a no-op close request;
+- a fresh opposite HF/LF while flat cancels entry orders and pauses; its
+  invalidation re-arms the same directive;
+- a local opposite HF/LF cannot flatten a position with an intact current
+  sponsor, while same-sequence or prior current-sponsor failure is terminal;
 - event logs can reconstruct trigger quote, submission quote, and fill price;
 - Quantower build succeeds and the deployed DLL loads after restart.
 

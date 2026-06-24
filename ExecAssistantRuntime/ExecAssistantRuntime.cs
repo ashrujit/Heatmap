@@ -134,6 +134,11 @@ namespace ExecAssistantRuntime
         private DateTime _lastCheckpointUtc = DateTime.MinValue;
         private bool _hadEvidenceSample;
         private bool _evidenceActionsPaused = true;
+        private DateTime _evidenceEpochStartedUtc = DateTime.MinValue;
+        private int _evidenceEpochSampleCount;
+        private bool _evidenceWarmupComplete;
+        private string _evidenceEpochReason = "startup";
+        private string _evidenceState = "AwaitingBook";
         private bool _runTradingEnabled;
         private string _lastDirectiveFileHash;
         private string _lastControlFileHash;
@@ -334,6 +339,7 @@ namespace ExecAssistantRuntime
             if (!usable)
             {
                 _evidenceActionsPaused = true;
+                _evidenceState = "BookUnusable";
                 BookContinuityUpdate update = _bookContinuity.ObserveUnusable(
                     nowUtc,
                     diagnostic.Reason,
@@ -362,16 +368,93 @@ namespace ExecAssistantRuntime
                 }
             }
 
-            _evidenceActionsPaused = false;
             _hadEvidenceSample = true;
+            StartEvidenceEpochIfNeeded(nowUtc);
             IReadOnlyList<EvidenceTransition> transitions = _evidence.Process(depth);
+            _evidenceEpochSampleCount++;
+            CompleteEvidenceWarmupIfReady(nowUtc);
+            _evidenceActionsPaused = !_evidenceWarmupComplete;
+            _evidenceState = _evidenceWarmupComplete ? "Ready" : "Warming";
             foreach (EvidenceTransition transition in transitions)
                 LogEvidence(transition, market);
+            if (!_evidenceWarmupComplete)
+                return;
             RuntimePosition current = CurrentPosition();
             IReadOnlyList<OrderIntent> intents = _coordinator.ProcessEvidence(
                 transitions, nowUtc, market, current, _evidence);
             LogSponsorIfChanged();
             ExecuteIntents(intents, current, market);
+        }
+
+        private int EvidenceWarmupSeconds
+            => Math.Max(10, BookLookbackSeconds);
+
+        private int EvidenceWarmupRequiredSamples
+            => Math.Max(5, (int)Math.Ceiling(
+                EvidenceWarmupSeconds * 1000.0 / Math.Max(250, BookSampleMs)));
+
+        private void ResetEvidenceEpoch(string reason)
+        {
+            _evidenceEpochStartedUtc = DateTime.MinValue;
+            _evidenceEpochSampleCount = 0;
+            _evidenceWarmupComplete = false;
+            _evidenceEpochReason = string.IsNullOrWhiteSpace(reason) ? "unknown" : reason;
+            _evidenceState = "AwaitingBook";
+        }
+
+        private void StartEvidenceEpochIfNeeded(DateTime nowUtc)
+        {
+            if (_evidenceEpochStartedUtc != DateTime.MinValue)
+                return;
+            _evidenceEpochStartedUtc = nowUtc;
+            _evidenceEpochSampleCount = 0;
+            _evidenceWarmupComplete = false;
+            _evidenceState = "Warming";
+            _events.Write("evidence_warmup_started",
+                ("reason", _evidenceEpochReason),
+                ("started_utc", nowUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("required_seconds", EvidenceWarmupSeconds),
+                ("required_samples", EvidenceWarmupRequiredSamples));
+            LogOperator($"Evidence epoch warming for {EvidenceWarmupSeconds}s; "
+                + $"reason={_evidenceEpochReason}.");
+        }
+
+        private void CompleteEvidenceWarmupIfReady(DateTime nowUtc)
+        {
+            if (_evidenceWarmupComplete
+                || _evidenceEpochStartedUtc == DateTime.MinValue
+                || _evidenceEpochSampleCount < EvidenceWarmupRequiredSamples
+                || (nowUtc - _evidenceEpochStartedUtc).TotalSeconds < EvidenceWarmupSeconds)
+            {
+                return;
+            }
+
+            _evidenceWarmupComplete = true;
+            _coordinator.BaselineHeldFailures(
+                _evidence.HeldFailureObjects().Select(b => b.Id), nowUtc);
+            _events.Write("evidence_warmup_completed",
+                ("reason", _evidenceEpochReason),
+                ("started_utc", _evidenceEpochStartedUtc.ToString(
+                    "O", CultureInfo.InvariantCulture)),
+                ("completed_utc", nowUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("sample_count", _evidenceEpochSampleCount),
+                ("required_seconds", EvidenceWarmupSeconds),
+                ("required_samples", EvidenceWarmupRequiredSamples),
+                ("baselined_failure_ids", string.Join(",",
+                    _evidence.HeldFailureObjects().Select(b => b.Id))));
+            LogOperator($"Evidence epoch ready after "
+                + $"{(nowUtc - _evidenceEpochStartedUtc).TotalSeconds:F1}s "
+                + $"and {_evidenceEpochSampleCount} samples.");
+        }
+
+        private double EvidenceWarmupRemainingSeconds(DateTime nowUtc)
+        {
+            if (_evidenceWarmupComplete)
+                return 0;
+            if (_evidenceEpochStartedUtc == DateTime.MinValue)
+                return EvidenceWarmupSeconds;
+            return Math.Max(0,
+                EvidenceWarmupSeconds - (nowUtc - _evidenceEpochStartedUtc).TotalSeconds);
         }
 
         private void WriteBookHealthEvent(string eventType,
@@ -534,11 +617,18 @@ namespace ExecAssistantRuntime
                 ("side", directive.Direction.ToString()),
                 ("not_before", directive.NotBefore.ToString("O")),
                 ("expires_at", directive.ExpiresAt.ToString("O")),
+                ("order_price_lower", directive.OrderPriceRange.Lower),
+                ("order_price_upper", directive.OrderPriceRange.Upper),
+                ("context_price_lower", directive.ContextPriceRange.Lower),
+                ("context_price_upper", directive.ContextPriceRange.Upper),
+                ("add_price_lower", directive.AddPriceRange?.Lower),
+                ("add_price_upper", directive.AddPriceRange?.Upper),
                 ("base_quantity", directive.BaseQuantity),
                 ("add_quantity", directive.AddQuantity),
                 ("max_position_quantity", directive.MaxPositionQuantity),
                 ("target_mode", directive.TargetMode.ToString()),
                 ("target_price", directive.TargetPrice),
+                ("evidence_state", _evidenceState),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
                 + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
@@ -766,6 +856,16 @@ namespace ExecAssistantRuntime
             ExecutableMarket market)
         {
             if (position != null && !position.IsFlat
+                && _coordinator.State == RuntimeExecutionState.Paused)
+            {
+                ExecuteIntents(new[]
+                {
+                    _coordinator.FlattenPausedFill(nowUtc, market),
+                }, position, market);
+                return;
+            }
+
+            if (position != null && !position.IsFlat
                 && IsCoordinatorTerminal())
             {
                 OrderIntent safety = _coordinator.SafetyFlatten(
@@ -840,6 +940,7 @@ namespace ExecAssistantRuntime
                 + $"latest={continuity.LatestReason}, state={_coordinator.State}, "
                 + $"position_qty={(position?.Quantity ?? 0):R}.", error: true);
             _evidence = NewEvidenceEngine();
+            ResetEvidenceEpoch("forward_data_loss");
             _hadEvidenceSample = false;
             _evidenceActionsPaused = true;
 
@@ -1305,6 +1406,15 @@ namespace ExecAssistantRuntime
                 TradingEnabled = _runTradingEnabled,
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
                 WorkerPollMs = Math.Max(100, WorkerPollMs),
+                EvidenceState = _evidenceState,
+                EvidenceEpochReason = _evidenceEpochReason,
+                EvidenceEpochStartedUtc = _evidenceEpochStartedUtc == DateTime.MinValue
+                    ? null
+                    : _evidenceEpochStartedUtc.ToString("O", CultureInfo.InvariantCulture),
+                EvidenceSampleCount = _evidenceEpochSampleCount,
+                EvidenceWarmupSeconds = EvidenceWarmupSeconds,
+                EvidenceWarmupRequiredSamples = EvidenceWarmupRequiredSamples,
+                EvidenceWarmupRemainingSeconds = EvidenceWarmupRemainingSeconds(nowUtc),
                 RecoveryActionRequired = recoveryActionRequired,
                 BoundWorkingOrderCount = BoundWorkingOrders().Length,
                 UnresolvedEntryCount = _submissions.Values.Count(t =>
@@ -1495,6 +1605,8 @@ namespace ExecAssistantRuntime
             _events.Write("evidence_transition",
                 ("kind", transition.Kind.ToString()),
                 ("reason", transition.Reason),
+                ("evidence_state", _evidenceState),
+                ("actionable", _evidenceWarmupComplete && !_evidenceActionsPaused),
                 ("event_utc", transition.TimeUtc.ToString("O", CultureInfo.InvariantCulture)),
                 ("mid_tick", transition.CurrentMidTick),
                 ("bid", market?.Bid),
@@ -1526,11 +1638,34 @@ namespace ExecAssistantRuntime
                 ("to", _lastLoggedState.ToString()),
                 ("directive_id", _coordinator.Directive?.Id),
                 ("base_attempts", _coordinator.BaseAttempts),
-                ("ever_leveraged", _coordinator.EverLeveraged));
-            LogOperator($"Directive {_coordinator.Directive?.Id ?? "none"}: "
-                + $"{previous} -> {_lastLoggedState}.",
-                error: _lastLoggedState == RuntimeExecutionState.Error
-                    || _lastLoggedState == RuntimeExecutionState.Halted);
+                ("ever_leveraged", _coordinator.EverLeveraged),
+                ("active_adverse_failure_ids", string.Join(",",
+                    _coordinator.ActiveAdverseFailureIds.OrderBy(id => id))));
+            if (_lastLoggedState == RuntimeExecutionState.Paused)
+            {
+                _events.Write("entry_paused",
+                    ("directive_id", _coordinator.Directive?.Id),
+                    ("active_adverse_failure_ids", string.Join(",",
+                        _coordinator.ActiveAdverseFailureIds.OrderBy(id => id))));
+                LogOperator($"Directive {_coordinator.Directive?.Id ?? "none"}: entry paused "
+                    + $"by local adverse failure object(s) "
+                    + $"{string.Join(",", _coordinator.ActiveAdverseFailureIds.OrderBy(id => id))}.");
+            }
+            else if (previous == RuntimeExecutionState.Paused
+                && _lastLoggedState == RuntimeExecutionState.Armed)
+            {
+                _events.Write("entry_pause_cleared",
+                    ("directive_id", _coordinator.Directive?.Id));
+                LogOperator($"Directive {_coordinator.Directive?.Id ?? "none"}: "
+                    + "local adverse failure cleared; entry re-armed.");
+            }
+            else
+            {
+                LogOperator($"Directive {_coordinator.Directive?.Id ?? "none"}: "
+                    + $"{previous} -> {_lastLoggedState}.",
+                    error: _lastLoggedState == RuntimeExecutionState.Error
+                        || _lastLoggedState == RuntimeExecutionState.Halted);
+            }
         }
 
         private void LogSponsorIfChanged()
@@ -1610,15 +1745,14 @@ namespace ExecAssistantRuntime
                         ("flatten_accepted", true));
                 }
                 if (intent.Kind == OrderIntentKind.CancelRuntimeOrders
-                    && (string.Equals(intent.Reason, "HF_while_flat", StringComparison.Ordinal)
-                        || string.Equals(intent.Reason, "LF_while_flat", StringComparison.Ordinal)))
+                    && intent.Reason?.EndsWith(
+                        "_sponsor_failed_while_flat", StringComparison.Ordinal) == true)
                 {
                     _events.Write("directive_invalidated",
                         ("directive_id", intent.DirectiveId),
                         ("reason", intent.Reason));
-                    LogOperator($"Directive {intent.DirectiveId} invalidated by "
-                        + $"{intent.Reason.Substring(0, 2)} while flat; human reissue required.",
-                        error: true);
+                    LogOperator($"Directive {intent.DirectiveId} invalidated: "
+                        + $"{intent.Reason}.");
                     return;
                 }
                 bool safety = intent.Kind == OrderIntentKind.Flatten
@@ -1816,6 +1950,11 @@ namespace ExecAssistantRuntime
             _lastCheckpointUtc = DateTime.MinValue;
             _hadEvidenceSample = false;
             _evidenceActionsPaused = true;
+            _evidenceEpochStartedUtc = DateTime.MinValue;
+            _evidenceEpochSampleCount = 0;
+            _evidenceWarmupComplete = false;
+            _evidenceEpochReason = "startup";
+            _evidenceState = "AwaitingBook";
             _bookContinuity.Reset();
             _runTradingEnabled = TradingEnabled;
             _lastDirectiveFileHash = null;

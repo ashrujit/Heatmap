@@ -24,6 +24,12 @@ offline research while making capture health visible during the session.
   snapshots. Event replay supplies additions/cancellations for OFI research;
   periodic `DepthOfMarket` snapshots remain the independent truth used to
   reject corrupt or incomplete replay intervals.
+- Rithmic-via-Quantower can omit closure callbacks for a small number of quote
+  ids. Replay may remove a resting level only when a newer opposite-side quote
+  makes that level mechanically impossible (bid above ask or ask below bid).
+  This crossed-level cleanup is deterministic state repair, not observed flow:
+  research must count it, expose its rate, and test OFI with repaired-event
+  contributions excluded.
 - Event capture consumes the existing `NewLevel2` callbacks and never increases
   DOM polling. The callback copies scalar quote fields into a bounded queue;
   chunking, Parquet conversion, validation, and manifests stay on the writer
@@ -82,6 +88,10 @@ all day directories touched by that window.
   reset epoch. This is an on-demand seed, not recurring DOM polling.
 - `research/validate_book_events.py` must show acceptable agreement with the
   canonical snapshots before any captured day is admitted to OFI research.
+- A reset epoch can begin in the prior New York date partition while the
+  recorder process continues through midnight. Validators and research loaders
+  must carry the latest preceding reset forward; a local-date folder is not an
+  independently seeded replay unit.
 - Do not reintroduce append-to-existing Parquet for capture data.
   Append-only is acceptable for `manifest.jsonl` because it is metadata, not the
   research payload.

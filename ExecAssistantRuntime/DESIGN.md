@@ -224,7 +224,8 @@ Runtime lifecycle states are:
 - `active`: runtime may act;
 - `cancelled`: an explicit `CANCEL_DIRECTIVE` command ended the directive;
 - `invalidated`: market evidence or `FLAT` invalidated the execution path;
-- `completed`: target, breakeven, LF/HF, or another terminal exit completed it;
+- `completed`: target, breakeven, sponsor-aligned LF/HF, or another terminal
+  exit completed it;
 - `expired`: its execution window passed;
 - `error`: runtime could not proceed safely.
 
@@ -248,7 +249,7 @@ human-significant lifecycle events:
 - base/add submission and fill, current quantity, and weighted average;
 - breakeven and hard-target protection establishment or failure;
 - sponsor promotion and sponsor failure;
-- HF/LF flatten, including HF/LF invalidation while flat;
+- HF/LF entry pause/resume while flat and sponsor-aligned terminal exits;
 - accepted `CANCEL_DIRECTIVE` or `FLAT` control;
 - data loss, recovery action, halted state, and errors requiring intervention.
 
@@ -331,7 +332,7 @@ The schema settles these transport semantics:
 - long pre-entry invalidation, when present, points `below`; short invalidation
   points `above`;
 - stop policy is fixed to semantic base invalidation, weighted breakeven after
-  leverage, and complete flatten on the opposite LF/HF object;
+  leverage, and sponsor-aware handling of the opposite LF/HF object;
 - notes and target reference labels are audit-only and cannot change behavior.
 
 JSON Schema cannot express every relational invariant. The runtime semantic
@@ -690,10 +691,11 @@ Relevant behavior:
   remained a ceiling and the position stayed base-only;
 - price first crossed `30360` near 10:47:26, reached `30284.75`, then reclaimed
   the area;
-- demand around `30363-30366` established and produced a fresh LF, terminating
-  the short around `30377` near 10:50:38;
-- the launch/sponsor area was subsequently reclaimed. Later downside did not
-  restore the completed campaign.
+- demand around `30363-30366` established and produced a fresh LF near
+  10:50:38;
+- the launch/sponsor area was subsequently reclaimed, aligning that LF with
+  failure of the short's causal supply. Later downside did not restore the
+  completed campaign.
 
 An intentionally over-ambitious hard target at `30270` would not have changed
 that exit. Price did not first reach `30270` until about 14:02 and later traded
@@ -757,7 +759,8 @@ A deliberately biased June 16 long demonstrates what the runtime must and must
 not protect against.
 
 For a long activated after 09:55 above `30750` with an ambitious hard target at
-`30884`, the target does not suspend entry-anchor, sponsor, or LF/HF protection.
+`30884`, the target does not suspend entry-anchor, sponsor, or sponsor-aware
+LF/HF protection.
 The first valid supported reclaim produced only a small extension before its
 clean execution path failed and the directive completed. Later long triggers
 were irrelevant.
@@ -795,11 +798,12 @@ campaign scaling also invokes immediate whole-position breakeven protection.
 
 A third short reissued after 12:55 entered much lower after pre-existing demand
 failed under surviving supply. A second lower demand failure belonged to the
-same traversal epoch and did not add. The 13:09 LF flattened the base for a
-material loss even though price later continued lower. This is the canonical
-warning that repeated human reissues can accumulate damage. The runtime limits
-each attempt and withholds unjustified leverage; it cannot make strategic
-stubbornness harmless.
+same traversal epoch and did not add. At 13:09 the active supply sponsor failed
+immediately before demand ownership and the LF sequence. That sponsor alignment,
+not the LF label by itself, made the base exit terminal even though price later
+continued lower. This is the canonical warning that repeated human reissues can
+accumulate damage. The runtime limits each attempt and withholds unjustified
+leverage; it cannot make strategic stubbornness harmless.
 
 ### Squeeze Participation
 
@@ -858,7 +862,7 @@ Deterministic replay of June 11 must assert all of the following:
   later resumes;
 - a base semantic stop may re-arm only from a fresh epoch and within the retry
   allowance;
-- LF/HF flatten the opposite side and terminate the directive;
+- a local LF/HF cannot flatten while the current causal sponsor remains owned;
 - failure objects already live at activation are context, not immediate flatten
   triggers; only a fresh post-activation failure epoch may trigger;
 - a fixed hard-target fill completes the directive before any later evidence
@@ -866,10 +870,12 @@ Deterministic replay of June 11 must assert all of the following:
 - a causal same-side sponsor can promote only in the favorable direction, and
   failure of the currently promoted sponsor market-flattens the campaign;
 - sponsor promotion never moves the broker breakeven stop to a sponsor edge;
-- LF/HF remain unconditional terminal events rather than waiting to see whether
-  a sponsor later fails;
-- a fresh LF/HF while flat invalidates an armed directive and requires a human
-  reissue instead of producing a no-op flatten;
+- same-sequence sponsor failure makes an adverse LF/HF terminal, including the
+  June 11 case where supply failed immediately before the LF;
+- a fresh LF/HF while flat pauses the armed directive and cancels entry orders;
+  invalidation of that failure object re-arms the same directive;
+- if the current base sponsor already failed, a subsequently held adverse LF/HF
+  invalidates the flat retry before a fresh base fills;
 - every reissue starts with a new id, fresh counters, and an activation baseline;
 - no terminal directive can reactivate when later evidence validates its old
   thesis.
@@ -925,15 +931,16 @@ Examples:
 Activation must be specific enough for the runtime to evaluate. If a directive
 says only "look long if bullish", it should be rejected by `exec-asst`.
 
-At acceptance, the runtime snapshots the currently live LF/HF objects. They may
-remain contextual evidence, but they cannot immediately flatten the new
-directive. Only a fresh failure epoch after activation is a terminal LF/HF
-trigger. If the directive is positioned, that event market-flattens and
-completes it. If it is flat but still armed, the same event invalidates the
-directive without sending a meaningless close request. In either case later
-evidence requires a human reissue with a new id. Ordinary demand/supply anchors
-are different: a pre-existing anchor may participate at any age when it is
-still live and intersects `context_price_range`.
+At acceptance, the runtime snapshots the currently live LF/HF objects. They
+remain contextual evidence and cannot immediately pause or flatten the new
+directive. A fresh adverse failure epoch after activation is local evidence
+first. While flat it cancels entry orders and pauses eligibility until that
+failure object invalidates. While positioned it cannot override an intact
+causal sponsor. It is terminal only when the current sponsor fails in the same
+sequence, or when it appears after a sponsor-failure base exit and before a
+fresh base fills. Ordinary demand/supply anchors are different: a pre-existing
+anchor may participate at any age when it is still live and intersects
+`context_price_range`.
 
 Activation does not reconstruct an entry resolution that completed before the
 directive arrived. Existing anchors may support a fresh post-activation
@@ -970,8 +977,8 @@ Retry rules:
   fresh evidence;
 - older anchors remain eligible only if they are still live and a new trigger
   transition forms around them;
-- pre-entry invalidation, expiry, target completion, LF/HF, `FLAT`, or exhausted
-  retry allowance terminates re-arming;
+- pre-entry invalidation, expiry, target completion, sponsor-aligned LF/HF,
+  `FLAT`, or exhausted retry allowance terminates re-arming;
 - once any add fills, later flattening terminates the directive and cannot retry.
 
 The runtime should emit a high-visibility base-stop event containing quantity,
@@ -1011,6 +1018,8 @@ uses zero, some, or all available quantity.
 The execution state machine distinguishes evidence burden by position state:
 
 - `ARMED`: flat and eligible for a base resolution;
+- `PAUSED`: flat with one or more fresh adverse LF/HF objects held; entry orders
+  are cancelled and eligibility resumes when all such objects invalidate;
 - `BASE_ONLY`: base position is live and protected by its semantic entry stop;
 - `LEVERAGED`: at least one add has filled; weighted breakeven and terminal
   adverse rules are active;
@@ -1024,8 +1033,9 @@ The execution state machine distinguishes evidence burden by position state:
 
 Sponsor protection is an orthogonal tracked object, not a separate target
 state. `BASE_ONLY` and `LEVERAGED` may each carry a current sponsor id and its
-lineage. `HARD_TP`, weighted breakeven, LF/HF, and sponsor failure retain their
-own precedence; no target-specific intermediate execution state exists.
+lineage. `HARD_TP`, weighted breakeven, sponsor-aware LF/HF, and sponsor failure
+retain their own precedence; no target-specific intermediate execution state
+exists.
 
 ## Restart And Forward-Only Data Loss
 
@@ -1034,6 +1044,14 @@ the runtime's evidence memory. Level 2 is forward-only, so old rails, candidate
 timers, LF/HF baselines, retries, and resolution epochs cannot be reconstructed
 reliably from the live feed. The runtime must not resume normal management from
 the directive file alone.
+
+Every replacement evidence engine therefore begins a visible, non-actionable
+warm-up. It must accumulate one full configured book-lookback interval and the
+corresponding sample count before transitions may reach the coordinator.
+Transitions still build internal context during warm-up; failure objects already
+held at completion are baselined rather than replayed. Checkpoint/status exposes
+`AwaitingBook`, `Warming`, `Ready`, or `BookUnusable`, epoch reason/start, sample
+count, and remaining warm-up time.
 
 Runtime continuity loss is debounced separately from heartbeat freshness. The
 `L2 Freshness` setting decides when a missing real-L2 callback first makes the
@@ -1113,12 +1131,13 @@ price. Round in the protective direction: up for a long sell stop and down for
 a short buy stop. This avoids deliberately placing nominal breakeven on the
 loss side; actual stop-market slippage remains measured in the fill log.
 
-A leveraged position has three independent adverse protections:
+A leveraged position has three coordinated adverse protections:
 
 - the unchanged weighted-breakeven broker order;
-- the opposite post-activation failure object: HF for a long, LF for a short;
 - confirmed failure of the internally tracked current sponsor, which produces
   a market-flatten intent.
+- an opposite post-activation failure object: HF for a long, LF for a short,
+  which is terminal only when aligned with current-sponsor failure.
 
 The sponsor is not represented by a resting stop at either edge of its price
 band. Tests and ordinary `HOLD` transitions do not move or flatten the position.
@@ -1166,27 +1185,28 @@ flattens the complete runtime position. Once the position has been leveraged,
 that flatten completes the directive; it does not return to base quantity and
 does not re-arm.
 
-Opposite failure objects are flatten triggers:
+Opposite failure objects are local-first:
 
-- long plus HF means flatten;
-- short plus LF means flatten.
+- long plus HF records local supply opposition;
+- short plus LF records local demand opposition;
+- neither flattens while the tracked same-side sponsor remains intact;
+- current-sponsor failure in the same sequence makes the event terminal;
+- if a base sponsor fails first and the position reconciles flat, a subsequently
+  held adverse LF/HF invalidates that retry before a fresh base fills.
 
-This does not mean the full day thesis is invalid. It means this directive's
-clean execution path is no longer clean. If the trader still wants the same side,
-issue another directive, likely at a better price.
-
-When the position is flat but the directive remains armed, a fresh opposite
-LF/HF invalidates the directive immediately. It must not emit a no-op flatten
-and remain eligible for a later automatic entry.
+When the position is flat and its sponsor has not failed, a fresh opposite
+LF/HF moves the directive to `PAUSED` and cancels runtime entry orders. The same
+directive re-arms when every active adverse failure object invalidates. This
+preserves mid-move local opposition without allowing entry through it.
 
 ## Targets
 
 `HARD_TP` is the only target behavior selected for development and live use. It
 is a resting close-order limit at the normalized target price and completes the
 directive when filled. The human may choose a moderately ambitious fixed target
-because sponsor protection, weighted breakeven, and LF/HF remain active on the
-way there. A target is still finite; sponsor protection is not permission for an
-unbounded objective.
+because sponsor protection, weighted breakeven, and sponsor-aware LF/HF remain
+active on the way there. A target is still finite; sponsor protection is not
+permission for an unbounded objective.
 
 The v1 schema accepts no alternate target modes. This applies equally to shadow
 and live operation so abandoned exit concepts cannot affect entry gates,
@@ -1331,8 +1351,8 @@ improvise strategy.
 
 Closed by the June fixtures:
 
-- leveraged adverse management includes weighted breakeven, opposite
-  post-activation LF/HF, and confirmed current-sponsor failure;
+- leveraged adverse management includes weighted breakeven, confirmed
+  current-sponsor failure, and sponsor-aligned post-activation LF/HF;
 - breakeven arms immediately after the first confirmed add fill;
 - the broker breakeven order never moves to a sponsor edge;
 - only the tracked current sponsor, whether initial or promoted, can produce the
@@ -1342,8 +1362,9 @@ Closed by the June fixtures:
   new band;
 - a base-only sponsor failure uses the configured retry/fresh-epoch contract,
   while failure after any add completes the directive;
-- LF/HF flatten the complete position and terminate the directive;
-- LF/HF while flat invalidates an armed directive and requires human reissue;
+- local LF/HF do not override an intact current sponsor;
+- LF/HF while flat pause entry until their failure objects invalidate;
+- an LF/HF aligned with same-sequence or prior base-sponsor failure is terminal;
 - pre-existing LF/HF objects are baselined as context at activation;
 - `HARD_TP` is the sole target contract in shadow and live operation;
 - maximum quantity is never a fill objective;
@@ -1364,6 +1385,9 @@ Closed by the June fixtures:
 - restart never resumes old L2 state: flat directives are cancelled, losing or
   ambiguous positions are flattened, and profitable positions may retain only
   breakeven plus fixed-price exit protection;
+- each new evidence engine is non-actionable for one full configured
+  book-lookback interval and required sample count, with warm-up state exposed
+  through checkpoint/status;
 - NQ v1 uses vanilla market entries/adds and measures fill quality before
   introducing broker-dependent routing;
 - off-tick weighted breakeven rounds protectively: up for longs and down for
@@ -1457,8 +1481,8 @@ The next spike should:
   reconciliation;
 - compute candidate/live-anchor/resolution-epoch state from copied LL-style
   math;
-- invalidate an armed flat directive on fresh opposite LF/HF and emit a visible
-  Strategy Manager message;
+- pause an armed flat directive on fresh opposite LF/HF, re-arm when the object
+  invalidates, and emit visible Strategy Manager messages for both transitions;
 - replay sponsor promotion and failure through the June 16-18 fixtures;
 - replay June 11 as the canonical state-machine fixture, with June 16, June 17,
   and June 18 as focused fixtures;

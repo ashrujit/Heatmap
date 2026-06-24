@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import argparse
 import glob
+import heapq
 import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -64,6 +65,10 @@ class BookReplay:
         self.quotes: dict[int, QuoteState] = {}
         self.bid_levels: dict[int, float] = defaultdict(float)
         self.ask_levels: dict[int, float] = defaultdict(float)
+        self.bid_ids: dict[int, set[int]] = defaultdict(set)
+        self.ask_ids: dict[int, set[int]] = defaultdict(set)
+        self.bid_heap: list[int] = []
+        self.ask_heap: list[int] = []
         self.seeded = False
         self.valid = False
         self.reset_epoch = 0
@@ -74,6 +79,8 @@ class BookReplay:
         self.gaps = 0
         self.deltas = 0
         self.preseed_deltas = 0
+        self.crossed_levels_evicted = 0
+        self.crossed_quotes_evicted = 0
 
     def apply(self, row: dict) -> None:
         kind = int(row["event_kind"])
@@ -85,6 +92,10 @@ class BookReplay:
             self.quotes.clear()
             self.bid_levels.clear()
             self.ask_levels.clear()
+            self.bid_ids.clear()
+            self.ask_ids.clear()
+            self.bid_heap.clear()
+            self.ask_heap.clear()
             self.seeded = False
             self.valid = False
             self.reset_epoch = int(row["reset_epoch"])
@@ -135,18 +146,57 @@ class BookReplay:
         state = QuoteState(side=side, price_tick=price_tick, size=size)
         self.quotes[quote_id] = state
         levels = self.bid_levels if side > 0 else self.ask_levels
+        ids = self.bid_ids if side > 0 else self.ask_ids
+        if price_tick not in levels:
+            heapq.heappush(self.bid_heap if side > 0 else self.ask_heap, -price_tick if side > 0 else price_tick)
         levels[price_tick] += size
+        ids[price_tick].add(quote_id)
+        self._evict_crossed(side, price_tick)
 
     def _remove_quote(self, quote_id: int) -> None:
         prior = self.quotes.pop(quote_id, None)
         if prior is None:
             return
         levels = self.bid_levels if prior.side > 0 else self.ask_levels
+        ids = self.bid_ids if prior.side > 0 else self.ask_ids
         remaining = levels.get(prior.price_tick, 0.0) - prior.size
+        level_ids = ids.get(prior.price_tick)
+        if level_ids is not None:
+            level_ids.discard(quote_id)
         if remaining > 1e-9:
             levels[prior.price_tick] = remaining
         else:
             levels.pop(prior.price_tick, None)
+        if not level_ids:
+            ids.pop(prior.price_tick, None)
+
+    def _best_tick(self, side: int) -> int | None:
+        levels = self.bid_levels if side > 0 else self.ask_levels
+        heap = self.bid_heap if side > 0 else self.ask_heap
+        while heap:
+            tick = -heap[0] if side > 0 else heap[0]
+            if tick in levels:
+                return tick
+            heapq.heappop(heap)
+        return None
+
+    def _evict_crossed(self, side: int, price_tick: int) -> None:
+        opposite = -side
+        while True:
+            crossed_tick = self._best_tick(opposite)
+            if crossed_tick is None:
+                return
+            crossed = crossed_tick < price_tick if side > 0 else crossed_tick > price_tick
+            if not crossed:
+                return
+            levels = self.ask_levels if side > 0 else self.bid_levels
+            ids = self.ask_ids if side > 0 else self.bid_ids
+            evicted_ids = tuple(ids.pop(crossed_tick, ()))
+            for quote_id in evicted_ids:
+                self.quotes.pop(quote_id, None)
+            levels.pop(crossed_tick, None)
+            self.crossed_levels_evicted += 1
+            self.crossed_quotes_evicted += len(evicted_ids)
 
     def top(self, levels: int) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
         bids = sorted(self.bid_levels.items(), reverse=True)[:levels]
@@ -159,6 +209,55 @@ def load_parquet(pattern: str, columns: list[str]) -> pl.DataFrame:
     if not files:
         raise FileNotFoundError(pattern)
     return pl.scan_parquet(files).select(columns).collect()
+
+
+def event_files_with_carry(
+    capture_root: str,
+    symbol_dir: str,
+    date: str,
+    max_carry_days: int,
+) -> tuple[list[str], int]:
+    """Return target-day files plus enough prior partitions to find a seed.
+
+    Capture directories are partitioned by New York calendar day, while a
+    recorder process and its authoritative reset can span that boundary. A
+    replay that starts at local midnight must therefore carry quote state from
+    the latest preceding partition containing a ResetBegin.
+    """
+
+    target_day = datetime.fromisoformat(date).date()
+    target_pattern = os.path.join(capture_root, symbol_dir, date, "book_events", "*.parquet")
+    target_files = sorted(glob.glob(target_pattern))
+    if not target_files:
+        raise FileNotFoundError(target_pattern)
+
+    carry_files: list[str] = []
+    for days_back in range(1, max_carry_days + 1):
+        prior_day = target_day - timedelta(days=days_back)
+        prior_pattern = os.path.join(
+            capture_root,
+            symbol_dir,
+            prior_day.isoformat(),
+            "book_events",
+            "*.parquet",
+        )
+        prior_files = sorted(glob.glob(prior_pattern))
+        if not prior_files:
+            continue
+        carry_files = prior_files + carry_files
+        has_reset_begin = (
+            pl.scan_parquet(prior_files)
+            .filter(pl.col("event_kind") == RESET_BEGIN)
+            .select("event_kind")
+            .limit(1)
+            .collect()
+            .height
+            > 0
+        )
+        if has_reset_begin:
+            return carry_files + target_files, days_back
+
+    return target_files, 0
 
 
 def snapshot_columns(levels: int) -> list[str]:
@@ -229,16 +328,28 @@ def self_test() -> None:
     assert replay.top(1)[0] == [(101, 5.0)]
     replay.apply(row(DELTA, quote_id_hash=3, side=1, price_tick=101, size=0.0, closed=True))
     assert replay.top(1)[0] == [(100, 15.0)]
+    replay.apply(row(DELTA, quote_id_hash=4, side=1, price_tick=110, size=2.0))
+    assert replay.top(1) == ([(110, 2.0)], [])
+    assert replay.crossed_levels_evicted == 1
     replay.apply(row(GAP))
     assert not replay.valid
 
 
 def validate(args) -> None:
     day_root = Path(args.capture_root) / args.symbol_dir / args.date
+    event_files, carry_days = event_files_with_carry(
+        args.capture_root,
+        args.symbol_dir,
+        args.date,
+        args.max_carry_days,
+    )
     # Sequence numbers are process-local and restart at one. Receipt time is
     # the session-wide ordering key; sequence/subsequence resolve ties.
-    events = load_parquet(str(day_root / "book_events" / "*.parquet"), EVENT_COLUMNS).sort(
-        ["receipt_timestamp_us", "sequence", "subsequence"]
+    events = (
+        pl.scan_parquet(event_files)
+        .select(EVENT_COLUMNS)
+        .collect()
+        .sort(["receipt_timestamp_us", "sequence", "subsequence"])
     )
     snapshots = load_parquet(
         str(day_root / "snapshots" / "*.parquet"),
@@ -253,6 +364,10 @@ def validate(args) -> None:
     skipped_invalid = 0
     best_matches = 0
     top_matches = 0
+    bid_best_matches = 0
+    ask_best_matches = 0
+    bid_top_matches = 0
+    ask_top_matches = 0
     examples: list[str] = []
 
     for snapshot in snapshots.iter_rows(named=True):
@@ -269,10 +384,16 @@ def validate(args) -> None:
         actual_bids, actual_asks = snapshot_levels(snapshot, args.levels)
         replay_bids, replay_asks = replay.top(args.levels)
         compared += 1
-        best_ok = level_match(actual_bids, replay_bids, 1) and level_match(actual_asks, replay_asks, 1)
-        top_ok = level_match(actual_bids, replay_bids, args.levels) and level_match(
-            actual_asks, replay_asks, args.levels
-        )
+        bid_best_ok = level_match(actual_bids, replay_bids, 1)
+        ask_best_ok = level_match(actual_asks, replay_asks, 1)
+        bid_top_ok = level_match(actual_bids, replay_bids, args.levels)
+        ask_top_ok = level_match(actual_asks, replay_asks, args.levels)
+        best_ok = bid_best_ok and ask_best_ok
+        top_ok = bid_top_ok and ask_top_ok
+        bid_best_matches += int(bid_best_ok)
+        ask_best_matches += int(ask_best_ok)
+        bid_top_matches += int(bid_top_ok)
+        ask_top_matches += int(ask_top_ok)
         best_matches += int(best_ok)
         top_matches += int(top_ok)
         if not top_ok and len(examples) < args.examples:
@@ -282,11 +403,18 @@ def validate(args) -> None:
                 f"snap_ask={actual_asks[:2]} replay_ask={replay_asks[:2]}"
             )
 
+    target_start_us = int(
+        datetime.fromisoformat(args.date).replace(tzinfo=NY).timestamp() * 1_000_000
+    )
+    carry_rows = events.filter(pl.col("receipt_timestamp_us") < target_start_us).height
     print(f"{args.date} {args.symbol_dir} raw book-event validation")
     print(
-        f"event_rows={events.height} deltas={replay.deltas} resets={replay.completed_resets} "
+        f"event_rows={events.height} carry_days={carry_days} carry_rows={carry_rows} "
+        f"deltas={replay.deltas} resets={replay.completed_resets} "
         f"incomplete_resets={replay.incomplete_resets} gaps={replay.gaps} "
-        f"preseed_deltas={replay.preseed_deltas}"
+        f"preseed_deltas={replay.preseed_deltas} "
+        f"crossed_levels_evicted={replay.crossed_levels_evicted} "
+        f"crossed_quotes_evicted={replay.crossed_quotes_evicted}"
     )
     print(
         f"snapshots={snapshots.height} compared={compared} skipped_unseeded={skipped_unseeded} "
@@ -296,6 +424,12 @@ def validate(args) -> None:
         print(
             f"best_match={best_matches}/{compared} ({100.0 * best_matches / compared:.2f}%) "
             f"top{args.levels}_match={top_matches}/{compared} ({100.0 * top_matches / compared:.2f}%)"
+        )
+        print(
+            f"bid_best={100.0 * bid_best_matches / compared:.2f}% "
+            f"ask_best={100.0 * ask_best_matches / compared:.2f}% "
+            f"bid_top{args.levels}={100.0 * bid_top_matches / compared:.2f}% "
+            f"ask_top{args.levels}={100.0 * ask_top_matches / compared:.2f}%"
         )
     for example in examples:
         print("  " + example)
@@ -312,6 +446,7 @@ def main() -> None:
     )
     parser.add_argument("--levels", type=int, default=5)
     parser.add_argument("--examples", type=int, default=10)
+    parser.add_argument("--max-carry-days", type=int, default=7)
     args = parser.parse_args()
     validate(args)
 

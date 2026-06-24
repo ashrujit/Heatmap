@@ -19,7 +19,7 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 OFFSET_RE = re.compile(r"(?:Z|[+-][0-9]{2}:[0-9]{2})$")
 RESOLUTIONS = {"direct_conversion", "supported_reclaim"}
 ACTIVE_RUNTIME_STATES = {
-    "Waiting", "Armed", "BaseOnly", "Leveraged", "RecoveryProtected", "Halting",
+    "Waiting", "Armed", "Paused", "BaseOnly", "Leveraged", "RecoveryProtected", "Halting",
 }
 RUNTIME_EVENTS = {"runtime_started", "runtime_stopped", "runtime_removed", "runtime_start_error"}
 MATERIAL_EVENTS = {
@@ -518,6 +518,13 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
     working_count = checkpoint.get("bound_working_order_count", 0) if checkpoint else 0
     unresolved_count = checkpoint.get("unresolved_entry_count", 0) if checkpoint else 0
     recovery_required = bool(checkpoint and checkpoint.get("recovery_action_required"))
+    evidence_state = checkpoint.get("evidence_state") if checkpoint else None
+    evidence_sample_count = checkpoint.get("evidence_sample_count", 0) if checkpoint else 0
+    evidence_warmup_seconds = checkpoint.get("evidence_warmup_seconds") if checkpoint else None
+    evidence_required_samples = checkpoint.get("evidence_warmup_required_samples") \
+        if checkpoint else None
+    evidence_remaining = checkpoint.get("evidence_warmup_remaining_seconds") \
+        if checkpoint else None
     blockers: list[dict[str, Any]] = []
 
     def block(code: str, message: str, **details: Any) -> None:
@@ -565,6 +572,16 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
             "direction": checkpoint.get("position_direction") if checkpoint else None,
             "quantity": position_quantity,
             "average_price": checkpoint.get("position_average_price", 0) if checkpoint else 0,
+        },
+        "evidence": {
+            "state": evidence_state,
+            "epoch_reason": checkpoint.get("evidence_epoch_reason") if checkpoint else None,
+            "epoch_started_utc": checkpoint.get("evidence_epoch_started_utc")
+            if checkpoint else None,
+            "sample_count": evidence_sample_count,
+            "required_samples": evidence_required_samples,
+            "warmup_seconds": evidence_warmup_seconds,
+            "warmup_remaining_seconds": evidence_remaining,
         },
         "blockers": blockers,
         "last_control_outcome": latest["control"],

@@ -17,6 +17,13 @@ namespace ExecAssistantRuntime
         public bool? TradingEnabled { get; set; }
         public int? InstanceMaxQuantity { get; set; }
         public int? WorkerPollMs { get; set; }
+        public string EvidenceState { get; set; }
+        public string EvidenceEpochReason { get; set; }
+        public string EvidenceEpochStartedUtc { get; set; }
+        public int EvidenceSampleCount { get; set; }
+        public int EvidenceWarmupSeconds { get; set; }
+        public int EvidenceWarmupRequiredSamples { get; set; }
+        public double EvidenceWarmupRemainingSeconds { get; set; }
         public bool RecoveryActionRequired { get; set; }
         public int BoundWorkingOrderCount { get; set; }
         public int UnresolvedEntryCount { get; set; }
