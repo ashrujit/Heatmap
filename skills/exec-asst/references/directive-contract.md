@@ -26,6 +26,10 @@ remains authoritative.
 
 EAR starts recognizing eligible transitions only after activation. Existing
 bands remain context, but completed pre-activation resolutions are not replayed.
+Use generous context/add envelopes when the thesis spans a broader campaign:
+EAR should see local LF/HF repair and then decide whether fresh evidence still
+justifies entry after re-arm. Tight human-perfect wick ranges can hide relevant
+contest context and make a correct pause look like a missed isolated trade.
 
 ## Sizing And Retries
 
@@ -39,12 +43,12 @@ Quantities are contracts, not abstract clips:
 When scaling is disabled, use `add_quantity=0`, `add_price_range=null`, and
 `max_position_quantity=base_quantity`. When enabled, the maximum must have room
 for at least one complete add; it remains a ceiling rather than a fill goal.
-After the first filled add, EAR protects the complete weighted position at
-protectively rounded breakeven. LF/HF flattens the complete position. The
-causal same-side sponsor may promote only favorably; confirmed failure of the
-exact current sponsor also flattens. Tests, holds, and overlapping rails do not
-move protection. A fresh opposite LF/HF while armed but flat invalidates the
-directive and requires a new ID.
+After the first filled add, EAR does not place routine weighted-breakeven
+protection. The causal same-side sponsor may promote only favorably; confirmed
+failure of the exact current sponsor flattens the complete position. LF/HF
+flattens only when sponsor-aligned while positioned. Tests, holds, and
+overlapping rails do not move protection. A fresh opposite LF/HF while armed
+but flat pauses entry until that failure object invalidates.
 
 ## Targets
 

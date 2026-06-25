@@ -1041,7 +1041,8 @@ namespace ExecAssistantRuntime
                 {
                     recoveredDirective = DirectiveContracts.ParseTradeDirective(
                         _checkpoint.LastDirectiveJson,
-                        Math.Max(1, InstanceMaxQuantity));
+                        Math.Max(1, InstanceMaxQuantity),
+                        allowLegacyWeightedBreakeven: true);
                 }
                 catch (Exception ex)
                 {
@@ -1725,7 +1726,7 @@ namespace ExecAssistantRuntime
                 OrderIntentKind.Add => $"add submission qty={intent.Quantity:R}",
                 OrderIntentKind.Flatten => $"market flatten reason={intent.Reason}",
                 OrderIntentKind.EnsureHardTarget => $"HARD_TP protection at {intent.Price:R}",
-                OrderIntentKind.EnsureBreakeven => $"weighted-BE protection at {intent.Price:R}",
+                OrderIntentKind.EnsureBreakeven => $"recovery weighted-BE protection at {intent.Price:R}",
                 OrderIntentKind.CancelRuntimeOrders => $"runtime-order cancellation reason={intent.Reason}",
                 _ => intent.Kind.ToString(),
             };

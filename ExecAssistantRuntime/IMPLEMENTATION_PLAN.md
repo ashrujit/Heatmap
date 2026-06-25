@@ -15,9 +15,9 @@ The first live-capable cut must prove the complete mechanical path:
 4. place a vanilla market base order;
 5. retry only from a fresh epoch when the base stops;
 6. add only from fresh campaign evidence;
-7. protect leverage at weighted breakeven;
-8. hand campaign protection to fresh favorable sponsors without moving the
-   broker breakeven stop;
+7. protect leverage by exact current-sponsor failure and sponsor-aligned LF/HF;
+8. hand campaign protection to fresh favorable sponsors without adding a
+   routine broker breakeven stop;
 9. exit at a hard target, semantic stop, current-sponsor failure, a
    sponsor-aligned LF/HF, cancellation, or `FLAT`;
 10. reconcile every order, fill, and position change;
@@ -106,7 +106,8 @@ uninterrupted seconds of favorable eight-tick displacement.
 - base semantic invalidation;
 - retry allowance before leverage only;
 - maximum position as a ceiling, never an objective;
-- immediate weighted breakeven after the first add;
+- leveraged exits by exact current-sponsor failure rather than routine
+  weighted breakeven;
 - irreversible favorable-only sponsor promotion and exact-current-sponsor
   failure flattening;
 - local opposite LF/HF tracking without overriding an intact sponsor;
@@ -125,7 +126,7 @@ That separation makes replay of the state machine possible without a broker.
 - market semantic and emergency exits;
 - close-position calls for reconciliation;
 - resting close-order limits for `HARD_TP`;
-- resting close-order stops for weighted breakeven;
+- recovery-only resting close-order stops for weighted breakeven;
 - modify existing protection when quantity or average changes;
 - tag, track, and cancel runtime-owned working orders.
 
@@ -195,16 +196,16 @@ be used to resume old evidence.
   surviving same-side support;
 - no plain same-side candidate, retest, hold, or repeated message can add;
 - submit one `add_quantity` clip without exceeding `max_position_quantity`;
-- after the first add fill, install whole-position weighted breakeven
-  immediately from actual broker position average and quantity;
-- later adds modify breakeven and hard-target quantity;
+- after the first add fill, normal campaign management remains sponsor-based
+  and does not install whole-position weighted breakeven;
+- later adds modify hard-target quantity;
 - the filled entry support initializes the sponsor; a later newly owned,
   non-overlapping same-side rail may promote only fully in the favorable
   direction after price confirms beyond its band;
 - sponsor tests/holds do nothing; failure or adverse consumption of the exact
   current sponsor market-flattens, while older sponsor failures are ignored;
-- sponsor promotion never moves the weighted-breakeven broker stop;
-- failure to establish valid leveraged protection is a flattening error.
+- sponsor promotion never creates or moves broker stops in normal campaign
+  management.
 
 ### Targets
 
@@ -220,8 +221,9 @@ be used to resume old evidence.
   reconciles to zero, and remains halted until a new directive ID is accepted;
 - restart while flat cancels the old directive and requires a new ID;
 - restart with a losing, ambiguous, or unprotectable position flattens;
-- restart with a profitable position installs breakeven and retains/recreates
-  only fixed hard-target protection in `RECOVERY_PROTECTED`;
+- restart with a profitable position installs recovery breakeven and
+  retains/recreates only fixed hard-target protection in
+  `RECOVERY_PROTECTED`;
 - old candidates, rails, LF/HF baselines, retries, and epochs never resume.
 - each new engine remains non-actionable for one configured book-lookback
   interval and its corresponding sample count; checkpoint telemetry exposes
@@ -231,7 +233,7 @@ be used to resume old evidence.
   stale/mismatch grace remains continuously breached;
 - every unusable interval records its initial/latest reason and recovery, and a
   confirmed positioned recovery explicitly cancels runtime orders before
-  establishing breakeven and hard-target protection.
+  establishing recovery breakeven and hard-target protection.
 
 ## Build Sequence
 
@@ -242,7 +244,7 @@ be used to resume old evidence.
 5. Add control and restart reconciliation.
 6. Add market entry/exit gateway and `HARD_TP`.
 7. Add base semantic stop/retry.
-8. Add fresh-epoch scaling and weighted breakeven.
+8. Add fresh-epoch scaling and sponsor-managed leverage.
 9. Replay the June fixtures through the pure coordinator.
 10. Build/deploy, restart Quantower, run shadow, then enable on a throwaway
     account at one base clip.
@@ -258,7 +260,8 @@ Before enabling orders:
 - `CANCEL_DIRECTIVE` and `FLAT` are idempotent;
 - restart fixtures produce cancel, flatten, or `RECOVERY_PROTECTED` exactly as
   specified;
-- leveraged fixtures arm breakeven immediately and terminate after flatten;
+- leveraged fixtures do not arm routine breakeven and terminate on
+  exact-current-sponsor failure;
 - sponsor fixtures prove initial identity, favorable non-overlapping promotion,
   no fallback to an older sponsor, and exact-current-sponsor failure flatten;
 - a fresh opposite HF/LF while flat cancels entry orders and pauses; its

@@ -9,11 +9,14 @@ The deployed strategy supports the settled NQ execution path:
 - market base/add entries;
 - base semantic stop and fresh-epoch retries;
 - strict fresh-epoch adds;
-- weighted-breakeven stop after the first add;
+- no routine weighted-breakeven stop after adds; leveraged campaigns exit by
+  exact current-sponsor failure, `HARD_TP`, sponsor-aligned LF/HF, or control;
 - internal favorable-only sponsor handoff and market flatten on exact current
   sponsor failure;
 - local-first LF/HF handling that pauses flat entry and defers positioned
   termination to causal sponsor failure;
+- broad context/add envelopes are preferred; LF/HF pause/re-arm should filter
+  local repair risk rather than be defeated by overly tight wick-entry ranges;
 - resting `HARD_TP` limit;
 - `CANCEL_DIRECTIVE`, `FLAT`, and fail-closed restart recovery;
 - append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
@@ -201,13 +204,14 @@ submission reconciles, and safety-flattens any late fill. The broker DOM is
 authoritative when cancellation acknowledgement is lost.
 
 Stopping the strategy cancels runtime entry/add orders. It intentionally leaves
-accepted target/breakeven protection attached to an open position.
+accepted target and recovery-breakeven protection attached to an open position.
 
 A complete Quantower/Windows crash cannot run stale-data logic. The resting
-`HARD_TP` remains broker-side and leveraged positions also have broker-side
-weighted breakeven, but a base-only semantic stop is runtime-driven. A separate
-broker-resident disaster-stop price would require an explicit directive-contract
-addition; the continuity settings do not provide crash protection by themselves.
+`HARD_TP` remains broker-side, but normal base and leveraged sponsor stops are
+runtime-driven. Recovery/restart may install broker-side weighted breakeven
+only after sponsor lineage has already been lost. A separate broker-resident
+disaster-stop price would require an explicit directive-contract addition; the
+continuity settings do not provide crash protection by themselves.
 
 ## Reading Fill Quality
 

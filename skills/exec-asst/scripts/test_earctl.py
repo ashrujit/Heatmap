@@ -38,7 +38,7 @@ class EarctlTests(unittest.TestCase):
             "retries": {"max_base_reentries": 3},
             "stop": {
                 "base": "reverse_entry_resolution",
-                "leveraged": "weighted_breakeven",
+                "leveraged": "current_sponsor_failure",
                 "opposite_failure_object": "flatten",
             },
             "target": {

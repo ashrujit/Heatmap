@@ -224,8 +224,8 @@ Runtime lifecycle states are:
 - `active`: runtime may act;
 - `cancelled`: an explicit `CANCEL_DIRECTIVE` command ended the directive;
 - `invalidated`: market evidence or `FLAT` invalidated the execution path;
-- `completed`: target, breakeven, sponsor-aligned LF/HF, or another terminal
-  exit completed it;
+- `completed`: target, sponsor failure, sponsor-aligned LF/HF, recovery
+  breakeven, or another terminal exit completed it;
 - `expired`: its execution window passed;
 - `error`: runtime could not proceed safely.
 
@@ -304,7 +304,7 @@ directive looks like:
   },
   "stop": {
     "base": "reverse_entry_resolution",
-    "leveraged": "weighted_breakeven",
+    "leveraged": "current_sponsor_failure",
     "opposite_failure_object": "flatten"
   },
   "target": {
@@ -331,8 +331,8 @@ The schema settles these transport semantics:
 - long targets point `above`, short targets point `below`;
 - long pre-entry invalidation, when present, points `below`; short invalidation
   points `above`;
-- stop policy is fixed to semantic base invalidation, weighted breakeven after
-  leverage, and sponsor-aware handling of the opposite LF/HF object;
+- stop policy is fixed to semantic base invalidation, current-sponsor failure
+  after leverage, and sponsor-aware handling of the opposite LF/HF object;
 - notes and target reference labels are audit-only and cannot change behavior.
 
 JSON Schema cannot express every relational invariant. The runtime semantic
@@ -362,21 +362,16 @@ The execution model uses a base position followed by optional smaller adds:
 - add `add_quantity` only after a fresh, independent same-side resolution;
 - never exceed `max_position_quantity`;
 - treat maximum quantity as a ceiling, not a position-building objective;
-- after the first add fills, protect the complete position at its actual
-  weighted breakeven;
 - track the currently promoted causal sponsor internally and market-flatten on
   its confirmed failure;
 - exit the complete position when a terminal condition fires;
 - do not trim individual clips or preserve a discretionary runner.
 
 A useful sizing shape is a larger base with smaller adds, for example base `2`,
-add `1`, maximum position `5`. The first add moves weighted breakeven only one
-third of the way from the base price to the add price. The next additions move
-it by one quarter and one fifth of their distance from the current average.
-Later adds therefore have progressively less ability to damage a good base
-location. Sponsor protection is independent of this arithmetic: weighted
-breakeven remains the broker-native emergency stop, while sponsor failure is an
-evidence-conditioned market exit.
+add `1`, maximum position `5`. Adds are not protected as separate clips. Once
+the campaign is leveraged, the whole position is managed by the currently
+promoted causal sponsor. Confirmed failure of that exact sponsor flattens the
+complete position and completes the directive.
 
 This is not free risk reduction. A two-contract base makes every failed base
 attempt twice as expensive as a one-contract base. That tradeoff is intentional
@@ -856,9 +851,9 @@ Deterministic replay of June 11 must assert all of the following:
 - a plain band, repeated hold, or same-epoch confirmation never adds;
 - supporting evidence outside `context_price_range` cannot authorize entry;
 - maximum quantity is a ceiling and is never filled without independent adds;
-- the first filled add immediately changes the state to `LEVERAGED` and arms
-  whole-position weighted breakeven;
-- a leveraged breakeven flatten is terminal even when the planned direction
+- the first filled add immediately changes the state to `LEVERAGED` without
+  arming routine weighted breakeven;
+- leveraged current-sponsor failure is terminal even when the planned direction
   later resumes;
 - a base semantic stop may re-arm only from a fresh epoch and within the retry
   allowance;
@@ -869,7 +864,8 @@ Deterministic replay of June 11 must assert all of the following:
   may act;
 - a causal same-side sponsor can promote only in the favorable direction, and
   failure of the currently promoted sponsor market-flattens the campaign;
-- sponsor promotion never moves the broker breakeven stop to a sponsor edge;
+- sponsor promotion never creates or moves broker stops in normal campaign
+  management;
 - same-sequence sponsor failure makes an adverse LF/HF terminal, including the
   June 11 case where supply failed immediately before the LF;
 - a fresh LF/HF while flat pauses the armed directive and cancels entry orders;
@@ -941,6 +937,14 @@ sequence, or when it appears after a sponsor-failure base exit and before a
 fresh base fills. Ordinary demand/supply anchors are different: a pre-existing
 anchor may participate at any age when it is still live and intersects
 `context_price_range`.
+
+This pause is intentionally price-context aware but not entry-shelf aware. A
+fresh opposite LF/HF can occur outside the trader's preferred fill shelf while
+still representing local repair risk for the broader campaign. The correct
+operator response is to give EAR a generous context/add envelope and let
+evidence decide whether anything is worth entering after the pause clears,
+rather than narrowing the directive to a human-perfect wick area and removing
+the system's ability to observe the whole contest.
 
 Activation does not reconstruct an entry resolution that completed before the
 directive arrived. Existing anchors may support a fresh post-activation
@@ -1021,8 +1025,8 @@ The execution state machine distinguishes evidence burden by position state:
 - `PAUSED`: flat with one or more fresh adverse LF/HF objects held; entry orders
   are cancelled and eligibility resumes when all such objects invalidate;
 - `BASE_ONLY`: base position is live and protected by its semantic entry stop;
-- `LEVERAGED`: at least one add has filled; weighted breakeven and terminal
-  adverse rules are active;
+- `LEVERAGED`: at least one add has filled; current-sponsor failure and
+  terminal adverse rules are active;
 - `RECOVERY_PROTECTED`: a pre-existing profitable position was found after
   restart; no old L2 evidence may act, weighted breakeven is installed, and
   only fixed-price exit protection remains;
@@ -1033,9 +1037,10 @@ The execution state machine distinguishes evidence burden by position state:
 
 Sponsor protection is an orthogonal tracked object, not a separate target
 state. `BASE_ONLY` and `LEVERAGED` may each carry a current sponsor id and its
-lineage. `HARD_TP`, weighted breakeven, sponsor-aware LF/HF, and sponsor failure
-retain their own precedence; no target-specific intermediate execution state
-exists.
+lineage. `HARD_TP`, sponsor-aware LF/HF, and sponsor failure retain their own
+precedence; no target-specific intermediate execution state exists. Weighted
+breakeven is recovery-only protection after lost sponsor lineage, not normal
+campaign management.
 
 ## Restart And Forward-Only Data Loss
 
@@ -1119,31 +1124,23 @@ The stop is not "a few ticks beyond entry." NQ often invalidates a band by a few
 ticks and then continues. The runtime should flatten on the reverse of the entry
 logic, not on arbitrary proximity to the fill.
 
-After the first add fills, the runtime immediately moves the complete position
-to actual weighted breakeven. It does not wait for the add-producing object to
-retest or hold. Every later add updates that weighted average from confirmed
-fills. The breakeven order protects against the directive itself being wrong;
-it is not a trailing-profit algorithm and does not replace LF/HF or target
-flatten events.
+After the first add fills, normal campaign management does not place a
+weighted-breakeven stop. That earlier protection was removed because it can
+preempt a still-valid sponsor handoff and flatten for PnL bookkeeping rather
+than evidence failure. A leveraged position has two coordinated adverse
+protections:
 
-When weighted average is off tick, the broker stop must still use a legal
-price. Round in the protective direction: up for a long sell stop and down for
-a short buy stop. This avoids deliberately placing nominal breakeven on the
-loss side; actual stop-market slippage remains measured in the fill log.
-
-A leveraged position has three coordinated adverse protections:
-
-- the unchanged weighted-breakeven broker order;
 - confirmed failure of the internally tracked current sponsor, which produces
-  a market-flatten intent.
+  a market-flatten intent;
 - an opposite post-activation failure object: HF for a long, LF for a short,
   which is terminal only when aligned with current-sponsor failure.
 
 The sponsor is not represented by a resting stop at either edge of its price
 band. Tests and ordinary `HOLD` transitions do not move or flatten the position.
 Only the evidence engine's confirmed failure of the exact current sponsor acts.
-The broker breakeven order remains in place as protection against fast movement,
-evidence delay, data loss, disconnect, or a rejected market flatten.
+Broker breakeven remains available only in `RECOVERY_PROTECTED`, where sponsor
+lineage has been lost and the runtime must protect a profitable surviving
+position without pretending normal evidence management can resume.
 
 ### Sponsor Handoff
 
@@ -1180,10 +1177,10 @@ cap belongs in this strategy. The plan came from human judgement rather than a
 statistical signal system. A large semantic stop is diagnostic information for
 the human layer, not permission for the runtime to substitute another stop.
 
-There are no clip-specific trims. A terminal adverse event or breakeven stop
-flattens the complete runtime position. Once the position has been leveraged,
-that flatten completes the directive; it does not return to base quantity and
-does not re-arm.
+There are no clip-specific trims. A terminal adverse event flattens the
+complete runtime position. Once the position has been leveraged, that flatten
+completes the directive; it does not return to base quantity and does not
+re-arm.
 
 Opposite failure objects are local-first:
 
@@ -1198,14 +1195,17 @@ When the position is flat and its sponsor has not failed, a fresh opposite
 LF/HF moves the directive to `PAUSED` and cancels runtime entry orders. The same
 directive re-arms when every active adverse failure object invalidates. This
 preserves mid-move local opposition without allowing entry through it.
+Do not treat a missed isolated entry after re-arm as proof the pause was wrong;
+it may be the pause leg of a broader campaign whose earlier base entry was
+missed by late dispatch or a too-narrow entry directive.
 
 ## Targets
 
 `HARD_TP` is the only target behavior selected for development and live use. It
 is a resting close-order limit at the normalized target price and completes the
 directive when filled. The human may choose a moderately ambitious fixed target
-because sponsor protection, weighted breakeven, and sponsor-aware LF/HF remain
-active on the way there. A target is still finite; sponsor protection is not
+because sponsor protection and sponsor-aware LF/HF remain active on the way
+there. A target is still finite; sponsor protection is not
 permission for an unbounded objective.
 
 The v1 schema accepts no alternate target modes. This applies equally to shadow
@@ -1351,10 +1351,11 @@ improvise strategy.
 
 Closed by the June fixtures:
 
-- leveraged adverse management includes weighted breakeven, confirmed
-  current-sponsor failure, and sponsor-aligned post-activation LF/HF;
-- breakeven arms immediately after the first confirmed add fill;
-- the broker breakeven order never moves to a sponsor edge;
+- leveraged adverse management includes confirmed current-sponsor failure and
+  sponsor-aligned post-activation LF/HF; normal campaigns do not arm
+  weighted-breakeven protection after adds;
+- recovery/restart may install broker breakeven only when sponsor lineage is
+  lost and a profitable position must be protected without evidence management;
 - only the tracked current sponsor, whether initial or promoted, can produce the
   sponsor-failure exit;
 - sponsor promotion is favorable-only, non-overlapping, irreversible, and
@@ -1384,14 +1385,14 @@ Closed by the June fixtures:
   opposing evidence formed after the prior fill/flatten boundary;
 - restart never resumes old L2 state: flat directives are cancelled, losing or
   ambiguous positions are flattened, and profitable positions may retain only
-  breakeven plus fixed-price exit protection;
+  recovery breakeven plus fixed-price exit protection;
 - each new evidence engine is non-actionable for one full configured
   book-lookback interval and required sample count, with warm-up state exposed
   through checkpoint/status;
 - NQ v1 uses vanilla market entries/adds and measures fill quality before
   introducing broker-dependent routing;
-- off-tick weighted breakeven rounds protectively: up for longs and down for
-  shorts;
+- recovery-only off-tick weighted breakeven rounds protectively: up for longs
+  and down for shorts;
 - `FLAT` cancels all working orders for the bound account/symbol before closing
   the complete bound net position;
 - Quantower's visible Strategy Manager log is the operator status channel for
@@ -1400,8 +1401,8 @@ Closed by the June fixtures:
 The remaining decisions should be resolved in this order:
 
 1. base invalidation and retry reconciliation transitions;
-2. partial-fill and breakeven replacement behavior observed against the demo
-   broker;
+2. partial-fill and recovery breakeven replacement behavior observed against
+   the demo broker;
 3. stale-data, disconnect, and end-of-session contracts.
 
 ### Retry Accounting
@@ -1432,8 +1433,7 @@ The remaining decisions should be resolved in this order:
 - Does the conservative non-overlap rule miss a materially useful handoff in
   live/replay evidence? Do not loosen it without a concrete counterexample.
 - Are sponsor-failure market exits accepted promptly enough under live broker
-  conditions for weighted breakeven to remain emergency protection rather than
-  the common exit?
+  conditions without routine weighted-breakeven protection?
 
 ### Price Context
 
@@ -1459,9 +1459,9 @@ The remaining decisions should be resolved in this order:
 - News avoidance belongs to human dispatch windows, but stale-data and exchange
   disconnect behavior must be mechanical and fail closed.
 - Runtime events need a stable schema for candidate, trigger, order, fill,
-  semantic stop, retry, add, breakeven, sponsor promotion/failure, control, and
-  reconciliation records. Human-visible lifecycle messages must remain sparse
-  and deduplicated.
+  semantic stop, retry, add, recovery breakeven, sponsor promotion/failure,
+  control, and reconciliation records. Human-visible lifecycle messages must
+  remain sparse and deduplicated.
 
 ## Next Design Step
 
@@ -1501,7 +1501,7 @@ The right build order from the current spike is:
 8. add gates and asymmetric quantity handling;
 9. sponsor handoff, HF/LF-flat invalidation, and operator-visible lifecycle
    logging;
-10. weighted breakeven plus fixed `HARD_TP` interaction;
+10. recovery breakeven plus fixed `HARD_TP` interaction;
 11. tiny-size live validation on a demo/throwaway account.
 
 The runtime should become reliable one directive family at a time.

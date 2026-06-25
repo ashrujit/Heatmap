@@ -107,8 +107,8 @@ Settled defaults that do not require another question:
 - context range: the smallest envelope containing the order and add ranges;
 - resolutions: `direct_conversion` and `supported_reclaim`;
 - retries: three base reentries;
-- stop grammar: reverse entry resolution, weighted breakeven after leverage,
-  exact-current-sponsor failure flatten, and local-first LF/HF handling (flat
+- stop grammar: reverse entry resolution, current-sponsor failure after
+  leverage, and local-first LF/HF handling (flat
   pause; positioned termination only when sponsor-aligned);
 - activation: now;
 - expiry: 30 minutes.

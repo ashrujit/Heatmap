@@ -62,8 +62,8 @@ spike JSON shape as an alternate parser.
   sponsor may promote only when it is newly owned, fully beyond the current
   sponsor in the favorable direction, and has confirmed favorable
   displacement. Promotion is irreversible; only failure or adverse consumption
-  of the exact current sponsor flattens. Never move the broker weighted-BE stop
-  to a sponsor edge.
+  of the exact current sponsor flattens. Normal campaign leverage does not use
+  broker weighted-BE; BE is recovery-only after sponsor lineage has been lost.
 - Sponsor lineage is explicit in the canonical JSONL audit: promotion opens a
   sponsor interval and the sponsored-position-to-flat transition closes it with
   `sponsor_cleared`, preserving the last sponsor and flatten reason. Clearance

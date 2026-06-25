@@ -477,11 +477,6 @@ namespace ExecAssistantRuntime
                     intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureHardTarget,
                         nowUtc, market, position, "position_fill"));
                 }
-                if (State == RuntimeExecutionState.Leveraged)
-                {
-                    intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureBreakeven,
-                        nowUtc, market, position, "first_or_later_add"));
-                }
                 return intents;
             }
 
@@ -513,8 +508,7 @@ namespace ExecAssistantRuntime
                     intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureHardTarget,
                         nowUtc, market, position, "position_quantity_or_average_changed"));
                 }
-                if (State == RuntimeExecutionState.Leveraged
-                    || State == RuntimeExecutionState.RecoveryProtected)
+                if (State == RuntimeExecutionState.RecoveryProtected)
                 {
                     intents.Add(CreateProtectionIntent(OrderIntentKind.EnsureBreakeven,
                         nowUtc, market, position, "position_quantity_or_average_changed"));

@@ -98,7 +98,10 @@ namespace ExecAssistantRuntime
             "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
             RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        public static TradeDirective ParseTradeDirective(string json, int instanceMaxQuantity)
+        public static TradeDirective ParseTradeDirective(
+            string json,
+            int instanceMaxQuantity,
+            bool allowLegacyWeightedBreakeven = false)
         {
             using JsonDocument document = ParseDocument(json);
             JsonElement root = RequireObject(document.RootElement, "directive");
@@ -216,7 +219,8 @@ namespace ExecAssistantRuntime
             if (maxBaseReentries > 10)
                 throw Invalid("directive.retries.max_base_reentries must not exceed 10");
 
-            ParseStop(RequireObjectProperty(root, "stop", "directive"));
+            ParseStop(RequireObjectProperty(root, "stop", "directive"),
+                allowLegacyWeightedBreakeven);
             (TargetMode targetMode, double targetPrice, string targetReference) = ParseTarget(
                 RequireObjectProperty(root, "target", "directive"), direction);
 
@@ -320,15 +324,19 @@ namespace ExecAssistantRuntime
             }
         }
 
-        private static void ParseStop(JsonElement stop)
+        private static void ParseStop(JsonElement stop, bool allowLegacyWeightedBreakeven)
         {
             EnsureProperties(stop, "directive.stop",
                 new[] { "base", "leveraged", "opposite_failure_object" },
                 new[] { "base", "leveraged", "opposite_failure_object" });
             RequireConstant(RequireString(stop, "base", "directive.stop"),
                 "reverse_entry_resolution", "directive.stop.base");
-            RequireConstant(RequireString(stop, "leveraged", "directive.stop"),
-                "weighted_breakeven", "directive.stop.leveraged");
+            string leveraged = RequireString(stop, "leveraged", "directive.stop");
+            if (leveraged != "current_sponsor_failure"
+                && !(allowLegacyWeightedBreakeven && leveraged == "weighted_breakeven"))
+            {
+                throw Invalid("directive.stop.leveraged must be 'current_sponsor_failure'");
+            }
             RequireConstant(RequireString(stop, "opposite_failure_object", "directive.stop"),
                 "flatten", "directive.stop.opposite_failure_object");
         }

@@ -131,6 +131,16 @@ namespace ExecAssistantRuntime
             Require(directive.Direction == TradeDirection.Long, "directive side");
             Require(directive.TargetMode == TargetMode.HardTp, "target mode");
             Require(directive.AllowedResolutions.Count == 2, "resolution count");
+            string legacyStop = valid.Replace(
+                "\"leveraged\": \"current_sponsor_failure\"",
+                "\"leveraged\": \"weighted_breakeven\"");
+            ExpectInvalid(legacyStop, "legacy leveraged stop grammar");
+            TradeDirective legacyRecovery = DirectiveContracts.ParseTradeDirective(
+                legacyStop,
+                5,
+                allowLegacyWeightedBreakeven: true);
+            Require(legacyRecovery.Id == directive.Id,
+                "legacy leveraged stop grammar remains recovery-readable");
 
             TradeDirective whitespace = DirectiveContracts.ParseTradeDirective(
                 " \r\n" + valid + " \r\n",
@@ -893,7 +903,7 @@ namespace ExecAssistantRuntime
               "retries": { "max_base_reentries": 3 },
               "stop": {
                 "base": "reverse_entry_resolution",
-                "leveraged": "weighted_breakeven",
+                "leveraged": "current_sponsor_failure",
                 "opposite_failure_object": "flatten"
               },
               "target": {

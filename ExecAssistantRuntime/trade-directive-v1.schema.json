@@ -402,7 +402,7 @@
           "const": "reverse_entry_resolution"
         },
         "leveraged": {
-          "const": "weighted_breakeven"
+          "const": "current_sponsor_failure"
         },
         "opposite_failure_object": {
           "const": "flatten"
@@ -481,7 +481,7 @@
       },
       "stop": {
         "base": "reverse_entry_resolution",
-        "leveraged": "weighted_breakeven",
+        "leveraged": "current_sponsor_failure",
         "opposite_failure_object": "flatten"
       },
       "target": {

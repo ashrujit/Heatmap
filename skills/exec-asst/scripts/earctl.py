@@ -221,7 +221,7 @@ def validate_directive(data: dict[str, Any], instance_max_quantity: int | None =
     stop = _keys(root["stop"], "directive.stop", stop_keys, stop_keys)
     expected_stop = {
         "base": "reverse_entry_resolution",
-        "leveraged": "weighted_breakeven",
+        "leveraged": "current_sponsor_failure",
         "opposite_failure_object": "flatten",
     }
     if stop != expected_stop:
@@ -701,7 +701,7 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
         "retries": {"max_base_reentries": args.max_base_reentries},
         "stop": {
             "base": "reverse_entry_resolution",
-            "leveraged": "weighted_breakeven",
+            "leveraged": "current_sponsor_failure",
             "opposite_failure_object": "flatten",
         },
         "target": {
