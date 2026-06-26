@@ -47,7 +47,8 @@ partially attributed futures net position is not safe to manage.
 
 `ExecAssistantRuntime.cs` remains the Strategy entry point. It owns:
 
-- symbol/account settings and connection dependency;
+- execution symbol/account settings, optional market-data symbol setting, and
+  connection dependency;
 - quote, L2, order, trade, and position subscriptions;
 - the serialized worker loop;
 - DOM snapshot acquisition;
@@ -284,7 +285,7 @@ confirmation.
 ## Deferred By Design
 
 - opportunity discovery and all Codex skills;
-- multi-symbol or multi-account operation inside one instance;
+- multi-execution-symbol or multi-account operation inside one instance;
 - automated strategy reversal or reissue;
 - adaptive ES routing or liquidity-aware limit placement;
 - changing LevelLedger or sharing a mutable math library with it.

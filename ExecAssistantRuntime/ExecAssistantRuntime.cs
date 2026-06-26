@@ -19,49 +19,52 @@ namespace ExecAssistantRuntime
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
 
-        [InputParameter("Account", sortIndex: 1)]
+        [InputParameter("Market Data Symbol", sortIndex: 1)]
+        public Symbol MarketDataSymbol;
+
+        [InputParameter("Account", sortIndex: 2)]
         public Account RuntimeAccount;
 
-        [InputParameter("Directive Path", sortIndex: 2)]
+        [InputParameter("Directive Path", sortIndex: 3)]
         public string DirectivePath = @"%USERPROFILE%\Documents\ExecAssistantRuntime\directive.json";
 
-        [InputParameter("Control Path", sortIndex: 3)]
+        [InputParameter("Control Path", sortIndex: 4)]
         public string ControlPath = @"%USERPROFILE%\Documents\ExecAssistantRuntime\control.json";
 
-        [InputParameter("Event Log Path", sortIndex: 4)]
+        [InputParameter("Event Log Path", sortIndex: 5)]
         public string EventLogPath = @"%USERPROFILE%\Documents\ExecAssistantRuntime\events.jsonl";
 
-        [InputParameter("Checkpoint Path", sortIndex: 5)]
+        [InputParameter("Checkpoint Path", sortIndex: 6)]
         public string CheckpointPath = @"%USERPROFILE%\Documents\ExecAssistantRuntime\checkpoint.json";
 
-        [InputParameter("Trading Enabled", sortIndex: 6)]
+        [InputParameter("Trading Enabled", sortIndex: 7)]
         public bool TradingEnabled = false;
 
-        [InputParameter("Instance Max Quantity", sortIndex: 7,
+        [InputParameter("Instance Max Quantity", sortIndex: 8,
             minimum: 1, maximum: 100, increment: 1, decimalPlaces: 0)]
         public int InstanceMaxQuantity = 5;
 
-        [InputParameter("Worker Poll (ms)", sortIndex: 8,
+        [InputParameter("Worker Poll (ms)", sortIndex: 9,
             minimum: 100, maximum: 5000, increment: 100, decimalPlaces: 0)]
         public int WorkerPollMs = 250;
 
-        [InputParameter("Book Sample (ms)", sortIndex: 9,
+        [InputParameter("Book Sample (ms)", sortIndex: 10,
             minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
         public int BookSampleMs = 1000;
 
-        [InputParameter("L2 Freshness (sec)", sortIndex: 10,
+        [InputParameter("L2 Freshness (sec)", sortIndex: 11,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
-        [InputParameter("L2 Stale/Mismatch Grace (sec)", sortIndex: 11,
+        [InputParameter("L2 Stale/Mismatch Grace (sec)", sortIndex: 12,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookUnusableGraceSec = 5;
 
-        [InputParameter("Quote Freshness (ms)", sortIndex: 12,
+        [InputParameter("Quote Freshness (ms)", sortIndex: 13,
             minimum: 250, maximum: 10000, increment: 250, decimalPlaces: 0)]
         public int QuoteFreshnessMs = 2000;
 
-        [InputParameter("Run Startup Self Tests", sortIndex: 13)]
+        [InputParameter("Run Startup Self Tests", sortIndex: 14)]
         public bool RunStartupSelfTests = true;
 
         [InputParameter("LL Book Lookback (sec)", sortIndex: 20,
@@ -122,6 +125,7 @@ namespace ExecAssistantRuntime
         private ExecutionEvidenceEngine _evidence;
         private ExecutionCoordinator _coordinator;
         private QuantowerOrderGateway _gateway;
+        private Symbol _marketDataSymbol;
         private GetDepthOfMarketParameters _domParameters;
         private volatile bool _running;
         private int _workerBusy;
@@ -158,9 +162,20 @@ namespace ExecAssistantRuntime
         }
 
         public override string[] MonitoringConnectionsIds
-            => RuntimeSymbol == null || string.IsNullOrWhiteSpace(RuntimeSymbol.ConnectionId)
-                ? Array.Empty<string>()
-                : new[] { RuntimeSymbol.ConnectionId };
+        {
+            get
+            {
+                Symbol dataSymbol = _marketDataSymbol ?? MarketDataSymbol ?? RuntimeSymbol;
+                return new[]
+                    {
+                        RuntimeSymbol?.ConnectionId,
+                        dataSymbol?.ConnectionId,
+                    }
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+            }
+        }
 
         protected override void OnRun()
         {
@@ -170,9 +185,6 @@ namespace ExecAssistantRuntime
                 return;
             }
 
-            _tickSize = double.IsFinite(RuntimeSymbol.TickSize) && RuntimeSymbol.TickSize > 0
-                ? RuntimeSymbol.TickSize
-                : 0.25;
             try
             {
                 ResetForRun();
@@ -213,8 +225,18 @@ namespace ExecAssistantRuntime
                 _workerTimer = new Timer(_ => Worker(), null, interval, interval);
                 _events.Write("runtime_started",
                     ("symbol", RuntimeSymbol.Name),
+                    ("execution_symbol", RuntimeSymbol.Name),
+                    ("execution_symbol_id", RuntimeSymbol.Id),
+                    ("execution_connection_id", RuntimeSymbol.ConnectionId),
+                    ("market_data_symbol", _marketDataSymbol.Name),
+                    ("market_data_symbol_id", _marketDataSymbol.Id),
+                    ("market_data_connection_id", _marketDataSymbol.ConnectionId),
+                    ("market_data_is_execution_symbol",
+                        SameSymbol(RuntimeSymbol, _marketDataSymbol)),
                     ("account", RuntimeAccount.Name),
                     ("tick_size", _tickSize),
+                    ("execution_tick_size", EffectiveTickSize(RuntimeSymbol)),
+                    ("market_data_tick_size", EffectiveTickSize(_marketDataSymbol)),
                     ("trading_enabled", _runTradingEnabled),
                     ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
                     ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
@@ -222,7 +244,8 @@ namespace ExecAssistantRuntime
                     ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
                     ("directive_path", ExpandPath(DirectivePath)),
                     ("control_path", ExpandPath(ControlPath)));
-                Log($"Runtime started for {RuntimeSymbol.Name}/{RuntimeAccount.Name}; "
+                Log($"Runtime started for exec {RuntimeSymbol.Name}, "
+                    + $"data {_marketDataSymbol.Name}, account {RuntimeAccount.Name}; "
                     + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
             }
             catch (Exception ex)
@@ -308,8 +331,12 @@ namespace ExecAssistantRuntime
         {
             var diagnostic = new BookSampleDiagnostic
             {
-                SymbolBid = double.IsFinite(RuntimeSymbol.Bid) ? RuntimeSymbol.Bid : null,
-                SymbolAsk = double.IsFinite(RuntimeSymbol.Ask) ? RuntimeSymbol.Ask : null,
+                SymbolBid = double.IsFinite(_marketDataSymbol.Bid)
+                    ? _marketDataSymbol.Bid
+                    : null,
+                SymbolAsk = double.IsFinite(_marketDataSymbol.Ask)
+                    ? _marketDataSymbol.Ask
+                    : null,
             };
             bool l2Fresh;
             lock (_marketGate)
@@ -472,6 +499,7 @@ namespace ExecAssistantRuntime
                     : update.LastUsableUtc.ToString("O", CultureInfo.InvariantCulture)),
                 ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
                 ("confirmation_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                ("market_data_symbol", _marketDataSymbol?.Name),
                 ("last_l2_utc", diagnostic.LastL2Utc?.ToString("O",
                     CultureInfo.InvariantCulture)),
                 ("l2_age_ms", diagnostic.L2AgeMs),
@@ -986,6 +1014,7 @@ namespace ExecAssistantRuntime
                 ("latest_reason", continuity.LatestReason),
                 ("unusable_seconds", continuity.UnusableSeconds),
                 ("confirmation_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                ("market_data_symbol", _marketDataSymbol?.Name),
                 ("l2_age_ms", diagnostic.L2AgeMs),
                 ("bid_levels", diagnostic.BidLevels),
                 ("ask_levels", diagnostic.AskLevels),
@@ -1465,6 +1494,12 @@ namespace ExecAssistantRuntime
                 LastDirectiveJson = _acceptedDirectiveRaw ?? _checkpoint?.LastDirectiveJson,
                 ProcessedControlIds = _processedControlOrder.ToList(),
                 TradingEnabled = _runTradingEnabled,
+                ExecutionSymbol = RuntimeSymbol?.Name,
+                ExecutionSymbolId = RuntimeSymbol?.Id,
+                ExecutionConnectionId = RuntimeSymbol?.ConnectionId,
+                MarketDataSymbol = _marketDataSymbol?.Name,
+                MarketDataSymbolId = _marketDataSymbol?.Id,
+                MarketDataConnectionId = _marketDataSymbol?.ConnectionId,
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
                 WorkerPollMs = Math.Max(100, WorkerPollMs),
                 EvidenceState = _evidenceState,
@@ -1501,7 +1536,7 @@ namespace ExecAssistantRuntime
             snapshot = null;
             try
             {
-                DepthOfMarketAggregatedCollections dom = RuntimeSymbol.DepthOfMarket?
+                DepthOfMarketAggregatedCollections dom = _marketDataSymbol.DepthOfMarket?
                     .GetDepthOfMarketAggregatedCollections(_domParameters);
                 if (dom == null)
                 {
@@ -1841,8 +1876,8 @@ namespace ExecAssistantRuntime
 
         private void Subscribe()
         {
-            RuntimeSymbol.NewQuote += Symbol_NewQuote;
-            RuntimeSymbol.NewLevel2 += Symbol_NewLevel2;
+            _marketDataSymbol.NewQuote += Symbol_NewQuote;
+            _marketDataSymbol.NewLevel2 += Symbol_NewLevel2;
             Core.Instance.OrderAdded += Core_OrderAdded;
             Core.Instance.OrderRemoved += Core_OrderRemoved;
             Core.Instance.TradeAdded += Core_TradeAdded;
@@ -1854,8 +1889,18 @@ namespace ExecAssistantRuntime
 
         private void Unsubscribe()
         {
-            try { RuntimeSymbol.NewQuote -= Symbol_NewQuote; } catch { }
-            try { RuntimeSymbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
+            try
+            {
+                if (_marketDataSymbol != null)
+                    _marketDataSymbol.NewQuote -= Symbol_NewQuote;
+            }
+            catch { }
+            try
+            {
+                if (_marketDataSymbol != null)
+                    _marketDataSymbol.NewLevel2 -= Symbol_NewLevel2;
+            }
+            catch { }
             try { Core.Instance.OrderAdded -= Core_OrderAdded; } catch { }
             try { Core.Instance.OrderRemoved -= Core_OrderRemoved; } catch { }
             try { Core.Instance.TradeAdded -= Core_TradeAdded; } catch { }
@@ -2045,6 +2090,12 @@ namespace ExecAssistantRuntime
                 Log("No symbol selected.", StrategyLoggingLevel.Error);
                 return false;
             }
+            _marketDataSymbol = MarketDataSymbol ?? RuntimeSymbol;
+            if (_marketDataSymbol == null)
+            {
+                Log("No market data symbol selected.", StrategyLoggingLevel.Error);
+                return false;
+            }
             RuntimeAccount ??= RuntimeSymbol.GetDefaultAccount();
             if (RuntimeAccount == null)
             {
@@ -2058,8 +2109,33 @@ namespace ExecAssistantRuntime
                     StrategyLoggingLevel.Error);
                 return false;
             }
+            double executionTickSize = EffectiveTickSize(RuntimeSymbol);
+            double marketDataTickSize = EffectiveTickSize(_marketDataSymbol);
+            if (!TickSizesMatch(executionTickSize, marketDataTickSize))
+            {
+                Log($"Execution symbol {RuntimeSymbol.Name} tick size "
+                    + $"{executionTickSize:R} does not match market data symbol "
+                    + $"{_marketDataSymbol.Name} tick size {marketDataTickSize:R}.",
+                    StrategyLoggingLevel.Error);
+                return false;
+            }
+            _tickSize = marketDataTickSize;
             return true;
         }
+
+        private static double EffectiveTickSize(Symbol symbol)
+            => symbol != null && double.IsFinite(symbol.TickSize) && symbol.TickSize > 0
+                ? symbol.TickSize
+                : 0.25;
+
+        private static bool TickSizesMatch(double left, double right)
+            => Math.Abs(left - right) <= Math.Max(1e-9, Math.Max(left, right) * 1e-9);
+
+        private static bool SameSymbol(Symbol left, Symbol right)
+            => left != null && right != null
+                && string.Equals(left.Id, right.Id, StringComparison.Ordinal)
+                && string.Equals(left.ConnectionId, right.ConnectionId,
+                    StringComparison.Ordinal);
 
         private ExecutionEvidenceEngine NewEvidenceEngine()
             => new(_tickSize, new EvidenceEngineSettings

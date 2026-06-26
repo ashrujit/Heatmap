@@ -48,13 +48,22 @@ for the life of the application.
 
 Required:
 
-- `Symbol`: the one instrument owned by this instance;
+- `Symbol`: the execution instrument owned by this instance;
+- `Market Data Symbol`: optional quote/L2/DOM source for evidence. Leave it
+  blank to use `Symbol`; set it to `NQU6` when executing `MNQU6` from the NQ
+  book;
 - `Account`: use a dedicated demo/throwaway account for initial validation;
 - `Instance Max Quantity`: hard ceiling above all directive quantities.
 
 Directive activation requires both a flat bound account/symbol position and no
 working orders on that pair. Manual orders and orphan runtime orders are not
 adopted; cancel them before dispatching a new directive.
+
+Only `Symbol` and `Account` define the bound execution pair. `Market Data
+Symbol` is captured at strategy start and drives `NewQuote`, `NewLevel2`, DOM
+snapshots, L1/DOM agreement checks, and evidence math. It does not change order,
+position, recovery, or `FLAT` scope. The execution and data symbols must share
+the same tick size, or startup fails closed.
 
 Safety:
 
@@ -79,6 +88,8 @@ events but are not Strategy Manager errors.
 `Trading Enabled` is captured when the strategy starts so the runtime and order
 gateway cannot disagree about mode. Stop and restart the strategy after changing
 it; changing the setting on a running instance has no effect until restart.
+`Market Data Symbol` is also captured at strategy start; stop and restart after
+changing it.
 
 The LL-prefixed settings intentionally mirror LevelLedger's current ownership
 defaults. Do not tune them casually. Runtime and visual behavior may diverge if
@@ -98,9 +109,10 @@ the repository schemas exactly. Symbol and account never belong in JSON.
 
 Use `skills\exec-asst\scripts\earctl.py status` for the machine-readable
 operator snapshot. Its checkpoint heartbeat carries the captured trading mode,
-instance quantity ceiling, position, active directive identity, and admission
-blockers. `directive.json` is only the latest attempted input; the checkpoint's
-last accepted JSON is authoritative for reissue.
+execution symbol, market-data symbol, instance quantity ceiling, position,
+active directive identity, and admission blockers. `directive.json` is only the
+latest attempted input; the checkpoint's last accepted JSON is authoritative
+for reissue.
 
 The status snapshot also reports evidence state, epoch reason/start, accumulated
 samples, and warm-up remaining. `AwaitingBook` means no usable sample has
@@ -109,8 +121,9 @@ started the epoch; `Warming` is non-actionable; `Ready` permits evidence action;
 
 ## First Shadow Run
 
-1. Restart Quantower and create one strategy instance for NQ and the demo
-   account.
+1. Restart Quantower and create one strategy instance for the execution symbol
+   and demo account. For MNQ execution from NQ evidence, set `Symbol=MNQU6` and
+   `Market Data Symbol=NQU6`.
 2. Leave `Trading Enabled` unchecked.
 3. Start the strategy before the intended directive window. The runtime now
    enforces one full configured book-lookback interval (30 seconds by default)

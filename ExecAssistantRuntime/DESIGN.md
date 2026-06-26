@@ -149,12 +149,19 @@ diverges, document why.
 
 Runtime execution should use live Quantower data directly:
 
-- L1 quote stream for executable best bid/ask used by order routing,
+- L1 quote stream for the selected market-data symbol's best bid/ask used by
+  order routing decisions,
   profitability, and broker-protection decisions;
 - trade stream for prints and aggressor flow;
-- L2 heartbeat and sampled DOM, including DOM-derived best prices and midpoint,
-  for all ownership/failure math;
+- L2 heartbeat and sampled DOM from the selected market-data symbol, including
+  DOM-derived best prices and midpoint, for all ownership/failure math;
 - Quantower order/position/trade collections for execution state.
+
+The execution symbol/account pair remains the order and position scope. The
+market-data symbol is a separate, explicit data-provenance setting so MNQ can be
+executed from the NQ book without relying on chart-only symbol mapping. Both
+symbols must share a tick size because all directive prices, evidence bands,
+and broker orders live on one price ladder.
 
 L1-versus-DOM agreement is a stale/queued-book guard only. L1 must never be
 substituted into an accepted evidence snapshot; if L2 cannot provide the book,
@@ -358,9 +365,10 @@ validator must additionally reject:
 - `HARD_TP` directives with no executable runway at acceptance;
 - a reused directive or command id with a different payload digest.
 
-Symbol and account are absent by design. They are bound to the Quantower
-strategy instance. Target prices remain mandatory in v1; a label such as `IBH`
-or `rail` is context, not a substitute for price.
+Symbol and account are absent by design. Execution symbol, optional market-data
+symbol, and account are bound to the Quantower strategy instance. Target prices
+remain mandatory in v1; a label such as `IBH` or `rail` is context, not a
+substitute for price.
 
 ### Directive Lineage
 

@@ -21,9 +21,13 @@ spike JSON shape as an alternate parser.
 - JSON file polling is used instead of `FileSystemWatcher`.
   Strategy has no `OnUpdate`, and polling avoids missed Windows watcher events
   during atomic writes or editor temp-file saves.
-- The selected Quantower `Symbol` and `Account` settings are authoritative.
-  Directives must not contain symbol or account because those values cannot
-  drift from the running strategy instance.
+- The selected Quantower execution `Symbol` and `Account` settings are
+  authoritative. Directives must not contain symbol or account because those
+  values cannot drift from the running strategy instance.
+- `Market Data Symbol` may differ from the execution `Symbol` only to make the
+  quote/L2/DOM source explicit, for example trading MNQ from NQ evidence.
+  Orders, positions, recovery, and `FLAT` remain scoped only to the execution
+  account/symbol pair.
 - Directive activation requires a flat bound position and zero working orders
   on the bound account/symbol. The runtime never adopts discretionary or orphan
   orders into a new directive's stop and protection lifecycle.

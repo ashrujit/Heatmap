@@ -528,6 +528,12 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
     if not isinstance(trading_enabled, bool) and runtime_event is not None:
         trading_enabled = runtime_event.get("trading_enabled")
     mode = "LIVE" if trading_enabled is True else "SHADOW" if trading_enabled is False else None
+    execution_symbol = checkpoint.get("execution_symbol") if checkpoint else None
+    market_data_symbol = checkpoint.get("market_data_symbol") if checkpoint else None
+    if runtime_event is not None:
+        execution_symbol = execution_symbol or runtime_event.get("execution_symbol") \
+            or runtime_event.get("symbol")
+        market_data_symbol = market_data_symbol or runtime_event.get("market_data_symbol")
 
     position_quantity = checkpoint.get("position_quantity", 0) if checkpoint else 0
     working_count = checkpoint.get("bound_working_order_count", 0) if checkpoint else 0
@@ -572,6 +578,8 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
             "checkpoint_age_seconds": None if age is None else round(age, 3),
             "state": state,
             "mode": mode,
+            "execution_symbol": execution_symbol,
+            "market_data_symbol": market_data_symbol,
             "instance_max_quantity": checkpoint.get("instance_max_quantity") if checkpoint else None,
         },
         "directive": {

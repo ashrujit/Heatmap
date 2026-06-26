@@ -15,6 +15,12 @@ namespace ExecAssistantRuntime
         public string LastDirectiveJson { get; set; }
         public List<string> ProcessedControlIds { get; set; } = new();
         public bool? TradingEnabled { get; set; }
+        public string ExecutionSymbol { get; set; }
+        public string ExecutionSymbolId { get; set; }
+        public string ExecutionConnectionId { get; set; }
+        public string MarketDataSymbol { get; set; }
+        public string MarketDataSymbolId { get; set; }
+        public string MarketDataConnectionId { get; set; }
         public int? InstanceMaxQuantity { get; set; }
         public int? WorkerPollMs { get; set; }
         public string EvidenceState { get; set; }

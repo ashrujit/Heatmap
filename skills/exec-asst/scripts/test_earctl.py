@@ -57,6 +57,8 @@ class EarctlTests(unittest.TestCase):
             "last_directive_id": None if directive is None else directive["id"],
             "last_directive_json": None if directive is None else json.dumps(directive),
             "trading_enabled": False,
+            "execution_symbol": "MNQU6",
+            "market_data_symbol": "NQU6",
             "instance_max_quantity": 5,
             "worker_poll_ms": 250,
             "evidence_state": "Ready",
@@ -264,6 +266,8 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual("Idle", status["runtime"]["state"])
             self.assertEqual("running", status["runtime"]["health"])
             self.assertEqual("SHADOW", status["runtime"]["mode"])
+            self.assertEqual("MNQU6", status["runtime"]["execution_symbol"])
+            self.assertEqual("NQU6", status["runtime"]["market_data_symbol"])
             self.assertEqual("Ready", status["evidence"]["state"])
             self.assertEqual(31, status["evidence"]["sample_count"])
             self.assertEqual("entry_order_unresolved",
