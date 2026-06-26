@@ -18,6 +18,7 @@ from uuid import uuid4
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 OFFSET_RE = re.compile(r"(?:Z|[+-][0-9]{2}:[0-9]{2})$")
 RESOLUTIONS = {"direct_conversion", "supported_reclaim"}
+LINEAGE_MODES = {"NEW", "CONTINUE"}
 ACTIVE_RUNTIME_STATES = {
     "Waiting", "Armed", "Paused", "BaseOnly", "Leveraged", "RecoveryProtected", "Halting",
 }
@@ -141,7 +142,7 @@ def validate_directive(data: dict[str, Any], instance_max_quantity: int | None =
         "schema_version", "kind", "id", "status", "created_at", "side",
         "window", "entry", "sizing", "retries", "stop", "target",
     }
-    root = _keys(data, "directive", required | {"notes"}, required)
+    root = _keys(data, "directive", required | {"lineage", "notes"}, required)
     if root["schema_version"] != 1 or isinstance(root["schema_version"], bool):
         raise ContractError("directive.schema_version must equal 1")
     if root["kind"] != "TRADE_DIRECTIVE" or root["status"] != "active":
@@ -244,6 +245,19 @@ def validate_directive(data: dict[str, Any], instance_max_quantity: int | None =
         _optional_text(target["reference"], "target.reference", 128)
     if "notes" in root:
         _optional_text(root["notes"], "directive.notes", 4096)
+    if "lineage" in root and root["lineage"] is not None:
+        lineage = _keys(root["lineage"], "directive.lineage",
+                        {"mode", "parent_directive_id"}, {"mode"})
+        mode = lineage["mode"]
+        if mode not in LINEAGE_MODES:
+            raise ContractError("directive.lineage.mode must be NEW or CONTINUE")
+        parent = lineage.get("parent_directive_id")
+        if mode == "NEW":
+            if parent is not None:
+                raise ContractError(
+                    "directive.lineage.parent_directive_id must be null or absent for NEW")
+        else:
+            _identifier(parent, "directive.lineage.parent_directive_id")
 
 
 def validate_control(data: dict[str, Any]) -> None:
@@ -423,6 +437,7 @@ def directive_summary(data: dict[str, Any] | None) -> dict[str, Any] | None:
         "sizing": data.get("sizing"),
         "retries": data.get("retries"),
         "target": data.get("target"),
+        "lineage": data.get("lineage"),
     }
 
 
@@ -712,6 +727,15 @@ def build_directive(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.target_reference:
         data["target"]["reference"] = args.target_reference
+    lineage_mode = getattr(args, "lineage_mode", "NEW")
+    parent_id = getattr(args, "parent_directive_id", None)
+    if lineage_mode == "CONTINUE":
+        data["lineage"] = {
+            "mode": "CONTINUE",
+            "parent_directive_id": parent_id,
+        }
+    elif parent_id is not None:
+        raise ContractError("--parent-directive-id requires --lineage-mode CONTINUE")
     if args.notes:
         data["notes"] = args.notes
     return data
@@ -733,9 +757,6 @@ def command_validate(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_reissue(args: argparse.Namespace) -> dict[str, Any]:
     snapshot = status_snapshot(args.runtime_dir)
-    if not args.dry_run and snapshot["blockers"]:
-        codes = ", ".join(item["code"] for item in snapshot["blockers"])
-        raise ContractError(f"reissue blocked by runtime state: {codes}")
     source = getattr(args, "source", None)
     if source is not None:
         data = copy.deepcopy(load_json(source))
@@ -746,12 +767,31 @@ def command_reissue(args: argparse.Namespace) -> dict[str, Any]:
         data = copy.deepcopy(accepted_directive_from_checkpoint(load_json(checkpoint_path)))
     ceiling = runtime_instance_ceiling(args.runtime_dir, args.instance_max_quantity)
     validate_directive(data, ceiling)
+    continue_lineage = bool(getattr(args, "continue_lineage", False))
+    parent_id = data["id"]
+    blockers = snapshot["blockers"]
+    if continue_lineage:
+        blockers = [
+            item for item in blockers
+            if not (item["code"] == "prior_directive_active"
+                    and item.get("directive_id") == parent_id)
+        ]
+    if not args.dry_run and blockers:
+        codes = ", ".join(item["code"] for item in blockers)
+        raise ContractError(f"reissue blocked by runtime state: {codes}")
     current = now_et()
     data["id"] = args.id or new_id("reissue", data["side"])
     data["created_at"] = timestamp(current)
     data["window"]["not_before"] = timestamp(current)
     data["window"]["expires_at"] = timestamp(
         current + timedelta(minutes=args.ttl_minutes))
+    if continue_lineage:
+        data["lineage"] = {
+            "mode": "CONTINUE",
+            "parent_directive_id": parent_id,
+        }
+    else:
+        data.pop("lineage", None)
     note = args.reason.strip() if args.reason else ""
     if note:
         prior = data.get("notes", "").strip()
@@ -849,6 +889,9 @@ def parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--resolution", action="append", choices=sorted(RESOLUTIONS))
     dispatch.add_argument("--target-price", type=float, required=True)
     dispatch.add_argument("--target-reference")
+    dispatch.add_argument("--lineage-mode", choices=sorted(LINEAGE_MODES), default="NEW")
+    dispatch.add_argument("--parent-directive-id",
+                          help="required when --lineage-mode CONTINUE")
     dispatch.add_argument("--not-before")
     dispatch.add_argument("--ttl-minutes", type=int, default=30)
     dispatch.add_argument("--id")
@@ -863,6 +906,8 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--ttl-minutes", type=int, default=30)
         command.add_argument("--id")
         command.add_argument("--reason")
+        command.add_argument("--continue-lineage", action="store_true",
+                             help="emit lineage.mode CONTINUE using the source directive id")
         command.add_argument("--wait-seconds", type=float, default=3.0)
         command.add_argument("--dry-run", action="store_true")
 

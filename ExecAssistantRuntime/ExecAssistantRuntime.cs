@@ -527,6 +527,47 @@ namespace ExecAssistantRuntime
                 return;
             }
 
+            ContinuationContext continuation = null;
+            if (directive.Lineage?.IsContinuation == true)
+            {
+                if (!_coordinator.TryPrepareContinuation(
+                    directive,
+                    out continuation,
+                    out string continuationReason))
+                {
+                    _events.Write("directive_rejected",
+                        ("directive_id", directive.Id),
+                        ("reason", continuationReason),
+                        ("parent_directive_id", directive.Lineage.ParentDirectiveId));
+                    LogOperator($"Directive {directive.Id} rejected: {continuationReason}.",
+                        error: true);
+                    return;
+                }
+
+                EvidenceSide adverse = directive.Direction == TradeDirection.Long
+                    ? EvidenceSide.Supply
+                    : EvidenceSide.Demand;
+                if (ExecutionCoordinator.HasContinuationBoundaryCounterEvidence(
+                    directive.Direction,
+                    continuation,
+                    _evidence.LiveRails(adverse),
+                    out EvidenceBandView counter))
+                {
+                    _events.Write("directive_rejected",
+                        ("directive_id", directive.Id),
+                        ("reason", "continuation_boundary_counter_evidence"),
+                        ("parent_directive_id", continuation.ParentDirectiveId),
+                        ("band_id", counter.Id),
+                        ("band_side", counter.Side.ToString()),
+                        ("band_lower", counter.MinTick * _tickSize),
+                        ("band_upper", counter.MaxTick * _tickSize));
+                    LogOperator($"Directive {directive.Id} rejected: continuation "
+                        + $"counter-evidence beyond parent boundary (id={counter.Id}).",
+                        error: true);
+                    return;
+                }
+            }
+
             if (_blockedDirectiveIds.Contains(directive.Id))
             {
                 _events.Write("directive_rejected",
@@ -574,13 +615,19 @@ namespace ExecAssistantRuntime
             }
             if (active != null && !IsCoordinatorTerminal())
             {
-                _events.Write("directive_rejected",
-                    ("directive_id", directive.Id),
-                    ("reason", "prior_directive_active"),
-                    ("active_directive_id", active.Id));
-                LogOperator($"Directive {directive.Id} rejected: directive {active.Id} is active.",
-                    error: true);
-                return;
+                bool replacesContinuationParent = continuation != null
+                    && string.Equals(active.Id, continuation.ParentDirectiveId,
+                        StringComparison.Ordinal);
+                if (!replacesContinuationParent)
+                {
+                    _events.Write("directive_rejected",
+                        ("directive_id", directive.Id),
+                        ("reason", "prior_directive_active"),
+                        ("active_directive_id", active.Id));
+                    LogOperator($"Directive {directive.Id} rejected: directive {active.Id} is active.",
+                        error: true);
+                    return;
+                }
             }
             ExecutableMarket market = SnapshotMarket(DateTime.UtcNow);
             if (directive.TargetMode == TargetMode.HardTp && market.IsValid)
@@ -606,7 +653,8 @@ namespace ExecAssistantRuntime
             _coordinator.AcceptDirective(
                 directive,
                 DateTime.UtcNow,
-                _evidence.HeldFailureObjects().Select(b => b.Id));
+                _evidence.HeldFailureObjects().Select(b => b.Id),
+                continuation);
             _lastLoggedSponsorVersion = 0;
             _coordinator.InitializeObservedPosition(position);
             _acceptedDirectiveRaw = json;
@@ -628,12 +676,23 @@ namespace ExecAssistantRuntime
                 ("max_position_quantity", directive.MaxPositionQuantity),
                 ("target_mode", directive.TargetMode.ToString()),
                 ("target_price", directive.TargetPrice),
+                ("lineage_mode", directive.Lineage?.Mode.ToString()),
+                ("parent_directive_id", directive.Lineage?.ParentDirectiveId),
                 ("evidence_state", _evidenceState),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
                 + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
                 + $"{directive.TargetMode}={directive.TargetPrice:R}, "
                 + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
+            if (continuation != null)
+            {
+                IReadOnlyList<OrderIntent> seeded = _coordinator.SeedContinuation(
+                    DateTime.UtcNow,
+                    market,
+                    position,
+                    _evidence);
+                ExecuteIntents(seeded, position, market);
+            }
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
         }
 
@@ -941,6 +1000,7 @@ namespace ExecAssistantRuntime
                 + $"position_qty={(position?.Quantity ?? 0):R}.", error: true);
             _evidence = NewEvidenceEngine();
             ResetEvidenceEpoch("forward_data_loss");
+            _coordinator.BreakContinuationLineage();
             _hadEvidenceSample = false;
             _evidenceActionsPaused = true;
 

@@ -131,6 +131,29 @@ namespace ExecAssistantRuntime
             Require(directive.Direction == TradeDirection.Long, "directive side");
             Require(directive.TargetMode == TargetMode.HardTp, "target mode");
             Require(directive.AllowedResolutions.Count == 2, "resolution count");
+            Require(directive.Lineage?.Mode == DirectiveLineageMode.New,
+                "default directive lineage is NEW");
+            string continuationJson = valid.Replace(
+                "\"notes\": \"self test\"",
+                "\"lineage\": { \"mode\": \"CONTINUE\", "
+                + "\"parent_directive_id\": \"selftest-parent-01\" }, "
+                + "\"notes\": \"self test\"");
+            TradeDirective continuation = DirectiveContracts.ParseTradeDirective(
+                continuationJson,
+                5);
+            Require(continuation.Lineage.IsContinuation
+                    && continuation.Lineage.ParentDirectiveId == "selftest-parent-01",
+                "continuation lineage parses parent id");
+            ExpectInvalid(valid.Replace(
+                    "\"notes\": \"self test\"",
+                    "\"lineage\": { \"mode\": \"CONTINUE\" }, \"notes\": \"self test\""),
+                "continuation requires parent id");
+            ExpectInvalid(valid.Replace(
+                    "\"notes\": \"self test\"",
+                    "\"lineage\": { \"mode\": \"NEW\", "
+                    + "\"parent_directive_id\": \"selftest-parent-01\" }, "
+                    + "\"notes\": \"self test\""),
+                "NEW lineage rejects parent id");
             string legacyStop = valid.Replace(
                 "\"leveraged\": \"current_sponsor_failure\"",
                 "\"leveraged\": \"weighted_breakeven\"");
@@ -439,6 +462,8 @@ namespace ExecAssistantRuntime
 
             SponsorTests(directive, now, market, evidence);
             ShortSponsorTests(now, market, evidence);
+            ContinuationTests(directive, now, market, evidence);
+            StaleDirectRetestTests(directive, now);
 
             var candidateEntry = new ResolutionContext { SupportObjectId = 77 };
             var consumedOpposite = new EvidenceBandView
@@ -455,6 +480,11 @@ namespace ExecAssistantRuntime
                     RuntimeExecutionState.Armed,
                     RuntimePosition.Flat),
                 "pending add is invalid after base position becomes flat");
+            Require(!ExecutionCoordinator.PendingIntentMatchesState(
+                    false,
+                    RuntimeExecutionState.BaseOnly,
+                    basePosition),
+                "pending base is invalid after base entry fills");
 
             var retryCoordinator = new ExecutionCoordinator(0.25);
             retryCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
@@ -479,6 +509,193 @@ namespace ExecAssistantRuntime
             }
             Require(retryCoordinator.State == RuntimeExecutionState.Completed,
                 "submitted base attempts exhaust retry allowance");
+        }
+
+        private static void StaleDirectRetestTests(
+            TradeDirective directive,
+            DateTime now)
+        {
+            var coordinator = new ExecutionCoordinator(0.25);
+            var evidence = new ExecutionEvidenceEngine(0.25);
+            DateTime seedUtc = now.AddMinutes(5);
+            EvidenceTransition pendingRoot = BuildConsumedDemandRail(
+                evidence, seedUtc, 30000);
+            var farMarket = new ExecutableMarket
+            {
+                TimeUtc = pendingRoot.TimeUtc,
+                QuoteUtc = pendingRoot.TimeUtc,
+                Bid = 30503.75,
+                Ask = 30504.00,
+            };
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+            Require(coordinator.ProcessEvidence(
+                    new[] { pendingRoot },
+                    pendingRoot.TimeUtc,
+                    farMarket,
+                    RuntimePosition.Flat,
+                    evidence).Count == 0,
+                "distant direct conversion waits for retest");
+
+            EvidenceTransition separateBase = ConsumedDemand(
+                id: 9001,
+                formedUtc: pendingRoot.TimeUtc.AddSeconds(1),
+                eventUtc: pendingRoot.TimeUtc.AddSeconds(12),
+                lower: 30500,
+                upper: 30501);
+            OrderIntent baseIntent = coordinator.ProcessEvidence(
+                new[] { separateBase },
+                separateBase.TimeUtc,
+                farMarket,
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(baseIntent?.Kind == OrderIntentKind.EnterBase,
+                "separate base can fill while direct retest is pending");
+            coordinator.OnOrderAttemptResult(baseIntent, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "stale-direct-retest-selftest",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = 30504,
+            };
+            coordinator.OnPositionChanged(
+                basePosition,
+                separateBase.TimeUtc.AddSeconds(1),
+                farMarket);
+
+            var retestMarket = new ExecutableMarket
+            {
+                TimeUtc = separateBase.TimeUtc.AddSeconds(2),
+                QuoteUtc = separateBase.TimeUtc.AddSeconds(2),
+                Bid = 30000.25,
+                Ask = 30000.50,
+            };
+            Require(coordinator.Tick(
+                    retestMarket.TimeUtc,
+                    retestMarket,
+                    basePosition,
+                    evidence).Count == 0,
+                "flat direct retest is stale after base fill");
+        }
+
+        private static void ContinuationTests(
+            TradeDirective directive,
+            DateTime now,
+            ExecutableMarket market,
+            ExecutionEvidenceEngine evidence)
+        {
+            string continuationJson = ValidDirectiveJson()
+                .Replace("selftest-long-01", "selftest-long-continue-01")
+                .Replace(
+                    "\"notes\": \"self test\"",
+                    "\"lineage\": { \"mode\": \"CONTINUE\", "
+                    + "\"parent_directive_id\": \"selftest-long-01\" }, "
+                    + "\"notes\": \"self test\"");
+            TradeDirective child = DirectiveContracts.ParseTradeDirective(
+                continuationJson,
+                5);
+
+            var noClear = new ExecutionCoordinator(0.25);
+            noClear.AcceptDirective(directive, now, Array.Empty<int>());
+            Require(!noClear.TryPrepareContinuation(child, out _, out string noClearReason)
+                    && noClearReason == "continuation_parent_has_no_protective_clear",
+                "CONTINUE requires a protective parent clear");
+
+            var parent = new ExecutionCoordinator(0.25);
+            parent.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent parentEntry = parent.ProcessEvidence(
+                new[]
+                {
+                    ConsumedDemand(700, now.AddSeconds(1), now.AddSeconds(12),
+                        30500, 30501),
+                },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).Single();
+            parent.OnOrderAttemptResult(parentEntry, accepted: true);
+            var parentPosition = new RuntimePosition
+            {
+                PositionId = "continuation-parent",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = 30504,
+            };
+            parent.OnPositionChanged(parentPosition, now.AddSeconds(13), market);
+            OrderIntent parentFlat = parent.ProcessEvidence(
+                new[]
+                {
+                    RailTransition(EvidenceTransitionKind.RailFailed,
+                        700,
+                        EvidenceSide.Demand,
+                        EvidenceSource.Consumed,
+                        now.AddSeconds(1),
+                        now.AddSeconds(25),
+                        30500,
+                        30501),
+                },
+                now.AddSeconds(25),
+                market,
+                parentPosition,
+                evidence).Single();
+            Require(parentFlat.Kind == OrderIntentKind.Flatten
+                    && parentFlat.RearmAfterFlat,
+                "parent protective sponsor failure flattens and can rearm");
+            parent.OnPositionChanged(RuntimePosition.Flat, now.AddSeconds(26), market);
+            Require(parent.TryPrepareContinuation(child,
+                    out ContinuationContext continuation,
+                    out string continuationReason),
+                $"CONTINUE accepts protective parent clear: {continuationReason}");
+
+            EvidenceBandView counter = new()
+            {
+                Id = 701,
+                Role = EvidenceRole.Rail,
+                Side = EvidenceSide.Supply,
+                Source = EvidenceSource.Consumed,
+                State = EvidenceState.Owned,
+                MinTick = (long)Math.Round(29800 / 0.25),
+                MaxTick = (long)Math.Round(29801 / 0.25),
+                FormedUtc = now.AddSeconds(27),
+                OwnedUtc = now.AddSeconds(28),
+            };
+            Require(ExecutionCoordinator.HasContinuationBoundaryCounterEvidence(
+                    TradeDirection.Long,
+                    continuation,
+                    new[] { counter },
+                    out EvidenceBandView foundCounter)
+                    && foundCounter.Id == 701,
+                "CONTINUE rejects adverse ownership beyond parent boundary");
+
+            var continuationEvidence = new ExecutionEvidenceEngine(0.25);
+            EvidenceTransition seed = BuildConsumedDemandRail(
+                continuationEvidence,
+                now.AddSeconds(30),
+                30504);
+            double seedAsk = seed.Band.MaxTick * 0.25;
+            var seedMarket = new ExecutableMarket
+            {
+                TimeUtc = now.AddSeconds(90),
+                QuoteUtc = now.AddSeconds(90),
+                Bid = seedAsk - 0.25,
+                Ask = seedAsk,
+            };
+            parent.AcceptDirective(
+                child,
+                now.AddSeconds(90),
+                Array.Empty<int>(),
+                continuation);
+            parent.InitializeObservedPosition(RuntimePosition.Flat);
+            OrderIntent seeded = parent.SeedContinuation(
+                    now.AddSeconds(90),
+                    seedMarket,
+                    RuntimePosition.Flat,
+                    continuationEvidence)
+                .SingleOrDefault();
+            Require(seeded?.Kind == OrderIntentKind.EnterBase
+                    && seeded.Reason == "continuation_direct_conversion_snapshot",
+                "CONTINUE seeds entry from post-parent consumed rail");
         }
 
         private static void SponsorTests(
@@ -827,6 +1044,35 @@ namespace ExecAssistantRuntime
                     Score = 9,
                 },
             };
+        }
+
+        private static EvidenceTransition BuildConsumedDemandRail(
+            ExecutionEvidenceEngine engine,
+            DateTime startUtc,
+            double bid)
+        {
+            for (int second = 0; second < 35; second++)
+                engine.Process(Book(startUtc.AddSeconds(second), bid,
+                    bidSize: 1, askSize: 1));
+
+            for (int second = 35; second < 38; second++)
+                engine.Process(Book(startUtc.AddSeconds(second), bid,
+                    bidSize: 1, askSize: 20));
+
+            for (int second = 38; second <= 50; second++)
+            {
+                EvidenceTransition transition = engine.Process(
+                        Book(startUtc.AddSeconds(second), bid + 2.25,
+                            bidSize: 1, askSize: 1))
+                    .FirstOrDefault(t => t.Kind == EvidenceTransitionKind.RailOwned
+                        && t.Band?.Side == EvidenceSide.Demand
+                        && t.Band.Source == EvidenceSource.Consumed);
+                if (transition != null)
+                    return transition;
+            }
+
+            throw new InvalidOperationException(
+                "Runtime self-test failed: engine consumed demand rail");
         }
 
         private static BookDepthSnapshot Book(DateTime timeUtc, double bid,

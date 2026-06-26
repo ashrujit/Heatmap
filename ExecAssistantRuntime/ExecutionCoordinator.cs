@@ -96,6 +96,15 @@ namespace ExecAssistantRuntime
         public DateTime ClearedUtc { get; init; }
     }
 
+    internal sealed class ContinuationContext
+    {
+        public string ParentDirectiveId { get; init; }
+        public SponsorClearContext ParentSponsorClear { get; init; }
+        public long ParentContextMinTick { get; init; }
+        public long ParentContextMaxTick { get; init; }
+        public DateTime EvidenceAfterUtc { get; init; }
+    }
+
     internal sealed class OrderIntent
     {
         public string IntentId { get; init; }
@@ -143,6 +152,7 @@ namespace ExecAssistantRuntime
         private double _lastKnownAveragePrice;
         private SponsorContext _currentSponsor;
         private SponsorClearContext _lastSponsorClear;
+        private ContinuationContext _continuation;
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
@@ -165,12 +175,18 @@ namespace ExecAssistantRuntime
         public void AcceptDirective(
             TradeDirective directive,
             DateTime nowUtc,
-            IEnumerable<int> existingHeldFailureIds)
+            IEnumerable<int> existingHeldFailureIds,
+            ContinuationContext continuation = null)
         {
             if (directive == null)
                 throw new ArgumentNullException(nameof(directive));
+            bool replacesParentForContinuation = continuation != null
+                && _directive != null
+                && string.Equals(_directive.Id, continuation.ParentDirectiveId,
+                    StringComparison.Ordinal);
             if (_directive != null && !IsTerminal(State)
-                && State != RuntimeExecutionState.Halted)
+                && State != RuntimeExecutionState.Halted
+                && !replacesParentForContinuation)
                 throw new InvalidOperationException("A directive is already active.");
 
             _directive = directive;
@@ -191,6 +207,7 @@ namespace ExecAssistantRuntime
             _lastKnownAveragePrice = 0;
             _currentSponsor = null;
             _lastSponsorClear = null;
+            _continuation = continuation;
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
@@ -203,6 +220,112 @@ namespace ExecAssistantRuntime
             State = directive.NotBefore.UtcDateTime > _activatedUtc
                 ? RuntimeExecutionState.Waiting
                 : RuntimeExecutionState.Armed;
+        }
+
+        public bool TryPrepareContinuation(
+            TradeDirective directive,
+            out ContinuationContext continuation,
+            out string reason)
+        {
+            continuation = null;
+            reason = null;
+            if (directive?.Lineage?.IsContinuation != true)
+                return true;
+            if (_directive == null)
+            {
+                reason = "continuation_parent_not_found";
+                return false;
+            }
+            if (!string.Equals(_directive.Id, directive.Lineage.ParentDirectiveId,
+                StringComparison.Ordinal))
+            {
+                reason = "continuation_parent_not_immediate";
+                return false;
+            }
+            if (directive.Direction != _directive.Direction)
+            {
+                reason = "continuation_side_mismatch";
+                return false;
+            }
+            if (State == RuntimeExecutionState.Cancelled
+                || State == RuntimeExecutionState.Expired
+                || State == RuntimeExecutionState.Error
+                || State == RuntimeExecutionState.Halted
+                || State == RuntimeExecutionState.Halting
+                || State == RuntimeExecutionState.RecoveryProtected)
+            {
+                reason = "continuation_parent_state_not_eligible";
+                return false;
+            }
+            if (_lastSponsorClear?.Sponsor == null
+                || !IsContinuationProtectiveExit(_lastSponsorClear.FlattenReason))
+            {
+                reason = "continuation_parent_has_no_protective_clear";
+                return false;
+            }
+            if (!ContainsRange(_directive.ContextPriceRange, directive.ContextPriceRange)
+                || !ContainsRange(_directive.ContextPriceRange, directive.OrderPriceRange)
+                || (directive.AddPriceRange != null
+                    && !ContainsRange(_directive.ContextPriceRange, directive.AddPriceRange)))
+            {
+                reason = "continuation_ranges_exceed_parent_context";
+                return false;
+            }
+
+            continuation = new ContinuationContext
+            {
+                ParentDirectiveId = _directive.Id,
+                ParentSponsorClear = _lastSponsorClear,
+                ParentContextMinTick = PriceToTick(_directive.ContextPriceRange.Lower),
+                ParentContextMaxTick = PriceToTick(_directive.ContextPriceRange.Upper),
+                EvidenceAfterUtc = _lastSponsorClear.ClearedUtc,
+            };
+            return true;
+        }
+
+        public IReadOnlyList<OrderIntent> SeedContinuation(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position,
+            ExecutionEvidenceEngine evidence)
+        {
+            var intents = new List<OrderIntent>();
+            if (_continuation == null || evidence == null || _pendingEntryIntent != null)
+                return intents;
+            position ??= RuntimePosition.Flat;
+            if (!position.IsFlat
+                || (State != RuntimeExecutionState.Armed
+                    && State != RuntimeExecutionState.Paused))
+            {
+                return intents;
+            }
+            if (HasContinuationBoundaryCounterEvidence(evidence, out EvidenceBandView counter))
+            {
+                State = RuntimeExecutionState.Invalidated;
+                intents.Add(CreateCancelOrdersIntent(nowUtc, market,
+                    $"continuation_boundary_counter_evidence:{counter.Id}"));
+                return intents;
+            }
+            if (State == RuntimeExecutionState.Paused
+                || !QuoteEligible(market, isAdd: false)
+                || AtOrBeyondTarget(market))
+            {
+                return intents;
+            }
+
+            OrderIntent reclaim = SeedContinuationSupportedReclaim(nowUtc,
+                market, position, evidence);
+            if (reclaim != null)
+            {
+                intents.Add(reclaim);
+                return intents;
+            }
+
+            OrderIntent direct = SeedContinuationDirectRetest(nowUtc,
+                market, position, evidence);
+            if (direct != null)
+                intents.Add(direct);
+            return intents;
         }
 
         public void BaselineHeldFailures(IEnumerable<int> heldFailureIds, DateTime nowUtc)
@@ -324,6 +447,13 @@ namespace ExecAssistantRuntime
                 && PreEntryInvalidated(market))
             {
                 State = RuntimeExecutionState.Invalidated;
+                return intents;
+            }
+            OrderIntent continuationInvalidation = EvaluateContinuationBoundary(
+                transitions, nowUtc, market, position);
+            if (continuationInvalidation != null)
+            {
+                intents.Add(continuationInvalidation);
                 return intents;
             }
             bool hadActiveAdverseFailures = HasActiveAdverseFailures;
@@ -455,6 +585,8 @@ namespace ExecAssistantRuntime
             {
                 OrderIntent filledIntent = _pendingEntryIntent;
                 _pendingEntryIntent = null;
+                _pendingReclaim = null;
+                _pendingRetest = null;
                 _lastFillUtc = nowUtc;
                 _freshRootAfterUtc = nowUtc;
                 _entryAnchorFailed = false;
@@ -661,12 +793,181 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _currentSponsor = null;
+            BreakContinuationLineage();
         }
 
         public void MarkError()
         {
             State = RuntimeExecutionState.Error;
             _pendingEntryIntent = null;
+            BreakContinuationLineage();
+        }
+
+        public void BreakContinuationLineage()
+        {
+            _lastSponsorClear = null;
+            _continuation = null;
+        }
+
+        public bool HasContinuationBoundaryCounterEvidence(
+            ExecutionEvidenceEngine evidence,
+            out EvidenceBandView counter)
+        {
+            counter = null;
+            if (_continuation == null || evidence == null)
+                return false;
+            EvidenceSide adverse = _directive.Direction == TradeDirection.Long
+                ? EvidenceSide.Supply
+                : EvidenceSide.Demand;
+            return HasContinuationBoundaryCounterEvidence(
+                _directive.Direction,
+                _continuation,
+                evidence.LiveRails(adverse),
+                out counter);
+        }
+
+        public static bool HasContinuationBoundaryCounterEvidence(
+            TradeDirection direction,
+            ContinuationContext continuation,
+            IEnumerable<EvidenceBandView> liveAdverseRails,
+            out EvidenceBandView counter)
+        {
+            counter = null;
+            if (continuation == null || liveAdverseRails == null)
+                return false;
+            foreach (EvidenceBandView rail in liveAdverseRails)
+            {
+                if (rail == null || !rail.IsLiveRail)
+                    continue;
+                bool beyond = direction == TradeDirection.Long
+                    ? rail.MaxTick < continuation.ParentContextMinTick
+                    : rail.MinTick > continuation.ParentContextMaxTick;
+                if (!beyond)
+                    continue;
+                counter = rail;
+                return true;
+            }
+            return false;
+        }
+
+        private OrderIntent SeedContinuationSupportedReclaim(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position,
+            ExecutionEvidenceEngine evidence)
+        {
+            EvidenceSide desired = DesiredEvidenceSide();
+            EvidenceSide adverse = desired == EvidenceSide.Demand
+                ? EvidenceSide.Supply
+                : EvidenceSide.Demand;
+            foreach (EvidenceBandView failed in evidence.FailedRails(adverse)
+                .Where(ContextEligible)
+                .Where(f => (f.FailedUtc ?? f.LastStateUtc) >= _continuation.EvidenceAfterUtc)
+                .OrderByDescending(f => f.FailedUtc ?? f.LastStateUtc))
+            {
+                EvidenceBandView support = evidence.LiveRails(desired)
+                    .Where(ContextEligible)
+                    .Where(s => CorrectTopology(s.MinTick, s.MaxTick,
+                        failed.MinTick, failed.MaxTick))
+                    .Where(s => RangeDistance(s.MinTick, s.MaxTick,
+                        failed.MinTick, failed.MaxTick)
+                        <= SupportedCandidateMaxDistanceTicks)
+                    .OrderBy(s => RangeDistance(s.MinTick, s.MaxTick,
+                        failed.MinTick, failed.MaxTick))
+                    .FirstOrDefault();
+                if (support == null)
+                    continue;
+
+                ResolutionContext resolution = SupportedContext(failed, support, nowUtc);
+                return CreateEntryIntent(nowUtc, market, position, resolution,
+                    isAdd: false, "continuation_supported_reclaim_snapshot");
+            }
+            return null;
+        }
+
+        private OrderIntent SeedContinuationDirectRetest(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position,
+            ExecutionEvidenceEngine evidence)
+        {
+            EvidenceSide desired = DesiredEvidenceSide();
+            long quoteTick = PriceToTick(market.Executable(_directive.Direction));
+            EvidenceBandView band = evidence.LiveRails(desired)
+                .Where(ContextEligible)
+                .Where(b => b.Source == EvidenceSource.Consumed)
+                .Where(b => b.OwnedUtc >= _continuation.EvidenceAfterUtc
+                    || b.FormedUtc >= _continuation.EvidenceAfterUtc)
+                .OrderBy(b => RangeDistance(quoteTick, b.MinTick, b.MaxTick))
+                .FirstOrDefault();
+            if (band == null || _usedRootObjectIds.Contains(band.Id))
+                return null;
+
+            ResolutionContext resolution = new()
+            {
+                Resolution = ResolutionType.DirectConversion,
+                RootObjectId = band.Id,
+                SupportObjectId = band.Id,
+                RootMinTick = band.MinTick,
+                RootMaxTick = band.MaxTick,
+                SupportMinTick = band.MinTick,
+                SupportMaxTick = band.MaxTick,
+                SupportSource = band.Source,
+                RootFormedUtc = band.FormedUtc,
+                SupportFormedUtc = band.FormedUtc,
+                TriggerUtc = nowUtc,
+            };
+            if (RangeDistance(quoteTick, band.MinTick, band.MaxTick)
+                <= DirectConversionMaxDistanceTicks)
+            {
+                return CreateEntryIntent(nowUtc, market, position, resolution,
+                    isAdd: false, "continuation_direct_conversion_snapshot");
+            }
+            _pendingRetest = new PendingDirectRetest
+            {
+                Resolution = resolution,
+                IsAdd = false,
+            };
+            return null;
+        }
+
+        private OrderIntent EvaluateContinuationBoundary(
+            IReadOnlyList<EvidenceTransition> transitions,
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position)
+        {
+            if (_continuation == null || transitions == null)
+                return null;
+            EvidenceTransition counter = transitions.FirstOrDefault(
+                IsContinuationBoundaryCounterEvidence);
+            if (counter == null)
+                return null;
+            string reason = $"continuation_boundary_counter_evidence:{counter.Band.Id}";
+            if (position != null && !position.IsFlat)
+                return CreateFlattenIntent(counter.TimeUtc, market, reason,
+                    terminal: true, rearm: false);
+            State = RuntimeExecutionState.Invalidated;
+            return CreateCancelOrdersIntent(
+                counter.TimeUtc == default ? nowUtc : counter.TimeUtc,
+                market,
+                reason);
+        }
+
+        private bool IsContinuationBoundaryCounterEvidence(EvidenceTransition transition)
+        {
+            EvidenceBandView band = transition?.Band;
+            if (_continuation == null
+                || transition.Kind != EvidenceTransitionKind.RailOwned
+                || band == null
+                || !band.IsLiveRail
+                || !IsAdverseFailure(band))
+            {
+                return false;
+            }
+            return _directive.Direction == TradeDirection.Long
+                ? band.MaxTick < _continuation.ParentContextMinTick
+                : band.MinTick > _continuation.ParentContextMaxTick;
         }
 
         private OrderIntent EvaluateDirectConversion(
@@ -842,6 +1143,13 @@ namespace ExecAssistantRuntime
             PendingDirectRetest pending = _pendingRetest;
             if (pending == null || _pendingEntryIntent != null)
                 return null;
+            bool stateStillMatches = PendingIntentMatchesState(
+                pending.IsAdd, State, position);
+            if (!stateStillMatches)
+            {
+                _pendingRetest = null;
+                return null;
+            }
             EvidenceBandView band = evidence.FindBand(pending.Resolution.RootObjectId);
             if (band == null || !band.IsLiveRail)
             {
@@ -1279,6 +1587,20 @@ namespace ExecAssistantRuntime
                 DateTimeKind.Local => value.ToUniversalTime(),
                 _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
             };
+
+        private static bool ContainsRange(PriceRange outer, PriceRange inner)
+            => outer != null && inner != null
+                && inner.Lower >= outer.Lower
+                && inner.Upper <= outer.Upper;
+
+        private static bool IsContinuationProtectiveExit(string reason)
+            => !string.IsNullOrWhiteSpace(reason)
+                && (reason.StartsWith("sponsor_failed:", StringComparison.Ordinal)
+                    || reason.StartsWith("sponsor_consumed:", StringComparison.Ordinal)
+                    || string.Equals(reason, "reverse_entry_resolution",
+                        StringComparison.Ordinal)
+                    || string.Equals(reason, "base_support_lost",
+                        StringComparison.Ordinal));
 
         private static bool IsTerminal(RuntimeExecutionState state)
             => state == RuntimeExecutionState.Completed

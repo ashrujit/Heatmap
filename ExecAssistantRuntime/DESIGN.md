@@ -200,8 +200,9 @@ separate strategy instance with its own settings and directive path. Multi-symbo
 operation is out of scope.
 
 Once dispatched, a directive should not be edited in-place. If the market creates
-a second leg, that is a new directive. If the first directive is wrong, cancel or
-invalidate it.
+a second leg, that is either a fresh `NEW` directive or an explicit `CONTINUE`
+directive that names the immediately previous parent directive. If the first
+directive is wrong, cancel or invalidate it.
 
 `max_clips` is intentionally not used in the normative schema. It becomes
 ambiguous when the base and add sizes differ. Use `base_quantity`,
@@ -211,6 +212,9 @@ This intentionally splits later legs and materially changed plans into separate
 directives instead of one judgement-heavy hold. A single directive may still
 build a campaign when fresh add resolutions occur. What it may not do is turn a
 completed target exit or invalidated execution path into an improvised runner.
+`CONTINUE` preserves this split: the human explicitly says the next directive is
+the same campaign, and the runtime admits only the immediate protective-exit
+lineage rather than mining arbitrary historical rails.
 
 ## Directive Lifecycle
 
@@ -334,6 +338,10 @@ The schema settles these transport semantics:
 - stop policy is fixed to semantic base invalidation, current-sponsor failure
   after leverage, and sponsor-aware handling of the opposite LF/HF object;
 - notes and target reference labels are audit-only and cannot change behavior.
+- omitted `lineage` or `lineage.mode: NEW` starts from the normal
+  post-acceptance evidence contract;
+- `lineage.mode: CONTINUE` requires `parent_directive_id` and can only name the
+  immediately previous directive still present in runtime memory.
 
 JSON Schema cannot express every relational invariant. The runtime semantic
 validator must additionally reject:
@@ -353,6 +361,36 @@ validator must additionally reject:
 Symbol and account are absent by design. They are bound to the Quantower
 strategy instance. Target prices remain mandatory in v1; a label such as `IBH`
 or `rail` is context, not a substitute for price.
+
+### Directive Lineage
+
+`NEW` and `CONTINUE` are execution-lineage declarations, not strategy
+classifications.
+
+`NEW` is the default. It ignores the previous execution chain and requires the
+ordinary fresh post-acceptance trigger. Existing live rails may support a fresh
+trigger, but old ownership transitions are never replayed.
+
+`CONTINUE` is for the common case where the strategy idea remains the same after
+the local EAR clip exits protectively. It is allowed only when all of the
+following hold:
+
+- the directive names the immediately previous parent directive;
+- side is unchanged;
+- the parent has a recorded local protective clear such as sponsor failure,
+  sponsor consumption, reverse entry resolution, or lost base support;
+- the child order/context/add ranges stay inside the parent's context range;
+- runtime evidence continuity has not been lost;
+- accepted opposite ownership has not established beyond the parent boundary
+  (below the parent lower boundary for a long, above the parent upper boundary
+  for a short).
+
+Continuation does not authorize historical-memory mining. It may seed from
+evidence that belongs to the immediate parent-clear chain: a post-clear failed
+adverse rail with live same-side support, or a post-clear consumed same-side rail
+waiting for retest. Arbitrary RTH/ETH rails, volume-profile memory, and older
+LevelLedger arguments remain strategy context. The runtime uses them only if the
+human encodes a fresh directive around them.
 
 ## Execution Model
 
@@ -872,7 +910,9 @@ Deterministic replay of June 11 must assert all of the following:
   invalidation of that failure object re-arms the same directive;
 - if the current base sponsor already failed, a subsequently held adverse LF/HF
   invalidates the flat retry before a fresh base fills;
-- every reissue starts with a new id, fresh counters, and an activation baseline;
+- every reissue starts with a new id; `NEW` gets a fresh activation baseline,
+  while `CONTINUE` may admit only the named parent directive's immediate
+  protective-exit chain;
 - no terminal directive can reactivate when later evidence validates its old
   thesis.
 
@@ -1210,8 +1250,9 @@ permission for an unbounded objective.
 
 The v1 schema accepts no alternate target modes. This applies equally to shadow
 and live operation so abandoned exit concepts cannot affect entry gates,
-checkpoint recovery, or simulated results. No target-decision state,
-gate-specific continuation grammar, or price-trailing behavior should be added.
+checkpoint recovery, or simulated results. No target-decision state or
+price-trailing behavior should be added; directive lineage is separate from
+target management.
 
 Sponsor handoff supplies the useful continuation behavior without coupling it
 to a target boundary. It operates before a hard target, can terminate an

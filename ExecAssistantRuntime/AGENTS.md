@@ -30,6 +30,10 @@ spike JSON shape as an alternate parser.
 - A trade directive is immutable once dispatched. A changed idea is a new
   directive. Urgent control commands such as `FLAT` are separate, out-of-band
   messages rather than edits to the active trade directive.
+- `CONTINUE` is explicit directive lineage, not automatic reissue. It may only
+  inherit the immediately previous protective-exit chain named by
+  `parent_directive_id`; arbitrary historical rails remain LevelLedger/strategy
+  context, not executable runtime memory.
 - Normative trade directives are active-only inputs. Runtime terminal states
   belong in the append-only event log. `CANCEL_DIRECTIVE` and `FLAT` are
   immutable control commands.

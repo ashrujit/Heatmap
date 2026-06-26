@@ -196,6 +196,46 @@ class EarctlTests(unittest.TestCase):
                 with self.assertRaises(earctl.ContractError):
                     earctl.validate_directive(directive, 5)
 
+    def test_lineage_validation_and_dispatch_shape(self):
+        directive = self.valid_directive()
+        directive["lineage"] = {
+            "mode": "CONTINUE",
+            "parent_directive_id": "parent-short-01",
+        }
+        earctl.validate_directive(directive, 5)
+
+        directive = self.valid_directive()
+        directive["lineage"] = {"mode": "CONTINUE"}
+        with self.assertRaises(earctl.ContractError):
+            earctl.validate_directive(directive, 5)
+
+        directive = self.valid_directive()
+        directive["lineage"] = {
+            "mode": "NEW",
+            "parent_directive_id": "parent-short-01",
+        }
+        with self.assertRaises(earctl.ContractError):
+            earctl.validate_directive(directive, 5)
+
+        args = earctl.parser().parse_args([
+            "dispatch",
+            "--side", "short",
+            "--order-range", "30475", "30550",
+            "--base-quantity", "2",
+            "--add-quantity", "1",
+            "--max-position", "5",
+            "--target-price", "30380",
+            "--lineage-mode", "CONTINUE",
+            "--parent-directive-id", "parent-short-01",
+            "--dry-run",
+        ])
+        built = earctl.build_directive(args)
+        self.assertEqual(
+            {"mode": "CONTINUE", "parent_directive_id": "parent-short-01"},
+            built["lineage"],
+        )
+        earctl.validate_directive(built, 5)
+
     def test_control_and_status(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -265,6 +305,36 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual(60 * 60, (end - start).total_seconds())
             self.assertNotEqual(rejected_file["id"], reissued["id"])
             self.assertEqual(original["entry"], reissued["entry"])
+            self.assertNotIn("lineage", reissued)
+
+    def test_continue_reissue_marks_parent_lineage(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            original = self.valid_directive()
+            earctl.atomic_write(root / "checkpoint.json",
+                                self.checkpoint(original, state="Armed"))
+            (root / "events.jsonl").write_text(
+                json.dumps({"event": "runtime_started"}) + "\n")
+            args = argparse.Namespace(
+                runtime_dir=root,
+                source=None,
+                ttl_minutes=30,
+                id="test-short-continue-02",
+                reason="same campaign after local protective exit",
+                continue_lineage=True,
+                wait_seconds=0,
+                dry_run=False,
+                instance_max_quantity=None,
+            )
+            result = earctl.command_reissue(args)
+            continued = result["directive"]
+            self.assertEqual("pending", result["outcome"])
+            self.assertEqual("test-short-continue-02", continued["id"])
+            self.assertEqual(
+                {"mode": "CONTINUE", "parent_directive_id": original["id"]},
+                continued["lineage"],
+            )
+            self.assertEqual(continued, json.loads((root / "directive.json").read_text()))
 
     def test_cancel_active_resolves_checkpoint_identity(self):
         with tempfile.TemporaryDirectory() as raw:

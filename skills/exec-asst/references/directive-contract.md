@@ -31,6 +31,28 @@ EAR should see local LF/HF repair and then decide whether fresh evidence still
 justifies entry after re-arm. Tight human-perfect wick ranges can hide relevant
 contest context and make a correct pause look like a missed isolated trade.
 
+## Directive Lineage
+
+Omitted `lineage` means `NEW`: the directive starts from fresh post-acceptance
+evidence and does not inherit prior ownership transitions.
+
+Use `CONTINUE` only when the user explicitly wants the same campaign to continue
+after a local EAR protective exit:
+
+```json
+"lineage": {
+  "mode": "CONTINUE",
+  "parent_directive_id": "2026-06-25-short-1050-a1b2c3"
+}
+```
+
+`parent_directive_id` must name the immediately previous accepted directive.
+EAR accepts continuation only if the side is unchanged, the parent has a local
+protective clear, the child ranges remain inside the parent context range,
+evidence continuity has not been lost, and accepted opposite ownership has not
+established beyond the parent boundary. `CONTINUE` is not a reverse and does
+not mine arbitrary RTH/ETH or LevelLedger history.
+
 ## Sizing And Retries
 
 Quantities are contracts, not abstract clips:

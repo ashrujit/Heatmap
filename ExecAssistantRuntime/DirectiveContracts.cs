@@ -33,6 +33,12 @@ namespace ExecAssistantRuntime
         CancelDirective,
     }
 
+    internal enum DirectiveLineageMode
+    {
+        New,
+        Continue,
+    }
+
     internal sealed class PriceRange
     {
         public double Lower { get; init; }
@@ -49,6 +55,15 @@ namespace ExecAssistantRuntime
     {
         public bool IsBelow { get; init; }
         public double Price { get; init; }
+    }
+
+    internal sealed class DirectiveLineage
+    {
+        public DirectiveLineageMode Mode { get; init; }
+        public string ParentDirectiveId { get; init; }
+
+        public bool IsContinuation
+            => Mode == DirectiveLineageMode.Continue;
     }
 
     internal sealed class TradeDirective
@@ -72,6 +87,7 @@ namespace ExecAssistantRuntime
         public TargetMode TargetMode { get; init; }
         public double TargetPrice { get; init; }
         public string TargetReference { get; init; }
+        public DirectiveLineage Lineage { get; init; }
         public string Notes { get; init; }
         public string Digest { get; init; }
 
@@ -109,7 +125,8 @@ namespace ExecAssistantRuntime
                 new[]
                 {
                     "schema_version", "kind", "id", "status", "created_at", "side",
-                    "window", "entry", "sizing", "retries", "stop", "target", "notes",
+                    "window", "entry", "sizing", "retries", "stop", "target",
+                    "lineage", "notes",
                 },
                 new[]
                 {
@@ -229,6 +246,7 @@ namespace ExecAssistantRuntime
             if (direction == TradeDirection.Short && targetPrice >= orderRange.Upper)
                 throw Invalid("short target must be below the entry range upper boundary");
 
+            DirectiveLineage lineage = ParseLineage(root);
             string notes = OptionalString(root, "notes", "directive", 4096);
             return new TradeDirective
             {
@@ -251,6 +269,7 @@ namespace ExecAssistantRuntime
                 TargetMode = targetMode,
                 TargetPrice = targetPrice,
                 TargetReference = targetReference,
+                Lineage = lineage,
                 Notes = notes,
                 Digest = CanonicalDigest(root),
             };
@@ -375,6 +394,44 @@ namespace ExecAssistantRuntime
                 IsBelow = text == "below",
                 Price = RequirePositiveDouble(trigger, "price", "directive.entry.pre_entry_invalidation"),
             };
+        }
+
+        private static DirectiveLineage ParseLineage(JsonElement root)
+        {
+            if (!root.TryGetProperty("lineage", out JsonElement value)
+                || value.ValueKind == JsonValueKind.Null)
+            {
+                return new DirectiveLineage { Mode = DirectiveLineageMode.New };
+            }
+
+            JsonElement lineage = RequireObject(value, "directive.lineage");
+            EnsureProperties(lineage, "directive.lineage",
+                new[] { "mode", "parent_directive_id" },
+                new[] { "mode" });
+            string modeText = RequireString(lineage, "mode", "directive.lineage");
+            if (modeText == "NEW")
+            {
+                if (lineage.TryGetProperty("parent_directive_id", out JsonElement parent)
+                    && parent.ValueKind != JsonValueKind.Null)
+                {
+                    throw Invalid("directive.lineage.parent_directive_id must be absent or null for NEW");
+                }
+                return new DirectiveLineage { Mode = DirectiveLineageMode.New };
+            }
+
+            if (modeText == "CONTINUE")
+            {
+                string parentId = ValidateId(
+                    RequireString(lineage, "parent_directive_id", "directive.lineage"),
+                    "directive.lineage.parent_directive_id");
+                return new DirectiveLineage
+                {
+                    Mode = DirectiveLineageMode.Continue,
+                    ParentDirectiveId = parentId,
+                };
+            }
+
+            throw Invalid("directive.lineage.mode must be NEW or CONTINUE");
         }
 
         private static HashSet<ResolutionType> ParseResolutions(JsonElement value)

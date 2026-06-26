@@ -64,6 +64,10 @@
     "target": {
       "$ref": "#/$defs/target"
     },
+    "lineage": {
+      "$ref": "#/$defs/lineage",
+      "description": "Optional directive lineage. Omitted or NEW starts from fresh post-acceptance evidence; CONTINUE admits the immediate parent directive's protective-exit evidence chain."
+    },
     "notes": {
       "type": "string",
       "maxLength": 4096,
@@ -436,6 +440,74 @@
           "description": "Optional audit label such as IBH, open, rail, or prior supply."
         }
       }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "NEW",
+            "CONTINUE"
+          ]
+        },
+        "parent_directive_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "CONTINUE"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "parent_directive_id"
+            ],
+            "properties": {
+              "parent_directive_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "NEW"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "parent_directive_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "examples": [

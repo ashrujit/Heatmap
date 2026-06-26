@@ -13,6 +13,8 @@ The deployed strategy supports the settled NQ execution path:
   exact current-sponsor failure, `HARD_TP`, sponsor-aligned LF/HF, or control;
 - internal favorable-only sponsor handoff and market flatten on exact current
   sponsor failure;
+- optional `CONTINUE` directive lineage for the same campaign after a local
+  protective exit, without replaying arbitrary historical rails;
 - local-first LF/HF handling that pauses flat entry and defers positioned
   termination to causal sponsor failure;
 - broad context/add envelopes are preferred; LF/HF pause/re-arm should filter
@@ -124,7 +126,10 @@ started the epoch; `Warming` is non-actionable; `Ready` permits evidence action;
 
 Repeated edits to an accepted ID are rejected as mutation. After completion,
 cancel, `FLAT`, or restart, issue a new directive ID even when the plan is the
-same.
+same. If the same campaign should continue after a local protective exit, use a
+new directive id with `lineage.mode: "CONTINUE"` and the immediately previous
+`parent_directive_id`; do not cancel the parent first unless the intent is to
+discard that lineage.
 
 A fresh opposite HF/LF while the directive is armed but flat cancels any runtime
 entry order and moves the directive to `Paused`. If that failure object
@@ -133,6 +138,11 @@ filled entry support is its sponsor. A local opposite HF/LF does not flatten
 while that sponsor remains intact. Same-sequence sponsor failure is terminal;
 if a base sponsor fails first, a subsequently held adverse HF/LF invalidates the
 flat retry before another base fills. Tests and holds do not move weighted BE.
+
+`CONTINUE` is not a reverse, not a control command, and not a way to make EAR
+choose the trade. It only admits the immediate parent directive's protective-exit
+evidence chain inside the parent context boundary. A fresh opposite directive is
+still the way to trade the other side.
 
 ## Demo Live Run
 

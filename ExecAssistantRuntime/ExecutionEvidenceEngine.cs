@@ -238,6 +238,13 @@ namespace ExecAssistantRuntime
                 .Select(View)
                 .ToArray();
 
+        public IReadOnlyList<EvidenceBandView> FailedRails(EvidenceSide side)
+            => _bands
+                .Where(b => b.Role == EvidenceRole.Rail && b.Side == side
+                    && b.State == EvidenceState.Failed)
+                .Select(View)
+                .ToArray();
+
         public IReadOnlyList<EvidenceBandView> HeldFailureObjects()
             => _bands
                 .Where(b => b.Role == EvidenceRole.FailureZone && b.State == EvidenceState.Held)
