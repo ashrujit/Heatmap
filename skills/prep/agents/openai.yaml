@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prep"
+  short_description: "Premarket auction campaign map"
+  default_prompt: "Use $prep to build a premarket RTH opportunity map from recent profiles, overnight positioning, and IB branch evidence."
