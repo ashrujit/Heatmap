@@ -1,0 +1,222 @@
+[
+  {
+    "id": "20260622_0930_1000_contested_open",
+    "date": "2026-06-22",
+    "symbol": "NQU6",
+    "window": "09:30-10:00",
+    "capture_root": "W:\\U6 Data Archive",
+    "memory_label": "contested open",
+    "expected_type": "contested_balance",
+    "expected_side": "mixed",
+    "notes": "User memory: contested. Verify whether both sides formed/failed with no durable ownership before 10:00."
+  },
+  {
+    "id": "20260622_1000_1145_supply_initiative",
+    "date": "2026-06-22",
+    "symbol": "NQU6",
+    "window": "10:00-11:45",
+    "capture_root": "W:\\U6 Data Archive",
+    "memory_label": "directionally owned by sellers",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: sellers owned from 10:00 to 11:30/11:45."
+  },
+  {
+    "id": "20260622_1145_1600_supply_biased_balance",
+    "date": "2026-06-22",
+    "symbol": "NQU6",
+    "window": "11:45-16:00",
+    "capture_root": "W:\\U6 Data Archive",
+    "memory_label": "range bound, likely supply owned",
+    "expected_type": "balance_distribution",
+    "expected_side": "supply",
+    "notes": "User memory: upper range hit longer-term supply; lower bounds were no-build zones."
+  },
+  {
+    "id": "20260623_0930_1000_no_build_up",
+    "date": "2026-06-23",
+    "symbol": "NQU6",
+    "window": "09:30-10:00",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "likely no-build directional up move",
+    "expected_type": "no_build_directional",
+    "expected_side": "demand",
+    "notes": "User memory: open moved up but likely without durable demand builds."
+  },
+  {
+    "id": "20260623_1000_1130_supply_claims",
+    "date": "2026-06-23",
+    "symbol": "NQU6",
+    "window": "10:00-11:30",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply claims held",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: supply started appearing after 10:00 and claims held until 11:30."
+  },
+  {
+    "id": "20260623_1130_1330_repair_balance_dcs",
+    "date": "2026-06-23",
+    "symbol": "NQU6",
+    "window": "11:30-13:30",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "deeper repair back into balance, DCS 880-890 held",
+    "expected_type": "repair_balance",
+    "expected_side": "mixed",
+    "notes": "User memory: lower ownership failed/lacked build, deeper repair into balance; DCS around 880-890 held into PM."
+  },
+  {
+    "id": "20260623_1330_1600_supply_resolution",
+    "date": "2026-06-23",
+    "symbol": "NQU6",
+    "window": "13:30-16:00",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "resolved lower, supply held into close",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: PM resolved lower again around 13:30 and supply held until close."
+  },
+  {
+    "id": "20260624_0930_1055_rotational",
+    "date": "2026-06-24",
+    "symbol": "NQU6",
+    "window": "09:30-10:55",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "rotational auction, contested/no durable builds",
+    "expected_type": "contested_balance",
+    "expected_side": "mixed",
+    "notes": "User memory: early auction rotational; contested builds kept getting run over."
+  },
+  {
+    "id": "20260624_1055_1110_supply_transition",
+    "date": "2026-06-24",
+    "symbol": "NQU6",
+    "window": "10:55-11:10",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply started owning",
+    "expected_type": "transition",
+    "expected_side": "supply",
+    "notes": "User memory: supply ownership began around 10:55/11:00."
+  },
+  {
+    "id": "20260624_1110_1210_repair",
+    "date": "2026-06-24",
+    "symbol": "NQU6",
+    "window": "11:10-12:10",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "repair inside broader supply context",
+    "expected_type": "repair_balance",
+    "expected_side": "mixed",
+    "notes": "User memory: repair from 11:10 to 12:10."
+  },
+  {
+    "id": "20260624_1210_1600_supply_owned",
+    "date": "2026-06-24",
+    "symbol": "NQU6",
+    "window": "12:10-16:00",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply owned rest of day",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: supply owned from about 12:10 into close."
+  },
+  {
+    "id": "20260625_0930_1000_no_build_liquidation",
+    "date": "2026-06-25",
+    "symbol": "NQU6",
+    "window": "09:30-10:00",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "no-build liquidation open",
+    "expected_type": "no_build_directional",
+    "expected_side": "supply",
+    "notes": "User memory: liquidation at open until 10:00 without durable builds."
+  },
+  {
+    "id": "20260625_1000_1055_repair_balance",
+    "date": "2026-06-25",
+    "symbol": "NQU6",
+    "window": "10:00-10:55",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "repair, supply tried but kept failing",
+    "expected_type": "repair_balance",
+    "expected_side": "mixed",
+    "notes": "User memory: repair; supply tried to control but failed; lower areas did not build durable demand."
+  },
+  {
+    "id": "20260625_1055_1110_supply_burst",
+    "date": "2026-06-25",
+    "symbol": "NQU6",
+    "window": "10:55-11:10",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "short supply-owned episode",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: supply-owned episode lasting roughly 10-15 minutes."
+  },
+  {
+    "id": "20260625_1215_1230_supply_burst",
+    "date": "2026-06-25",
+    "symbol": "NQU6",
+    "window": "12:15-12:30",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "second short supply-owned episode",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: another supply-owned episode lasting roughly 10-15 minutes."
+  },
+  {
+    "id": "20260625_1425_1545_supply_into_close",
+    "date": "2026-06-25",
+    "symbol": "NQU6",
+    "window": "14:25-15:45",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply owned into close until 15:45",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: supply owned from 14:25/14:30 into about 15:45."
+  },
+  {
+    "id": "20260626_0930_1145_no_build_up_contested_supply",
+    "date": "2026-06-26",
+    "symbol": "NQU6",
+    "window": "09:30-11:45",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "up moves not built; supply attempts not successive",
+    "expected_type": "no_build_or_contested",
+    "expected_side": "mixed",
+    "notes": "User memory: up moves were not really built; supply tried but was not successive."
+  },
+  {
+    "id": "20260626_1145_1150_supply_build",
+    "date": "2026-06-26",
+    "symbol": "NQU6",
+    "window": "11:45-11:50",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply built",
+    "expected_type": "transition",
+    "expected_side": "supply",
+    "notes": "User memory: supply built around 11:45/11:50."
+  },
+  {
+    "id": "20260626_1305_1310_supply_test_survived",
+    "date": "2026-06-26",
+    "symbol": "NQU6",
+    "window": "13:05-13:10",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "supply tested and survived",
+    "expected_type": "clean_or_weak_hold",
+    "expected_side": "supply",
+    "notes": "User memory: 11:45/11:50 supply tested at 13:05/13:10 and survived."
+  },
+  {
+    "id": "20260626_1310_1500_supply_directional",
+    "date": "2026-06-26",
+    "symbol": "NQU6",
+    "window": "13:10-15:00",
+    "capture_root": "C:\\Quantower\\Settings\\Scripts\\Indicators\\MarketRecorder\\captures",
+    "memory_label": "PM directionally owned lower",
+    "expected_type": "directional_initiative",
+    "expected_side": "supply",
+    "notes": "User memory: after the supply test, PM directionally owned lower until about 15:00."
+  }
+]

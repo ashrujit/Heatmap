@@ -555,3 +555,234 @@ out explicitly).
 Follow-up validation: the project builds with zero warnings/errors, the full
 runtime self-test suite passes, and the non-finite event serialization probe
 continues to pass against the deployed DLL.
+
+---
+
+# Reviewer Follow-up (Fourth Pass — target lifecycle, continuity, sponsor-aware HF/LF)
+
+Three commits inside `ExecAssistantRuntime/` since the third pass:
+
+- **`775df8e` Harden EA target and sponsor lifecycle.** Removes
+  `TARGET_DECISION` / `TRAIL_AFTER_TARGET` / `TARGET_DECISION_BEFORE_EXTREME`
+  from the schema (`const: "HARD_TP"`), drops the corresponding C# enum
+  values, and adds the `sponsor_cleared` JSONL event with the prior sponsor
+  context and flatten reason.
+- **`598c134` Harden EAR continuity and control tooling.** Adds
+  `BookContinuityTracker.cs` to debounce single bad samples versus confirmed
+  forward-data loss. Adds contract gap-closures (`add_price_range` must lie
+  inside `context_price_range`; `adds_allowed=true` requires
+  `base + add ≤ max`; `adds_allowed=false` requires `max == base`). Adds
+  checkpoint heartbeat fields for operator tooling. Forward-data-loss now
+  issues a `CancelRuntimeOrders` intent before flattening/recovering.
+- **`e788e3e` Apply sponsor-aware EAR policy from OFI research.** This is the
+  biggest behavioral change. HF/LF is no longer always-terminal. A new
+  `Paused` state is added. Evidence warm-up is made explicit and visible to
+  the operator via checkpoint.
+
+## Headline change: HF/LF policy is fundamentally different now
+
+Previous behavior: any fresh opposite HF/LF flattens (positioned) or
+invalidates (flat) the directive immediately.
+
+New behavior (e788e3e):
+- Positioned with intact current sponsor → HF/LF is local evidence only; do
+  not flatten.
+- Positioned with current sponsor failing in the same evidence batch → HF/LF
+  becomes terminal (via `_everLeveraged || HasActiveAdverseFailures`).
+- Positioned with sponsor already failed in a prior batch → an HF/LF held
+  before a fresh base fills invalidates the rearmed retry (the
+  `_awaitingSponsorAlignedFailure` latch).
+- Flat with an active adverse failure object → state goes to `Paused`,
+  runtime entry orders are cancelled, eligibility resumes when every active
+  adverse failure object emits `FailureInvalidated`.
+
+The policy is implemented through:
+- `_activeAdverseFailureIds` set, updated by `ObserveAdverseFailures` at the
+  top of `ProcessEvidence`.
+- `_awaitingSponsorAlignedFailure` latch, set when a sponsor failure was
+  non-terminal at the moment of fire, cleared on next fill or on aligned
+  terminal HF/LF.
+- New `RuntimeExecutionState.Paused` plus `BaselineHeldFailures` API the
+  runtime calls when warm-up completes.
+
+This is a substantive design shift driven by the June 11 fixture replay
+(DESIGN.md "Required Assertions" was rewritten accordingly). The
+implementation is tight and matches the design prose. The
+`RuntimeSelfTests.CoordinatorTests` additions cover six relevant cases:
+local HF doesn't flatten with intact sponsor; HF while flat pauses; paused
+state blocks otherwise-eligible entry; invalidated HF clears the pause and
+allows resume; baselined HF stays context-only; base-sponsor-failure +
+later HF is terminal; same-batch HF + sponsor failure is terminal.
+
+## Evidence warmup is now first-class
+
+The runtime previously had an implicit "give it 30 seconds" guidance in the
+operator doc. e788e3e makes this a mechanical contract: each new evidence
+engine begins in `AwaitingBook`/`Warming` and cannot reach the coordinator
+until `EvidenceWarmupSeconds` (= `BookLookbackSeconds`, min 10s) AND
+`EvidenceWarmupRequiredSamples` (= `ceil(seconds*1000/BookSampleMs)`, min
+5) have both elapsed. After warm-up completes, `BaselineHeldFailures`
+captures the currently-held adverse failure ids so they don't immediately
+fire a Paused transition.
+
+The state is exposed via the checkpoint
+(`EvidenceState`/`EvidenceEpochReason`/`EvidenceEpochStartedUtc`/
+`EvidenceSampleCount`/`EvidenceWarmupSeconds`/`EvidenceWarmupRequiredSamples`/
+`EvidenceWarmupRemainingSeconds`), so `earctl status` reflects whether the
+strategy is *able* to act. This is a real operator-visibility win — it
+removes the ambiguity of "is it sitting on the bench because there's no
+setup, or because it's still warming?"
+
+Two `evidence_warmup_started` / `evidence_warmup_completed` JSONL events
+bracket each epoch including baselined ids — good for replay reconstruction.
+
+## Continuity tracker (598c134) is also a real improvement
+
+Previous behavior: one bad DOM sample after a fresh book → `forward_data_loss`
+→ cancel/flatten/recovery. That was a hair trigger — any transient DOM
+mismatch or one-tick L1-vs-DOM drift could trip the whole recovery contract.
+
+New behavior: bad samples pause evidence actions for the worker cycle but
+preserve the evidence epoch. The `BookContinuityTracker` debounces by
+requiring continuous unusability through `BookUnusableGraceSec` (default 5s)
+before declaring confirmed loss. Reasons are tracked
+(`l2_heartbeat_stale`/`dom_unavailable`/`dom_empty`/`l1_dom_mismatch`/
+`dom_read_error`) and reason changes within one grace window are explicit
+JSONL events. `BookSampleDiagnostic` records L2 age, DOM levels, both
+symbol and DOM bid/ask, and any error string — excellent post-mortem
+material.
+
+This addresses my earlier framing of `forward_data_loss` as too aggressive
+without me having flagged it explicitly. Good unprompted hardening.
+
+## Contract closures worth noting
+
+`598c134` closes three latent gaps in `DirectiveContracts.ParseTradeDirective`:
+
+1. `add_price_range` must lie inside `context_price_range`. Previously only
+   `order_price_range` was checked. The schema docstring was updated.
+2. `adds_allowed=true` requires `base + add ≤ max` (capacity for one
+   complete add). Previously the runtime would allow a directive that could
+   never actually scale.
+3. `adds_allowed=false` requires `max == base`. Previously a directive could
+   declare `adds_allowed=false` while leaving headroom that nothing could
+   use.
+
+Self-tests cover each. These were noted as required in DESIGN.md but
+weren't enforced. Closing them at the parser is the right place.
+
+## Resolution of earlier observations
+
+- **N-09 (sponsor_cleared event)** — fixed by `775df8e`. `OnPositionChanged`
+  captures the prior sponsor into `_lastSponsorClear` and increments
+  `_sponsorVersion`; the runtime's `LogSponsorIfChanged` emits the
+  `sponsor_cleared` event with prior sponsor metadata and the flatten reason.
+- **N-11 (sponsor_failed suppressed by same-batch HF/LF)** — moot under the
+  new policy. The previous `FirstOrDefault` early-return for HF/LF is gone.
+  HF/LF is processed via `ObserveAdverseFailures`, and the sponsor-failure
+  path (`EvaluateSponsorFailure`) runs in the loop, marks terminal correctly
+  if `HasActiveAdverseFailures`, and emits its `sponsor_failed` JSONL via
+  `LogIntentResult`. Both events are now preserved.
+- **N-13 (Trading Enabled toggle / warmup operator-guide gap)** — partially
+  addressed. The warm-up boundary is now operator-visible in
+  `OPERATOR_GUIDE.md` "First Shadow Run" and in the checkpoint. The "restart
+  after toggling Trading Enabled" sentence is already in OPERATOR_GUIDE.md.
+
+## New observations from this pass
+
+### N-15 · The HF/LF policy shift is a behavioral change worth highlighting to operators
+**Severity:** Medium · **Category:** Operator awareness
+
+Old: any opposite HF/LF flattens a positioned campaign immediately.
+New: opposite HF/LF rides through unless the current sponsor also fails.
+
+The justification (June 11 fixture: sponsor failure was the causal driver;
+the LF was confirmation) is sound, and the implementation is correct. But
+in live trading this means a leveraged position will tolerate *more* local
+opposition than it would have under the old rules. A trader who learned
+the old behavior will see campaigns survive what would previously have been
+exits. Worth one sentence in `OPERATOR_GUIDE.md` "Reading Fill Quality" or
+a sibling section explicitly naming this so the operator isn't surprised
+the first time they watch a held LF that doesn't flatten.
+
+OPERATOR_GUIDE.md does have a paragraph about this in the directive-issued
+flow, but the rule statement is buried inside other text. A dedicated
+"What changed about HF/LF" callout would land cleaner.
+
+### N-16 · `entry_filled_while_paused` is a real edge case that deserves a JSONL receipt
+**Severity:** Low · **Category:** Telemetry
+
+[ExecutionCoordinator.cs:601-604](ExecAssistantRuntime/ExecutionCoordinator.cs)
+
+When a paused entry races a broker fill (cancel sent, fill nonetheless
+arrives), `ReconcilePosition` calls `FlattenPausedFill` with reason
+`entry_filled_while_paused`. The intent goes through `LogIntentResult` like
+any flatten, so there *is* a JSONL trail. But this is a non-obvious
+condition that an operator post-mortem should be able to filter for
+directly. Consider adding a dedicated `entry_filled_while_paused` JSONL
+event in `ReconcilePosition` before issuing the flatten, with a snippet of
+the relevant submission telemetry, so the chain
+`pause → cancel-requested → fill → flatten` is easy to reconstruct as a
+unit rather than three separately-keyed events.
+
+### N-17 · `directive_invalidated` event semantics narrowed
+**Severity:** Low · **Category:** Audit-consumer compatibility
+
+`LogIntentResult` now emits `directive_invalidated` only for cancel intents
+whose reason ends with `_sponsor_failed_while_flat`. The previous trigger
+on plain `HF_while_flat` / `LF_while_flat` is gone (those reasons no
+longer exist; the pause path uses `HF_pause_while_flat` / `LF_pause_while_flat`).
+Any external audit consumer that filtered `events.jsonl` for
+`directive_invalidated` to count "HF/LF kills" will under-count after this
+commit. The corresponding signal is now `entry_paused` (state-change event,
+non-terminal). Worth a one-line CHANGELOG entry inside the repo or at the
+top of `OPERATOR_GUIDE.md` for anyone who has built downstream tooling on
+the prior schema.
+
+### N-18 · `ExecutionCoordinator.EntryPaused` property exposed but unused
+**Severity:** Info · **Category:** Maintainability
+
+The new property `EntryPaused => State == RuntimeExecutionState.Paused` has
+no callers inside `ExecAssistantRuntime/`. Either there's a planned consumer
+(e.g., a future operator status surface) or it's redundant with reading
+`State` directly. Dead-code-clean but worth a comment noting the intended
+consumer, or remove for now.
+
+### N-19 · The "RecoveryActionRequired" synthetic checkpoint state is non-enum-typed
+**Severity:** Info · **Category:** Maintainability
+
+`SaveCheckpointIfDue` takes a `stateOverride: string` parameter and
+`ShadowLivePositionRequiresAction` passes the literal string
+`"RecoveryActionRequired"`. The runtime's `RuntimeExecutionState` enum
+doesn't include that value (it's a runtime-level concept, not a
+coordinator state). The checkpoint persists it as a free-form string field
+that external tooling has to recognize alongside the enum string values.
+This is fine, but a comment in `RuntimeCheckpointData` listing the
+augmented strings would help maintainers know what `EvidenceState` and
+`RuntimeState` can carry beyond the enum names.
+
+## Items unchanged from prior passes
+
+- **N-08 (LogIntentResult noise on no-op protection re-issue)** — unchanged.
+  The `GatewayResult.NoOp` flag I suggested still doesn't exist; every
+  accepted protection ensure (including same-quantity-same-price) is
+  echoed to the operator log.
+- **N-10 (`Halted → Halting → Halted` lineage in SafetyFlatten)** — unchanged.
+- **N-12 (sponsor `Epoch` and `Source` telemetry accuracy)** — unchanged.
+- **N-14 (sponsor-failure flat branch is defensive)** — unchanged. Still
+  reachable in the new code as a defensive branch.
+
+## Summary
+
+No new blockers; no regressions I can see. The HF/LF policy rewrite is the
+biggest change and is implemented correctly per the new DESIGN.md text,
+with thorough self-tests. The continuity tracker fixes a real hair-trigger
+fragility I should have flagged in earlier passes. The contract gap-closures
+are good plumbing.
+
+The single thing I'd most want before a live cut is a one-paragraph
+operator brief explicitly labelled "What changed since pass 3:" naming the
+HF/LF de-escalation and the new pause/resume sequence — N-15 above. The
+implementation is correct; the change in trader-visible behavior is large
+enough that an operator who has been running this for a while should not be
+surprised by the first ride-through-LF moment.
