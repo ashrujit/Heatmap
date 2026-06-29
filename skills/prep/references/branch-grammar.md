@@ -171,6 +171,107 @@ Reduce optionality aggressively:
 - If price keeps rotating through value without survival, campaigns shrink.
 - If the only trade requires chasing into the middle of balance, mark it `leave alone`.
 
+## Transition Discipline
+
+When a drive succeeds first and then fails to continue, do not wait for the
+opposite side to earn campaign ownership before naming the next opportunity.
+Separate these states:
+
+1. `Original campaign active`
+   - Required evidence is still holding.
+   - Pullbacks should not re-enter the area the drive had to deny.
+   - Same-direction continuation or add logic may remain valid.
+
+2. `Original campaign paused`
+   - The drive reached an objective or swept an edge but did not accept beyond it.
+   - Fresh entries in the original direction need renewed acceptance.
+   - Opposite-direction repair becomes allowed as a probe.
+
+3. `Repair probe active`
+   - The original side failed continuation and price is reclaiming important references.
+   - The target is the next owed repair/test area, not a full reversal objective.
+   - Size/adds should be conservative until same-side ownership survives.
+
+4. `Campaign conversion`
+   - The repair side converts the major reference, builds value beyond it, and survives tests.
+   - The opportunity may upgrade from probe to campaign if price quality remains acceptable.
+   - If conversion happens above/below the planned entry, label the next trade `late confirmation`
+     or `continuation`, not the original repair entry.
+
+5. `Balance after failed continuation`
+   - Both sides have failed enough that the next opportunity is edge reaction only.
+   - Do not keep forcing the repair side as a campaign through the middle.
+
+For each transition, state:
+
+```text
+Now allowed:
+Now disallowed:
+Upgrade proof:
+Downgrade proof:
+Price-quality warning:
+```
+
+## EA Draft Candidate Grammar
+
+Prep may draft named EA candidates when participation is being discussed. Drafts
+are not dispatches. Use this format:
+
+```text
+EA candidate A - [probe/campaign/continuation/edge reaction] (draft, not dispatched)
+Side: long/short
+Entry range: inclusive order range
+Target: HARD_TP price and reference
+Size/adds: base, add, max, or no-add
+Invalidation: pre-entry invalidation if needed
+TTL: minutes or exact expiry
+Opportunity class:
+Price quality:
+Why this exists:
+Dispatch note:
+```
+
+Candidate rules:
+
+- Name every candidate. Do not make the user refer to "the above" if multiple drafts exist.
+- If a behavior-changing field is unknown, write `needs:` instead of guessing.
+- Prefer one best candidate and one alternate only when the alternate is genuinely different
+  in price quality or opportunity class.
+- A probe candidate should usually be base-only or no-add unless the user has explicit
+  session defaults and the structure justifies adds.
+- A campaign candidate may allow adds only after ownership conversion and survivable tests.
+- A continuation candidate must warn when the ideal conversion/retest entry has already passed.
+- Do not use a wide context phrase such as `above open` as the order range. Translate it into
+  a concrete executable price range or mark the field as `needs: entry range`.
+- Do not turn `anything above IBL` into a directive unless that is truly the risk boundary and
+  the user explicitly accepts the size of that risk.
+
+## Immutable Directive Lifecycle
+
+Because EAR directives are immutable, Prep should treat probe and campaign as
+separate executable contracts unless the user explicitly asks EA to continue a
+same-side campaign after a local protective exit.
+
+Common sequence:
+
+```text
+1. Probe draft:
+   Seller failure allows long repair toward IBH, but demand has not yet stacked.
+   Candidate is base-only/no-add, target is repair objective, invalidation is the failed-repair base.
+
+2. Conversion:
+   IBH or another major reference converts, old supply fails, and demand survives.
+   State that the probe has validated into campaign permission.
+
+3. Campaign draft:
+   New candidate may target the larger objective and may allow adds if the entry is still fair.
+   If price is already beyond the conversion entry, mark it as continuation/late confirmation.
+
+4. Balance/exhaustion:
+   Responsive supply, failed higher demand, or two-way failure downgrades continuation.
+   New longs become edge reactions or leave-alone until fresh ownership appears.
+```
+
 ## Output Examples
 
 ### ETH Below Prior Value

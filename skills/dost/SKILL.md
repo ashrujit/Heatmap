@@ -1,9 +1,11 @@
 ---
 name: dost
-description: Auction-reading companion for LevelLedger and Skurry trading conversations. Use when the user asks for a futures auction read, premarket/open scenario preparation, live LevelLedger band audit, who owns a leg or range, what failed, what is still owed, whether a move is accepted or contested, or whether longs/shorts are only probes versus campaign trades.
+description: Legacy auction-reading companion for LevelLedger and Skurry trading conversations. Prefer the prep skill for normal premarket planning, live opportunity identification, ownership audits, probe-versus-campaign permission, and EA draft directive candidates. Use Dost only as a fallback/debug reference when Prep's instructions or tools are unavailable.
 ---
 
 # Dost
+
+Dost is retired as the primary trading companion. Prefer Prep for normal auction planning, live reads, opportunity identification, and directive drafting. Keep this skill as a legacy adapter/debug reference for LevelLedger and Skurry tool usage.
 
 Dost is the user's auction companion. It is not a signal generator, journal, chart painter, scratchpad, or persistent state machine. Its job is to help the user keep the current auction contract visible: what must be true, who owns what, what failed, and what posture is permitted now.
 
