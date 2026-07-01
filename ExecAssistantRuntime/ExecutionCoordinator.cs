@@ -73,6 +73,11 @@ namespace ExecAssistantRuntime
         public DateTime RootFormedUtc { get; init; }
         public DateTime SupportFormedUtc { get; init; }
         public DateTime TriggerUtc { get; init; }
+        public bool FailureAssisted { get; init; }
+        public int FailureParentObjectId { get; init; }
+        public long FailureParentMinTick { get; init; }
+        public long FailureParentMaxTick { get; init; }
+        public DateTime FailureParentHeldUtc { get; init; }
     }
 
     internal sealed class SponsorContext
@@ -105,6 +110,22 @@ namespace ExecAssistantRuntime
         public DateTime EvidenceAfterUtc { get; init; }
     }
 
+    internal sealed class CoordinatorAuditEvent
+    {
+        public string EventType { get; init; }
+        public DateTime TimeUtc { get; init; }
+        public string DirectiveId { get; init; }
+        public string Reason { get; init; }
+        public int? ParentObjectId { get; init; }
+        public EvidenceSide? ParentSide { get; init; }
+        public long? ParentMinTick { get; init; }
+        public long? ParentMaxTick { get; init; }
+        public int? ChildObjectId { get; init; }
+        public EvidenceSource? ChildSource { get; init; }
+        public long? ChildMinTick { get; init; }
+        public long? ChildMaxTick { get; init; }
+    }
+
     internal sealed class OrderIntent
     {
         public string IntentId { get; init; }
@@ -129,11 +150,15 @@ namespace ExecAssistantRuntime
         private const int SupportedCandidateMaxDistanceTicks = 20;
         private const int DirectConversionMaxDistanceTicks = 20;
         private const int ReverseResolutionProximityTicks = 20;
+        private const int FailureAssistedParentTtlSeconds = 300;
+        private const int FailureAssistedChildTouchTicks = 4;
 
         private readonly double _tickSize;
+        private readonly bool _failureAssistedEntriesEnabled;
         private readonly HashSet<int> _usedRootObjectIds = new();
         private readonly HashSet<int> _baselineFailureIds = new();
         private readonly HashSet<int> _activeAdverseFailureIds = new();
+        private readonly List<CoordinatorAuditEvent> _auditEvents = new();
         private TradeDirective _directive;
         private DateTime _activatedUtc;
         private DateTime _freshRootAfterUtc;
@@ -146,6 +171,7 @@ namespace ExecAssistantRuntime
         private ResolutionContext _entryContext;
         private PendingReclaim _pendingReclaim;
         private PendingDirectRetest _pendingRetest;
+        private FailureAssistedParent _failureAssistedParent;
         private OrderIntent _pendingEntryIntent;
         private FlattenDisposition _flattenDisposition;
         private double _lastKnownQuantity;
@@ -156,8 +182,14 @@ namespace ExecAssistantRuntime
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
+            : this(tickSize, failureAssistedEntriesEnabled: true)
+        {
+        }
+
+        public ExecutionCoordinator(double tickSize, bool failureAssistedEntriesEnabled)
         {
             _tickSize = double.IsFinite(tickSize) && tickSize > 0 ? tickSize : 0.25;
+            _failureAssistedEntriesEnabled = failureAssistedEntriesEnabled;
         }
 
         public RuntimeExecutionState State { get; private set; } = RuntimeExecutionState.Idle;
@@ -171,6 +203,15 @@ namespace ExecAssistantRuntime
         public bool EntryPaused => State == RuntimeExecutionState.Paused;
         public IReadOnlyCollection<int> ActiveAdverseFailureIds
             => _activeAdverseFailureIds;
+
+        public IReadOnlyList<CoordinatorAuditEvent> DrainAuditEvents()
+        {
+            if (_auditEvents.Count == 0)
+                return Array.Empty<CoordinatorAuditEvent>();
+            CoordinatorAuditEvent[] result = _auditEvents.ToArray();
+            _auditEvents.Clear();
+            return result;
+        }
 
         public void AcceptDirective(
             TradeDirective directive,
@@ -201,6 +242,7 @@ namespace ExecAssistantRuntime
             _entryContext = null;
             _pendingReclaim = null;
             _pendingRetest = null;
+            _failureAssistedParent = null;
             _pendingEntryIntent = null;
             _flattenDisposition = null;
             _lastKnownQuantity = 0;
@@ -390,6 +432,7 @@ namespace ExecAssistantRuntime
             if (!evidenceAvailable)
                 return intents;
 
+            ExpireFailureAssistedParent(nowUtc);
             if (_pendingEntryIntent == null
                 && (State == RuntimeExecutionState.Armed
                     || State == RuntimeExecutionState.BaseOnly
@@ -458,6 +501,7 @@ namespace ExecAssistantRuntime
             }
             bool hadActiveAdverseFailures = HasActiveAdverseFailures;
             ObserveAdverseFailures(transitions);
+            ObserveFailureAssistedContext(transitions, nowUtc);
             if (position.IsFlat)
             {
                 EvidenceTransition freshAdverseFailure = transitions.FirstOrDefault(
@@ -534,6 +578,15 @@ namespace ExecAssistantRuntime
 
                 OrderIntent intent = null;
                 if (transition.Kind == EvidenceTransitionKind.RailOwned
+                    && transition.Band?.Side == DesiredEvidenceSide()
+                    && _directive.AllowedResolutions.Contains(ResolutionType.DirectConversion))
+                {
+                    intent = EvaluateFailureAssistedChild(
+                        transition, market, position, mayAdd);
+                }
+
+                if (intent == null
+                    && transition.Kind == EvidenceTransitionKind.RailOwned
                     && transition.Band?.Source == EvidenceSource.Consumed
                     && transition.Band.Side == DesiredEvidenceSide()
                     && _directive.AllowedResolutions.Contains(ResolutionType.DirectConversion))
@@ -587,6 +640,7 @@ namespace ExecAssistantRuntime
                 _pendingEntryIntent = null;
                 _pendingReclaim = null;
                 _pendingRetest = null;
+                _failureAssistedParent = null;
                 _lastFillUtc = nowUtc;
                 _freshRootAfterUtc = nowUtc;
                 _entryAnchorFailed = false;
@@ -660,6 +714,7 @@ namespace ExecAssistantRuntime
                 _entryAnchorFailed = false;
                 _pendingReclaim = null;
                 _pendingRetest = null;
+                _failureAssistedParent = null;
                 if (_currentSponsor != null)
                 {
                     _lastSponsorClear = new SponsorClearContext
@@ -734,6 +789,10 @@ namespace ExecAssistantRuntime
         public OrderIntent SafetyFlatten(DateTime nowUtc, ExecutableMarket market, string reason)
         {
             State = RuntimeExecutionState.Halting;
+            _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+            _failureAssistedParent = null;
             OrderIntent intent = CreateFlattenIntent(nowUtc, market, reason,
                 terminal: true, rearm: false);
             _flattenDisposition.HaltAfterFlat = true;
@@ -748,6 +807,10 @@ namespace ExecAssistantRuntime
             var intents = new List<OrderIntent>();
             if (_directive == null || IsTerminal(State))
                 return intents;
+            _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+            _failureAssistedParent = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "cancel_directive"));
             if (position != null && !position.IsFlat)
             {
@@ -771,6 +834,9 @@ namespace ExecAssistantRuntime
             var intents = new List<OrderIntent>();
             State = RuntimeExecutionState.Halting;
             _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+            _failureAssistedParent = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "FLAT"));
             if (position != null && !position.IsFlat)
             {
@@ -792,6 +858,7 @@ namespace ExecAssistantRuntime
             _pendingEntryIntent = null;
             _pendingReclaim = null;
             _pendingRetest = null;
+            _failureAssistedParent = null;
             _currentSponsor = null;
             BreakContinuationLineage();
         }
@@ -800,6 +867,9 @@ namespace ExecAssistantRuntime
         {
             State = RuntimeExecutionState.Error;
             _pendingEntryIntent = null;
+            _pendingReclaim = null;
+            _pendingRetest = null;
+            _failureAssistedParent = null;
             BreakContinuationLineage();
         }
 
@@ -1012,6 +1082,73 @@ namespace ExecAssistantRuntime
             return null;
         }
 
+        private OrderIntent EvaluateFailureAssistedChild(
+            EvidenceTransition transition,
+            ExecutableMarket market,
+            RuntimePosition position,
+            bool isAdd)
+        {
+            FailureAssistedParent parent = _failureAssistedParent;
+            EvidenceBandView band = transition.Band;
+            if (!_failureAssistedEntriesEnabled
+                || parent == null
+                || band == null
+                || !FailureAssistedChildEligible(parent, transition, band, isAdd))
+            {
+                return null;
+            }
+
+            if (!QuoteEligible(market, isAdd) || AtOrBeyondTarget(market))
+                return null;
+
+            if (!parent.ChildObjectId.HasValue)
+            {
+                parent.ChildObjectId = band.Id;
+                parent.ChildSource = band.Source;
+                parent.ChildMinTick = band.MinTick;
+                parent.ChildMaxTick = band.MaxTick;
+                parent.ChildFormedUtc = band.FormedUtc;
+                AddFailureParentAudit("failure_parent_child_selected",
+                    transition.TimeUtc, parent, band, "next_same_side_ownership");
+            }
+
+            ResolutionContext resolution = new()
+            {
+                Resolution = ResolutionType.DirectConversion,
+                RootObjectId = band.Id,
+                SupportObjectId = band.Id,
+                RootMinTick = band.MinTick,
+                RootMaxTick = band.MaxTick,
+                SupportMinTick = band.MinTick,
+                SupportMaxTick = band.MaxTick,
+                SupportSource = band.Source,
+                RootFormedUtc = band.FormedUtc,
+                SupportFormedUtc = band.FormedUtc,
+                TriggerUtc = transition.TimeUtc,
+                FailureAssisted = true,
+                FailureParentObjectId = parent.ParentObjectId,
+                FailureParentMinTick = parent.MinTick,
+                FailureParentMaxTick = parent.MaxTick,
+                FailureParentHeldUtc = parent.HeldUtc,
+            };
+
+            long quoteTick = PriceToTick(market.Executable(_directive.Direction));
+            if (RangeDistance(quoteTick, band.MinTick, band.MaxTick)
+                <= DirectConversionMaxDistanceTicks)
+            {
+                return CreateEntryIntent(transition.TimeUtc, market, position,
+                    resolution, isAdd, "failure_parent_child_direct");
+            }
+
+            _pendingRetest = new PendingDirectRetest
+            {
+                Resolution = resolution,
+                IsAdd = isAdd,
+                Reason = "failure_parent_child_retest",
+            };
+            return null;
+        }
+
         private OrderIntent EvaluateSupportedReclaim(
             EvidenceTransition transition,
             ExecutableMarket market,
@@ -1163,8 +1300,13 @@ namespace ExecAssistantRuntime
                 > DirectConversionMaxDistanceTicks)
                 return null;
             _pendingRetest = null;
+            string reason = string.IsNullOrWhiteSpace(pending.Reason)
+                ? pending.Resolution?.FailureAssisted == true
+                    ? "failure_parent_child_retest"
+                    : "direct_conversion_retest"
+                : pending.Reason;
             return CreateEntryIntent(nowUtc, market, position, pending.Resolution,
-                pending.IsAdd, "direct_conversion_retest");
+                pending.IsAdd, reason);
         }
 
         private OrderIntent EvaluateBaseStop(EvidenceTransition transition, ExecutableMarket market)
@@ -1229,6 +1371,18 @@ namespace ExecAssistantRuntime
             }
 
             bool terminal = _everLeveraged || HasActiveAdverseFailures;
+            bool failureAssistedEntrySupport = confirmedFailure
+                && _entryContext?.FailureAssisted == true
+                && transition.Band.Id == _entryContext.SupportObjectId;
+            if (failureAssistedEntrySupport)
+            {
+                AddFailureParentAudit("failure_parent_child_failed",
+                    transition.TimeUtc,
+                    _entryContext,
+                    terminal ? reason : $"failure_parent_child_failed:{_currentSponsor.ObjectId}");
+                if (!terminal)
+                    reason = $"failure_parent_child_failed:{_currentSponsor.ObjectId}";
+            }
             _awaitingSponsorAlignedFailure = !terminal;
             return CreateFlattenIntent(transition.TimeUtc, market, reason,
                 terminal: terminal, rearm: !terminal);
@@ -1322,6 +1476,7 @@ namespace ExecAssistantRuntime
             _pendingEntryIntent = null;
             _pendingReclaim = null;
             _pendingRetest = null;
+            _failureAssistedParent = null;
         }
 
         private void InvalidateWhileFlat()
@@ -1330,6 +1485,7 @@ namespace ExecAssistantRuntime
             _pendingEntryIntent = null;
             _pendingReclaim = null;
             _pendingRetest = null;
+            _failureAssistedParent = null;
         }
 
         private bool HasActiveAdverseFailures
@@ -1351,6 +1507,197 @@ namespace ExecAssistantRuntime
                     _activeAdverseFailureIds.Add(transition.Band.Id);
                 }
             }
+        }
+
+        private void ObserveFailureAssistedContext(
+            IReadOnlyList<EvidenceTransition> transitions,
+            DateTime nowUtc)
+        {
+            if (!_failureAssistedEntriesEnabled || _directive == null)
+                return;
+            ExpireFailureAssistedParent(nowUtc);
+            foreach (EvidenceTransition transition in transitions)
+            {
+                EvidenceBandView band = transition?.Band;
+                if (band == null)
+                    continue;
+
+                if (_failureAssistedParent != null
+                    && band.Id == _failureAssistedParent.ParentObjectId
+                    && transition.Kind == EvidenceTransitionKind.FailureInvalidated)
+                {
+                    ClearFailureAssistedParent(transition.TimeUtc,
+                        "parent_failure_invalidated");
+                    continue;
+                }
+
+                if (_failureAssistedParent?.ChildObjectId == band.Id
+                    && transition.Kind == EvidenceTransitionKind.RailFailed)
+                {
+                    AddFailureParentAudit("failure_parent_child_failed",
+                        transition.TimeUtc,
+                        _failureAssistedParent,
+                        band,
+                        "child_failed_before_fill");
+                    ClearPendingFailureAssistedRetest();
+                    _failureAssistedParent = null;
+                    continue;
+                }
+
+                if (!IsFreshFavorableFailureHeld(transition)
+                    || _failureAssistedParent?.ChildObjectId.HasValue == true)
+                {
+                    continue;
+                }
+
+                ArmFailureAssistedParent(transition);
+            }
+        }
+
+        private bool IsFreshFavorableFailureHeld(EvidenceTransition transition)
+            => transition?.Kind == EvidenceTransitionKind.FailureHeld
+                && transition.Band != null
+                && transition.Band.Role == EvidenceRole.FailureZone
+                && !_baselineFailureIds.Contains(transition.Band.Id)
+                && transition.TimeUtc >= _activatedUtc
+                && (State == RuntimeExecutionState.Armed
+                    || State == RuntimeExecutionState.BaseOnly
+                    || State == RuntimeExecutionState.Leveraged)
+                && (State != RuntimeExecutionState.Armed || !HasActiveAdverseFailures)
+                && transition.Band.Side == DesiredEvidenceSide()
+                && ContextEligible(transition.Band);
+
+        private void ArmFailureAssistedParent(EvidenceTransition transition)
+        {
+            EvidenceBandView band = transition.Band;
+            _failureAssistedParent = new FailureAssistedParent
+            {
+                ParentObjectId = band.Id,
+                Side = band.Side,
+                MinTick = band.MinTick,
+                MaxTick = band.MaxTick,
+                FormedUtc = band.FormedUtc,
+                HeldUtc = NormalizeUtc(transition.TimeUtc),
+                ExpiresUtc = NormalizeUtc(transition.TimeUtc)
+                    .AddSeconds(FailureAssistedParentTtlSeconds),
+            };
+            AddFailureParentAudit("failure_parent_armed",
+                transition.TimeUtc,
+                _failureAssistedParent,
+                child: null,
+                "favorable_failure_held");
+        }
+
+        private bool FailureAssistedChildEligible(
+            FailureAssistedParent parent,
+            EvidenceTransition transition,
+            EvidenceBandView band,
+            bool isAdd)
+        {
+            if (parent.ChildObjectId.HasValue
+                && parent.ChildObjectId.Value != band.Id)
+            {
+                return false;
+            }
+
+            return transition.Kind == EvidenceTransitionKind.RailOwned
+                && band.Role == EvidenceRole.Rail
+                && band.IsLiveRail
+                && band.Side == parent.Side
+                && band.Side == DesiredEvidenceSide()
+                && transition.TimeUtc >= parent.HeldUtc
+                && band.FormedUtc >= parent.HeldUtc
+                && RootEligible(band.Id, band.FormedUtc, isAdd)
+                && ContextEligible(band)
+                && OwnershipDisplacedFavorably(transition, band)
+                && ChildBeyondFailureParent(parent, band);
+        }
+
+        private bool ChildBeyondFailureParent(
+            FailureAssistedParent parent,
+            EvidenceBandView child)
+            => DesiredEvidenceSide() == EvidenceSide.Demand
+                ? child.MinTick >= parent.MaxTick - FailureAssistedChildTouchTicks
+                : child.MaxTick <= parent.MinTick + FailureAssistedChildTouchTicks;
+
+        private void ExpireFailureAssistedParent(DateTime nowUtc)
+        {
+            if (_failureAssistedParent == null)
+                return;
+            nowUtc = NormalizeUtc(nowUtc);
+            if (nowUtc <= _failureAssistedParent.ExpiresUtc)
+                return;
+            ClearFailureAssistedParent(nowUtc, "parent_context_expired");
+        }
+
+        private void ClearFailureAssistedParent(DateTime nowUtc, string reason)
+        {
+            if (_failureAssistedParent == null)
+                return;
+            AddFailureParentAudit("failure_parent_invalidated",
+                nowUtc,
+                _failureAssistedParent,
+                child: null,
+                reason);
+            ClearPendingFailureAssistedRetest();
+            _failureAssistedParent = null;
+        }
+
+        private void ClearPendingFailureAssistedRetest()
+        {
+            if (_pendingRetest?.Resolution?.FailureAssisted == true)
+                _pendingRetest = null;
+        }
+
+        private void AddFailureParentAudit(
+            string eventType,
+            DateTime timeUtc,
+            FailureAssistedParent parent,
+            EvidenceBandView child,
+            string reason)
+        {
+            if (parent == null)
+                return;
+            _auditEvents.Add(new CoordinatorAuditEvent
+            {
+                EventType = eventType,
+                TimeUtc = NormalizeUtc(timeUtc),
+                DirectiveId = _directive?.Id,
+                Reason = reason,
+                ParentObjectId = parent.ParentObjectId,
+                ParentSide = parent.Side,
+                ParentMinTick = parent.MinTick,
+                ParentMaxTick = parent.MaxTick,
+                ChildObjectId = child?.Id ?? parent.ChildObjectId,
+                ChildSource = child?.Source ?? parent.ChildSource,
+                ChildMinTick = child?.MinTick ?? parent.ChildMinTick,
+                ChildMaxTick = child?.MaxTick ?? parent.ChildMaxTick,
+            });
+        }
+
+        private void AddFailureParentAudit(
+            string eventType,
+            DateTime timeUtc,
+            ResolutionContext resolution,
+            string reason)
+        {
+            if (resolution?.FailureAssisted != true)
+                return;
+            _auditEvents.Add(new CoordinatorAuditEvent
+            {
+                EventType = eventType,
+                TimeUtc = NormalizeUtc(timeUtc),
+                DirectiveId = _directive?.Id,
+                Reason = reason,
+                ParentObjectId = resolution.FailureParentObjectId,
+                ParentSide = DesiredEvidenceSide(),
+                ParentMinTick = resolution.FailureParentMinTick,
+                ParentMaxTick = resolution.FailureParentMaxTick,
+                ChildObjectId = resolution.SupportObjectId,
+                ChildSource = resolution.SupportSource,
+                ChildMinTick = resolution.SupportMinTick,
+                ChildMaxTick = resolution.SupportMaxTick,
+            });
         }
 
         private bool IsFreshAdverseFailureHeld(EvidenceTransition transition)
@@ -1422,6 +1769,10 @@ namespace ExecAssistantRuntime
                 Resolution = resolution,
             };
             _pendingEntryIntent = intent;
+            AddFailureParentAudit("failure_parent_entry",
+                nowUtc,
+                resolution,
+                reason);
             return intent;
         }
 
@@ -1597,6 +1948,8 @@ namespace ExecAssistantRuntime
             => !string.IsNullOrWhiteSpace(reason)
                 && (reason.StartsWith("sponsor_failed:", StringComparison.Ordinal)
                     || reason.StartsWith("sponsor_consumed:", StringComparison.Ordinal)
+                    || reason.StartsWith("failure_parent_child_failed:",
+                        StringComparison.Ordinal)
                     || string.Equals(reason, "reverse_entry_resolution",
                         StringComparison.Ordinal)
                     || string.Equals(reason, "base_support_lost",
@@ -1622,6 +1975,23 @@ namespace ExecAssistantRuntime
         {
             public ResolutionContext Resolution;
             public bool IsAdd;
+            public string Reason;
+        }
+
+        private sealed class FailureAssistedParent
+        {
+            public int ParentObjectId;
+            public EvidenceSide Side;
+            public long MinTick;
+            public long MaxTick;
+            public DateTime FormedUtc;
+            public DateTime HeldUtc;
+            public DateTime ExpiresUtc;
+            public int? ChildObjectId;
+            public EvidenceSource? ChildSource;
+            public long? ChildMinTick;
+            public long? ChildMaxTick;
+            public DateTime ChildFormedUtc;
         }
 
         private sealed class FlattenDisposition

@@ -459,6 +459,32 @@ of adverse displacement held for ten seconds. A nearby opposite candidate does
 not accelerate that decision. Once `CONSUMED` is confirmed, route immediately;
 there is no additional execution delay.
 
+### LF/HF-Assisted Ownership
+
+A same-side LF/HF can make the next ownership rail tradeable without making the
+LF/HF itself an entry.
+
+For a long, a fresh LF says sellers failed to extend lower. If the next newly
+owned demand rail forms beyond the LF and price displaces favorably from that
+rail, the rail supplies the missing positive evidence. The runtime may enter or
+add from that child rail as a direct-style resolution even when the rail source
+is ordinary lean rather than consumed supply. For a short, invert the logic:
+fresh HF parent, next newly owned supply child below it.
+
+The parent context is deliberately narrow:
+
+- the LF/HF must be fresh after activation and favorable to the directive side;
+- the parent expires after five minutes if no child is selected;
+- only the first same-side child beyond the parent is selected;
+- parent invalidation or child failure before fill clears the pending retest;
+- the child, not the LF/HF, becomes the support object and sponsor;
+- base-only child failure is a retryable protective clear, while leveraged
+  current-sponsor failure remains terminal.
+
+The Quantower setting `LF/HF Assisted Entries Enabled` defaults on so fast
+auctions can use this repertoire. Turning it off restores strict consumed direct
+conversion and supported reclaim behavior.
+
 ### Supported Reclaim
 
 For a long:

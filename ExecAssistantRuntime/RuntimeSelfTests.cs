@@ -462,6 +462,7 @@ namespace ExecAssistantRuntime
 
             SponsorTests(directive, now, market, evidence);
             ShortSponsorTests(now, market, evidence);
+            FailureAssistedEntryTests(directive, now, evidence);
             ContinuationTests(directive, now, market, evidence);
             StaleDirectRetestTests(directive, now);
 
@@ -577,6 +578,170 @@ namespace ExecAssistantRuntime
                     basePosition,
                     evidence).Count == 0,
                 "flat direct retest is stale after base fill");
+        }
+
+        private static void FailureAssistedEntryTests(
+            TradeDirective directive,
+            DateTime now,
+            ExecutionEvidenceEngine evidence)
+        {
+            var coordinator = new ExecutionCoordinator(0.25);
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+
+            EvidenceTransition parentLf = FailureTransition(
+                EvidenceTransitionKind.FailureHeld,
+                810,
+                EvidenceSide.Demand,
+                now.AddSeconds(10),
+                30500,
+                30505);
+            Require(coordinator.ProcessEvidence(
+                    new[] { parentLf },
+                    now.AddSeconds(10),
+                    Market(now.AddSeconds(10), 30508, 30508.25),
+                    RuntimePosition.Flat,
+                    evidence).Count == 0,
+                "favorable LF is context, not an entry");
+            Require(coordinator.DrainAuditEvents()
+                    .Any(e => e.EventType == "failure_parent_armed"
+                        && e.ParentObjectId == 810),
+                "favorable LF arms assisted-entry parent");
+
+            EvidenceTransition childDemand = RailTransition(
+                EvidenceTransitionKind.RailOwned,
+                811,
+                EvidenceSide.Demand,
+                EvidenceSource.Lean,
+                now.AddSeconds(20),
+                now.AddSeconds(31),
+                30510,
+                30511);
+            OrderIntent entry = coordinator.ProcessEvidence(
+                new[] { childDemand },
+                now.AddSeconds(31),
+                Market(now.AddSeconds(31), 30509.75, 30510),
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(entry?.Kind == OrderIntentKind.EnterBase
+                    && entry.Reason == "failure_parent_child_direct"
+                    && entry.Resolution.FailureAssisted
+                    && entry.Resolution.FailureParentObjectId == 810
+                    && entry.Resolution.SupportObjectId == 811,
+                "LF-assisted lean demand child authorizes base entry");
+            CoordinatorAuditEvent[] childAudits = coordinator.DrainAuditEvents().ToArray();
+            Require(childAudits.Any(e => e.EventType == "failure_parent_child_selected"
+                    && e.ChildObjectId == 811)
+                && childAudits.Any(e => e.EventType == "failure_parent_entry"
+                    && e.ChildObjectId == 811),
+                "LF-assisted child selection and entry are audited");
+
+            coordinator.OnOrderAttemptResult(entry, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "failure-assisted-selftest",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = 30510,
+            };
+            coordinator.OnPositionChanged(basePosition, now.AddSeconds(32),
+                Market(now.AddSeconds(32), 30510, 30510.25));
+            Require(coordinator.CurrentSponsor?.ObjectId == 811,
+                "LF-assisted child becomes filled sponsor");
+
+            OrderIntent flatten = coordinator.ProcessEvidence(
+                new[]
+                {
+                    RailTransition(EvidenceTransitionKind.RailFailed,
+                        811,
+                        EvidenceSide.Demand,
+                        EvidenceSource.Lean,
+                        now.AddSeconds(20),
+                        now.AddSeconds(45),
+                        30510,
+                        30511),
+                },
+                now.AddSeconds(45),
+                Market(now.AddSeconds(45), 30508, 30508.25),
+                basePosition,
+                evidence).SingleOrDefault();
+            Require(flatten?.Kind == OrderIntentKind.Flatten
+                    && flatten.RearmAfterFlat
+                    && !flatten.TerminalAfterFlat
+                    && flatten.Reason == "failure_parent_child_failed:811",
+                "LF-assisted base child failure flattens and rearms");
+            Require(coordinator.DrainAuditEvents()
+                    .Any(e => e.EventType == "failure_parent_child_failed"
+                        && e.ChildObjectId == 811),
+                "LF-assisted child failure is audited");
+
+            var disabled = new ExecutionCoordinator(
+                0.25,
+                failureAssistedEntriesEnabled: false);
+            disabled.AcceptDirective(directive, now, Array.Empty<int>());
+            disabled.InitializeObservedPosition(RuntimePosition.Flat);
+            Require(disabled.ProcessEvidence(
+                    new[] { parentLf },
+                    now.AddSeconds(10),
+                    Market(now.AddSeconds(10), 30508, 30508.25),
+                    RuntimePosition.Flat,
+                    evidence).Count == 0
+                    && disabled.DrainAuditEvents().Count == 0,
+                "disabled LF-assisted setting ignores favorable LF parent");
+            Require(disabled.ProcessEvidence(
+                    new[] { childDemand },
+                    now.AddSeconds(31),
+                    Market(now.AddSeconds(31), 30509.75, 30510),
+                    RuntimePosition.Flat,
+                    evidence).Count == 0,
+                "disabled LF-assisted setting does not enter lean child");
+
+            string shortJson = ValidDirectiveJson()
+                .Replace("selftest-long-01", "selftest-short-assisted-01")
+                .Replace("\"side\": \"long\"", "\"side\": \"short\"")
+                .Replace("\"price\": 31000", "\"price\": 29900")
+                .Replace("\"direction\": \"above\"", "\"direction\": \"below\"");
+            TradeDirective shortDirective = DirectiveContracts.ParseTradeDirective(
+                shortJson,
+                5);
+            var shortCoordinator = new ExecutionCoordinator(0.25);
+            shortCoordinator.AcceptDirective(shortDirective, now, Array.Empty<int>());
+            shortCoordinator.InitializeObservedPosition(RuntimePosition.Flat);
+            shortCoordinator.ProcessEvidence(
+                new[]
+                {
+                    FailureTransition(EvidenceTransitionKind.FailureHeld,
+                        820,
+                        EvidenceSide.Supply,
+                        now.AddSeconds(10),
+                        30500,
+                        30505),
+                },
+                now.AddSeconds(10),
+                Market(now.AddSeconds(10), 30495, 30495.25),
+                RuntimePosition.Flat,
+                evidence);
+            OrderIntent shortEntry = shortCoordinator.ProcessEvidence(
+                new[]
+                {
+                    RailTransition(EvidenceTransitionKind.RailOwned,
+                        821,
+                        EvidenceSide.Supply,
+                        EvidenceSource.Lean,
+                        now.AddSeconds(20),
+                        now.AddSeconds(31),
+                        30490,
+                        30491),
+                },
+                now.AddSeconds(31),
+                Market(now.AddSeconds(31), 30491, 30491.25),
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(shortEntry?.Kind == OrderIntentKind.EnterBase
+                    && shortEntry.Reason == "failure_parent_child_direct"
+                    && shortEntry.Resolution.FailureAssisted
+                    && shortEntry.Resolution.FailureParentObjectId == 820,
+                "HF-assisted lean supply child authorizes short base entry");
         }
 
         private static void ContinuationTests(
@@ -1045,6 +1210,49 @@ namespace ExecAssistantRuntime
                 },
             };
         }
+
+        private static EvidenceTransition FailureTransition(
+            EvidenceTransitionKind kind,
+            int id,
+            EvidenceSide side,
+            DateTime eventUtc,
+            double lower,
+            double upper)
+        {
+            long minTick = (long)Math.Round(lower / 0.25);
+            long maxTick = (long)Math.Round(upper / 0.25);
+            return new EvidenceTransition
+            {
+                Kind = kind,
+                TimeUtc = eventUtc,
+                CurrentMidTick = side == EvidenceSide.Demand
+                    ? maxTick + 9
+                    : minTick - 9,
+                Band = new EvidenceBandView
+                {
+                    Id = id,
+                    Role = EvidenceRole.FailureZone,
+                    Side = side,
+                    State = kind == EvidenceTransitionKind.FailureInvalidated
+                        ? EvidenceState.Removed
+                        : EvidenceState.Held,
+                    MinTick = minTick,
+                    MaxTick = maxTick,
+                    FormedUtc = eventUtc.AddSeconds(-10),
+                    OwnedUtc = eventUtc.AddSeconds(-10),
+                    LastStateUtc = eventUtc,
+                },
+            };
+        }
+
+        private static ExecutableMarket Market(DateTime timeUtc, double bid, double ask)
+            => new()
+            {
+                TimeUtc = timeUtc,
+                QuoteUtc = timeUtc,
+                Bid = bid,
+                Ask = ask,
+            };
 
         private static EvidenceTransition BuildConsumedDemandRail(
             ExecutionEvidenceEngine engine,

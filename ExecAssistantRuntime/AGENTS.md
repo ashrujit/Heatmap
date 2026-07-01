@@ -76,11 +76,20 @@ spike JSON shape as an alternate parser.
   sponsor interval and the sponsored-position-to-flat transition closes it with
   `sponsor_cleared`, preserving the last sponsor and flatten reason. Clearance
   is deliberately not echoed to the Strategy Manager log.
+- Sponsor-failure context/rebuild telemetry is audit-only. Ambiguous late-move
+  exits should be classified from adverse ownership, surviving same-side
+  protection, and quick rebuild evidence before sponsor promotion or flatten
+  rules are changed.
 - A fresh opposite HF/LF is local auction evidence first. While flat it pauses
   entry and cancels runtime entry orders until that failure object invalidates.
   While positioned it cannot override an intact causal sponsor. It becomes
   terminal when the current sponsor fails in the same sequence, or when it
   appears after a sponsor-failure base exit before a fresh base fills.
+- A favorable LF/HF is never an entry by itself. With `LF/HF Assisted Entries`
+  enabled, a fresh favorable failure object only arms short-lived parent
+  context; the next newly owned same-side rail beyond that parent is the
+  tradeable anchor, sponsor, and base-risk object. Turning the setting off
+  restores strict direct-conversion/supported-reclaim entry behavior.
 - Restart and confirmed L2 loss never deserialize old candidates, rails, or
   timers. A new evidence engine processes but cannot act until one full
   configured book-lookback interval and the corresponding sample count have

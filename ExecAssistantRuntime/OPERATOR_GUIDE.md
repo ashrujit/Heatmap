@@ -69,6 +69,9 @@ Safety:
 
 - `Trading Enabled=false` is shadow mode and is the default;
 - `Trading Enabled=true` permits actual broker operations;
+- `LF/HF Assisted Entries Enabled=true` is the default. A favorable LF/HF can
+  arm the next same-side ownership rail as an entry/add anchor; it does not
+  make the LF/HF itself directly tradeable;
 - startup self-tests should remain enabled.
 
 Market-data continuity:
@@ -151,6 +154,13 @@ filled entry support is its sponsor. A local opposite HF/LF does not flatten
 while that sponsor remains intact. Same-sequence sponsor failure is terminal;
 if a base sponsor fails first, a subsequently held adverse HF/LF invalidates the
 flat retry before another base fills. Tests and holds do not move weighted BE.
+
+With `LF/HF Assisted Entries Enabled`, a fresh favorable LF for a long or HF for
+a short is parent context for the next newly owned same-side rail beyond it.
+That child rail, not the failure object, becomes the entry/add support and
+initial sponsor. If the child fails while only the base is live, the runtime
+flattens and can re-arm under the normal retry contract; after leverage, current
+sponsor failure remains terminal.
 
 `CONTINUE` is not a reverse, not a control command, and not a way to make EAR
 choose the trade. It only admits the immediate parent directive's protective-exit

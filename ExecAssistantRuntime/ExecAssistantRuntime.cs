@@ -15,6 +15,9 @@ namespace ExecAssistantRuntime
     {
         private const int L1ToleranceTicks = 2;
         private const int ProcessedControlHistory = 100;
+        private const int SponsorFailureRebuildWindowSeconds = 60;
+        private const int SponsorFailureRebuildMaxDistanceTicks = 120;
+        private const int SponsorContextRailLimit = 5;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -67,6 +70,9 @@ namespace ExecAssistantRuntime
         [InputParameter("Run Startup Self Tests", sortIndex: 14)]
         public bool RunStartupSelfTests = true;
 
+        [InputParameter("LF/HF Assisted Entries Enabled", sortIndex: 15)]
+        public bool FailureAssistedEntriesEnabled = true;
+
         [InputParameter("LL Book Lookback (sec)", sortIndex: 20,
             minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
         public int BookLookbackSeconds = 30;
@@ -115,6 +121,7 @@ namespace ExecAssistantRuntime
         private readonly Dictionary<string, string> _processedControlDigests = new(StringComparer.Ordinal);
         private readonly Queue<string> _processedControlOrder = new();
         private readonly HashSet<string> _blockedDirectiveIds = new(StringComparer.Ordinal);
+        private readonly List<PendingSponsorFailureAudit> _pendingSponsorFailureAudits = new();
         private readonly BookContinuityTracker _bookContinuity = new();
 
         private Timer _workerTimer;
@@ -192,7 +199,9 @@ namespace ExecAssistantRuntime
                     message => Log(message, StrategyLoggingLevel.Error));
                 _checkpointStore = new RuntimeCheckpointStore(ExpandPath(CheckpointPath));
                 _evidence = NewEvidenceEngine();
-                _coordinator = new ExecutionCoordinator(_tickSize);
+                _coordinator = new ExecutionCoordinator(
+                    _tickSize,
+                    FailureAssistedEntriesEnabled);
                 _gateway = new QuantowerOrderGateway(
                     RuntimeSymbol,
                     RuntimeAccount,
@@ -240,8 +249,21 @@ namespace ExecAssistantRuntime
                     ("trading_enabled", _runTradingEnabled),
                     ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
                     ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
+                    ("quote_freshness_ms", Math.Max(250, QuoteFreshnessMs)),
                     ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
                     ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                    ("failure_assisted_entries_enabled",
+                        FailureAssistedEntriesEnabled),
+                    ("ll_book_lookback_seconds", Math.Max(10, BookLookbackSeconds)),
+                    ("ll_event_z_threshold", Math.Max(1.0, EventZThreshold)),
+                    ("ll_cluster_min_events", Math.Max(2, ClusterMinEvents)),
+                    ("ll_cluster_ticks", Math.Max(1, ClusterTicks)),
+                    ("ll_cluster_seconds", Math.Max(1, ClusterSeconds)),
+                    ("ll_confirm_move_ticks", Math.Max(1, ConfirmMoveTicks)),
+                    ("ll_confirm_seconds", Math.Max(0, ConfirmSeconds)),
+                    ("ll_failure_buffer_ticks", Math.Max(0, FailureBufferTicks)),
+                    ("ll_failure_confirm_ticks", Math.Max(1, FailureConfirmTicks)),
+                    ("ll_failure_seconds", Math.Max(0, FailureSeconds)),
                     ("directive_path", ExpandPath(DirectivePath)),
                     ("control_path", ExpandPath(ControlPath)));
                 Log($"Runtime started for exec {RuntimeSymbol.Name}, "
@@ -308,10 +330,17 @@ namespace ExecAssistantRuntime
                     _lastBookSampleUtc = nowUtc;
                     ProcessBookSample(nowUtc, market, position);
                 }
+                ExpireSponsorFailureAudits(nowUtc);
 
                 position = CurrentPosition();
-                ExecuteIntents(_coordinator.Tick(nowUtc, market, position, _evidence,
-                    evidenceAvailable: !_evidenceActionsPaused), position, market);
+                IReadOnlyList<OrderIntent> tickIntents = _coordinator.Tick(
+                    nowUtc,
+                    market,
+                    position,
+                    _evidence,
+                    evidenceAvailable: !_evidenceActionsPaused);
+                LogCoordinatorAudit();
+                ExecuteIntents(tickIntents, position, market);
                 LogStateIfChanged();
                 SaveCheckpointIfDue(nowUtc, force: false);
             }
@@ -403,12 +432,16 @@ namespace ExecAssistantRuntime
             _evidenceActionsPaused = !_evidenceWarmupComplete;
             _evidenceState = _evidenceWarmupComplete ? "Ready" : "Warming";
             foreach (EvidenceTransition transition in transitions)
+            {
                 LogEvidence(transition, market);
+                ObserveSponsorFailureRebuild(transition);
+            }
             if (!_evidenceWarmupComplete)
                 return;
             RuntimePosition current = CurrentPosition();
             IReadOnlyList<OrderIntent> intents = _coordinator.ProcessEvidence(
                 transitions, nowUtc, market, current, _evidence);
+            LogCoordinatorAudit();
             LogSponsorIfChanged();
             ExecuteIntents(intents, current, market);
         }
@@ -707,6 +740,8 @@ namespace ExecAssistantRuntime
                 ("lineage_mode", directive.Lineage?.Mode.ToString()),
                 ("parent_directive_id", directive.Lineage?.ParentDirectiveId),
                 ("evidence_state", _evidenceState),
+                ("failure_assisted_entries_enabled",
+                    FailureAssistedEntriesEnabled),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
                 + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
@@ -719,6 +754,7 @@ namespace ExecAssistantRuntime
                     market,
                     position,
                     _evidence);
+                LogCoordinatorAudit();
                 ExecuteIntents(seeded, position, market);
             }
             SaveCheckpointIfDue(DateTime.UtcNow, force: true);
@@ -825,7 +861,7 @@ namespace ExecAssistantRuntime
                     ("shadow", result.Shadow),
                     ("order_id", result.OrderId),
                     ("message", result.Message));
-                LogIntentResult(intent, result);
+                LogIntentResult(intent, result, position, market);
 
                 if (intent.Kind == OrderIntentKind.EnterBase
                     || intent.Kind == OrderIntentKind.Add)
@@ -904,6 +940,7 @@ namespace ExecAssistantRuntime
             };
             IReadOnlyList<OrderIntent> protection = _coordinator.OnPositionChanged(
                 _shadowPosition, DateTime.UtcNow, market);
+            LogCoordinatorAudit();
             LogSponsorIfChanged();
             LogOperator($"{intent.Kind} filled for directive {intent.DirectiveId}: "
                 + $"qty={intent.Quantity:R} at {fillPrice:R}; position "
@@ -917,6 +954,7 @@ namespace ExecAssistantRuntime
             _shadowBreakeven = null;
             _shadowHardTarget = null;
             _coordinator.OnPositionChanged(_shadowPosition, DateTime.UtcNow, market);
+            LogCoordinatorAudit();
             LogSponsorIfChanged();
         }
 
@@ -997,6 +1035,7 @@ namespace ExecAssistantRuntime
                     + $"{_coordinator.Directive?.Id ?? "none"}.");
             IReadOnlyList<OrderIntent> protection = _coordinator.OnPositionChanged(
                 position, nowUtc, market);
+            LogCoordinatorAudit();
             LogSponsorIfChanged();
             ExecuteIntents(protection, position, market);
             if (becameFlat)
@@ -1055,7 +1094,7 @@ namespace ExecAssistantRuntime
                 TriggerAsk = market?.Ask ?? double.NaN,
             };
             GatewayResult cancelResult = _gateway.Execute(cancel, position, market);
-            LogIntentResult(cancel, cancelResult);
+            LogIntentResult(cancel, cancelResult, position, market);
             if (!cancelResult.Accepted)
             {
                 OrderIntent flatten = _coordinator.SafetyFlatten(nowUtc, market,
@@ -1327,7 +1366,15 @@ namespace ExecAssistantRuntime
                 ("support_distance_ticks", resolution == null
                     ? null
                     : DistanceToRange(fillTick, resolution.SupportMinTick,
-                        resolution.SupportMaxTick)));
+                        resolution.SupportMaxTick)),
+                ("failure_assisted", resolution?.FailureAssisted),
+                ("failure_parent_id", resolution?.FailureParentObjectId),
+                ("failure_parent_lower", resolution?.FailureAssisted == true
+                    ? (double?)(resolution.FailureParentMinTick * _tickSize)
+                    : null),
+                ("failure_parent_upper", resolution?.FailureAssisted == true
+                    ? (double?)(resolution.FailureParentMaxTick * _tickSize)
+                    : null));
             LogOperator($"{telemetry.Intent.Kind} fill for directive "
                 + $"{telemetry.Intent.DirectiveId}: qty={fill.Quantity:R} at {fill.Price:R}.");
         }
@@ -1764,6 +1811,47 @@ namespace ExecAssistantRuntime
             }
         }
 
+        private void LogCoordinatorAudit()
+        {
+            if (_coordinator == null || _events == null)
+                return;
+            foreach (CoordinatorAuditEvent audit in _coordinator.DrainAuditEvents())
+            {
+                double? parentLower = audit.ParentMinTick.HasValue
+                    ? audit.ParentMinTick.Value * _tickSize
+                    : null;
+                double? parentUpper = audit.ParentMaxTick.HasValue
+                    ? audit.ParentMaxTick.Value * _tickSize
+                    : null;
+                double? childLower = audit.ChildMinTick.HasValue
+                    ? audit.ChildMinTick.Value * _tickSize
+                    : null;
+                double? childUpper = audit.ChildMaxTick.HasValue
+                    ? audit.ChildMaxTick.Value * _tickSize
+                    : null;
+                _events.Write(audit.EventType,
+                    ("directive_id", audit.DirectiveId),
+                    ("reason", audit.Reason),
+                    ("event_utc", audit.TimeUtc.ToString("O", CultureInfo.InvariantCulture)),
+                    ("parent_id", audit.ParentObjectId),
+                    ("parent_side", audit.ParentSide.HasValue
+                        ? audit.ParentSide.Value.ToString()
+                        : null),
+                    ("parent_min_tick", audit.ParentMinTick),
+                    ("parent_max_tick", audit.ParentMaxTick),
+                    ("parent_lower", parentLower),
+                    ("parent_upper", parentUpper),
+                    ("child_id", audit.ChildObjectId),
+                    ("child_source", audit.ChildSource.HasValue
+                        ? audit.ChildSource.Value.ToString()
+                        : null),
+                    ("child_min_tick", audit.ChildMinTick),
+                    ("child_max_tick", audit.ChildMaxTick),
+                    ("child_lower", childLower),
+                    ("child_upper", childUpper));
+            }
+        }
+
         private void LogSponsorIfChanged()
         {
             if (_coordinator == null
@@ -1813,7 +1901,8 @@ namespace ExecAssistantRuntime
                 + $"reason={sponsor.Reason}.");
         }
 
-        private void LogIntentResult(OrderIntent intent, GatewayResult result)
+        private void LogIntentResult(OrderIntent intent, GatewayResult result,
+            RuntimePosition position, ExecutableMarket market)
         {
             string detail = intent.Kind switch
             {
@@ -1839,6 +1928,7 @@ namespace ExecAssistantRuntime
                         ("upper", sponsor == null ? null : sponsor.MaxTick * _tickSize),
                         ("reason", intent.Reason),
                         ("flatten_accepted", true));
+                    LogSponsorFailureContext(intent, position, market);
                 }
                 if (intent.Kind == OrderIntentKind.CancelRuntimeOrders
                     && intent.Reason?.EndsWith(
@@ -1863,6 +1953,318 @@ namespace ExecAssistantRuntime
             }
             LogOperator($"Directive {intent.DirectiveId}: {detail} rejected: "
                 + $"{result.Message}.", error: true);
+        }
+
+        private void LogSponsorFailureContext(OrderIntent intent,
+            RuntimePosition position,
+            ExecutableMarket market)
+        {
+            SponsorContext sponsor = _coordinator.CurrentSponsor;
+            if (sponsor == null || _evidence == null)
+                return;
+
+            TradeDirection direction = _coordinator.Directive?.Direction
+                ?? (sponsor.Side == EvidenceSide.Demand
+                    ? TradeDirection.Long
+                    : TradeDirection.Short);
+            DateTime failureUtc = ToUtc(intent.TriggerUtc == default
+                ? DateTime.UtcNow
+                : intent.TriggerUtc);
+            EvidenceSide adverseSide = Opposite(sponsor.Side);
+            IReadOnlyList<EvidenceBandView> adverseRails =
+                _evidence.LiveRails(adverseSide);
+            IReadOnlyList<EvidenceBandView> sameSideRails =
+                _evidence.LiveRails(sponsor.Side);
+            List<EvidenceBandView> adverseAhead = adverseRails
+                .Where(band => IsAdverseAhead(band, sponsor, direction))
+                .ToList();
+            List<EvidenceBandView> sameSideProtection = sameSideRails
+                .Where(band => band.Id != sponsor.ObjectId
+                    && IsSameSideProtection(band, sponsor, direction))
+                .ToList();
+            List<EvidenceBandView> sameSideAhead = sameSideRails
+                .Where(band => band.Id != sponsor.ObjectId
+                    && IsSameSideAhead(band, sponsor, direction))
+                .ToList();
+            EvidenceBandView priorBand = sponsor.PriorObjectId.HasValue
+                ? _evidence.FindBand(sponsor.PriorObjectId.Value)
+                : null;
+            long? lastMidTick = _evidence.LastMidTick;
+            long? executableTick = market != null && market.IsValid
+                ? PriceToTick(market.Executable(direction))
+                : null;
+
+            _events.Write("sponsor_failure_context",
+                ("directive_id", intent.DirectiveId),
+                ("sponsor_id", sponsor.ObjectId),
+                ("prior_sponsor_id", sponsor.PriorObjectId),
+                ("failure_reason", intent.Reason),
+                ("failure_utc", failureUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("side", sponsor.Side.ToString()),
+                ("source", sponsor.Source.ToString()),
+                ("lower", sponsor.MinTick * _tickSize),
+                ("upper", sponsor.MaxTick * _tickSize),
+                ("promotion_reason", sponsor.Reason),
+                ("epoch", sponsor.Epoch),
+                ("promoted_utc", sponsor.PromotedUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("position_quantity", position?.Quantity),
+                ("position_average", position?.AveragePrice),
+                ("bid", market?.Bid),
+                ("ask", market?.Ask),
+                ("last_mid_tick", lastMidTick),
+                ("executable_distance_ticks", executableTick.HasValue
+                    ? DistanceToRange(executableTick.Value, sponsor.MinTick,
+                        sponsor.MaxTick)
+                    : null),
+                ("ever_leveraged", _coordinator.EverLeveraged),
+                ("active_adverse_failure_ids", string.Join(",",
+                    _coordinator.ActiveAdverseFailureIds.OrderBy(id => id))),
+                ("live_adverse_ahead_count", adverseAhead.Count),
+                ("live_adverse_ahead",
+                    BuildBandAudits(adverseAhead, sponsor, direction)),
+                ("live_same_side_protection_count", sameSideProtection.Count),
+                ("live_same_side_protection",
+                    BuildBandAudits(sameSideProtection, sponsor, direction)),
+                ("live_same_side_ahead_count", sameSideAhead.Count),
+                ("live_same_side_ahead",
+                    BuildBandAudits(sameSideAhead, sponsor, direction)),
+                ("prior_sponsor_live", priorBand?.IsLiveRail ?? false),
+                ("prior_sponsor", priorBand == null
+                    ? null
+                    : BuildBandAudit(priorBand, sponsor, direction)));
+
+            RegisterSponsorFailureAudit(new PendingSponsorFailureAudit
+            {
+                DirectiveId = intent.DirectiveId,
+                SponsorId = sponsor.ObjectId,
+                SponsorSide = sponsor.Side,
+                Direction = direction,
+                SponsorMinTick = sponsor.MinTick,
+                SponsorMaxTick = sponsor.MaxTick,
+                FailureReason = intent.Reason,
+                FailureUtc = failureUtc,
+                ExpiresUtc = failureUtc.AddSeconds(SponsorFailureRebuildWindowSeconds),
+                HadAdverseAheadAtFailure = adverseAhead.Count > 0,
+                HadSameSideProtectionAtFailure = sameSideProtection.Count > 0,
+                PriorSponsorLiveAtFailure = priorBand?.IsLiveRail ?? false,
+            });
+        }
+
+        private void RegisterSponsorFailureAudit(PendingSponsorFailureAudit audit)
+        {
+            if (audit == null)
+                return;
+            _pendingSponsorFailureAudits.RemoveAll(existing =>
+                string.Equals(existing.DirectiveId, audit.DirectiveId,
+                    StringComparison.Ordinal)
+                && existing.SponsorId == audit.SponsorId);
+            _pendingSponsorFailureAudits.Add(audit);
+        }
+
+        private void ObserveSponsorFailureRebuild(EvidenceTransition transition)
+        {
+            if (_pendingSponsorFailureAudits.Count == 0 || transition?.Band == null)
+                return;
+            DateTime eventUtc = ToUtc(transition.TimeUtc);
+            for (int i = _pendingSponsorFailureAudits.Count - 1; i >= 0; i--)
+            {
+                PendingSponsorFailureAudit audit = _pendingSponsorFailureAudits[i];
+                if (eventUtc < audit.FailureUtc)
+                    continue;
+                if (eventUtc > audit.ExpiresUtc)
+                {
+                    LogSponsorFailureNoRebuild(audit, eventUtc);
+                    _pendingSponsorFailureAudits.RemoveAt(i);
+                    continue;
+                }
+                if (transition.Kind != EvidenceTransitionKind.RailOwned
+                    || !IsRelevantRebuildBand(audit, transition.Band))
+                {
+                    continue;
+                }
+                EvidenceBandAudit rebuild = BuildBandAudit(
+                    transition.Band,
+                    audit.SponsorMinTick,
+                    audit.SponsorMaxTick,
+                    audit.Direction);
+                _events.Write("sponsor_failure_rebuild",
+                    ("directive_id", audit.DirectiveId),
+                    ("sponsor_id", audit.SponsorId),
+                    ("failure_reason", audit.FailureReason),
+                    ("failure_utc", audit.FailureUtc.ToString("O", CultureInfo.InvariantCulture)),
+                    ("seconds_after_failure",
+                        Math.Max(0, (eventUtc - audit.FailureUtc).TotalSeconds)),
+                    ("window_seconds", SponsorFailureRebuildWindowSeconds),
+                    ("band", rebuild),
+                    ("event_utc", eventUtc.ToString("O", CultureInfo.InvariantCulture)),
+                    ("current_mid_tick", transition.CurrentMidTick),
+                    ("current_mid", transition.CurrentMidTick * _tickSize),
+                    ("had_adverse_ahead_at_failure", audit.HadAdverseAheadAtFailure),
+                    ("had_same_side_protection_at_failure",
+                        audit.HadSameSideProtectionAtFailure),
+                    ("prior_sponsor_live_at_failure", audit.PriorSponsorLiveAtFailure));
+                _pendingSponsorFailureAudits.RemoveAt(i);
+            }
+        }
+
+        private void ExpireSponsorFailureAudits(DateTime nowUtc)
+        {
+            if (_pendingSponsorFailureAudits.Count == 0)
+                return;
+            nowUtc = ToUtc(nowUtc);
+            for (int i = _pendingSponsorFailureAudits.Count - 1; i >= 0; i--)
+            {
+                PendingSponsorFailureAudit audit = _pendingSponsorFailureAudits[i];
+                if (nowUtc < audit.ExpiresUtc)
+                    continue;
+                LogSponsorFailureNoRebuild(audit, nowUtc);
+                _pendingSponsorFailureAudits.RemoveAt(i);
+            }
+        }
+
+        private void LogSponsorFailureNoRebuild(PendingSponsorFailureAudit audit,
+            DateTime observedUntilUtc)
+        {
+            _events.Write("sponsor_failure_no_rebuild",
+                ("directive_id", audit.DirectiveId),
+                ("sponsor_id", audit.SponsorId),
+                ("failure_reason", audit.FailureReason),
+                ("failure_utc", audit.FailureUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("observed_until_utc",
+                    ToUtc(observedUntilUtc).ToString("O", CultureInfo.InvariantCulture)),
+                ("window_seconds", SponsorFailureRebuildWindowSeconds),
+                ("had_adverse_ahead_at_failure", audit.HadAdverseAheadAtFailure),
+                ("had_same_side_protection_at_failure",
+                    audit.HadSameSideProtectionAtFailure),
+                ("prior_sponsor_live_at_failure", audit.PriorSponsorLiveAtFailure));
+        }
+
+        private bool IsRelevantRebuildBand(PendingSponsorFailureAudit audit,
+            EvidenceBandView band)
+            => band.Role == EvidenceRole.Rail
+                && band.Side == audit.SponsorSide
+                && band.Id != audit.SponsorId
+                && RangeDistanceTicks(
+                    band.MinTick,
+                    band.MaxTick,
+                    audit.SponsorMinTick,
+                    audit.SponsorMaxTick) <= SponsorFailureRebuildMaxDistanceTicks;
+
+        private static EvidenceSide Opposite(EvidenceSide side)
+            => side == EvidenceSide.Demand ? EvidenceSide.Supply : EvidenceSide.Demand;
+
+        private static bool IsAdverseAhead(EvidenceBandView band,
+            SponsorContext sponsor,
+            TradeDirection direction)
+            => direction == TradeDirection.Long
+                ? band.MaxTick >= sponsor.MinTick
+                : band.MinTick <= sponsor.MaxTick;
+
+        private static bool IsSameSideProtection(EvidenceBandView band,
+            SponsorContext sponsor,
+            TradeDirection direction)
+            => direction == TradeDirection.Long
+                ? band.MaxTick < sponsor.MinTick
+                : band.MinTick > sponsor.MaxTick;
+
+        private static bool IsSameSideAhead(EvidenceBandView band,
+            SponsorContext sponsor,
+            TradeDirection direction)
+            => direction == TradeDirection.Long
+                ? band.MinTick > sponsor.MaxTick
+                : band.MaxTick < sponsor.MinTick;
+
+        private List<EvidenceBandAudit> BuildBandAudits(
+            IEnumerable<EvidenceBandView> bands,
+            SponsorContext sponsor,
+            TradeDirection direction)
+            => bands
+                .OrderBy(band => RangeDistanceTicks(
+                    band.MinTick,
+                    band.MaxTick,
+                    sponsor.MinTick,
+                    sponsor.MaxTick))
+                .ThenBy(band => band.Id)
+                .Take(SponsorContextRailLimit)
+                .Select(band => BuildBandAudit(band, sponsor, direction))
+                .ToList();
+
+        private EvidenceBandAudit BuildBandAudit(EvidenceBandView band,
+            SponsorContext sponsor,
+            TradeDirection direction)
+            => BuildBandAudit(band, sponsor.MinTick, sponsor.MaxTick, direction);
+
+        private EvidenceBandAudit BuildBandAudit(EvidenceBandView band,
+            long referenceMinTick,
+            long referenceMaxTick,
+            TradeDirection direction)
+            => new()
+            {
+                Id = band.Id,
+                Side = band.Side.ToString(),
+                Source = band.Source.ToString(),
+                State = band.State.ToString(),
+                Lower = band.MinTick * _tickSize,
+                Upper = band.MaxTick * _tickSize,
+                Relation = DirectionalRelation(
+                    band.MinTick,
+                    band.MaxTick,
+                    referenceMinTick,
+                    referenceMaxTick,
+                    direction),
+                DistanceTicks = RangeDistanceTicks(
+                    band.MinTick,
+                    band.MaxTick,
+                    referenceMinTick,
+                    referenceMaxTick),
+                FormedUtc = band.FormedUtc == default
+                    ? null
+                    : ToUtc(band.FormedUtc).ToString("O", CultureInfo.InvariantCulture),
+                OwnedUtc = band.OwnedUtc == default
+                    ? null
+                    : ToUtc(band.OwnedUtc).ToString("O", CultureInfo.InvariantCulture),
+                LastStateUtc = band.LastStateUtc == default
+                    ? null
+                    : ToUtc(band.LastStateUtc).ToString("O", CultureInfo.InvariantCulture),
+                FailedUtc = band.FailedUtc.HasValue
+                    ? ToUtc(band.FailedUtc.Value).ToString("O", CultureInfo.InvariantCulture)
+                    : null,
+                Events = band.EventCount,
+                Score = band.Score,
+            };
+
+        private static string DirectionalRelation(long minTick,
+            long maxTick,
+            long referenceMinTick,
+            long referenceMaxTick,
+            TradeDirection direction)
+        {
+            if (maxTick < referenceMinTick)
+                return direction == TradeDirection.Long ? "behind" : "ahead";
+            if (minTick > referenceMaxTick)
+                return direction == TradeDirection.Long ? "ahead" : "behind";
+            return "overlap";
+        }
+
+        private static long RangeDistanceTicks(long minTick,
+            long maxTick,
+            long referenceMinTick,
+            long referenceMaxTick)
+        {
+            if (maxTick < referenceMinTick)
+                return referenceMinTick - maxTick;
+            if (referenceMaxTick < minTick)
+                return minTick - referenceMaxTick;
+            return 0;
+        }
+
+        private static DateTime ToUtc(DateTime value)
+        {
+            if (value == default)
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+            return value.Kind == DateTimeKind.Local
+                ? value.ToUniversalTime()
+                : DateTime.SpecifyKind(value, DateTimeKind.Utc);
         }
 
         private void LogOperator(string message, bool error = false)
@@ -2077,6 +2479,7 @@ namespace ExecAssistantRuntime
             _processedControlDigests.Clear();
             _processedControlOrder.Clear();
             _blockedDirectiveIds.Clear();
+            _pendingSponsorFailureAudits.Clear();
             while (_brokerEvents.TryDequeue(out _)) { }
             lock (_orderSubscriptionGate)
                 _subscribedOrders.Clear();
@@ -2232,6 +2635,40 @@ namespace ExecAssistantRuntime
             public double? SymbolAsk;
             public double? DomBid;
             public double? DomAsk;
+        }
+
+        private sealed class PendingSponsorFailureAudit
+        {
+            public string DirectiveId;
+            public int SponsorId;
+            public EvidenceSide SponsorSide;
+            public TradeDirection Direction;
+            public long SponsorMinTick;
+            public long SponsorMaxTick;
+            public string FailureReason;
+            public DateTime FailureUtc;
+            public DateTime ExpiresUtc;
+            public bool HadAdverseAheadAtFailure;
+            public bool HadSameSideProtectionAtFailure;
+            public bool PriorSponsorLiveAtFailure;
+        }
+
+        private sealed class EvidenceBandAudit
+        {
+            public int Id { get; init; }
+            public string Side { get; init; }
+            public string Source { get; init; }
+            public string State { get; init; }
+            public double Lower { get; init; }
+            public double Upper { get; init; }
+            public string Relation { get; init; }
+            public long DistanceTicks { get; init; }
+            public string FormedUtc { get; init; }
+            public string OwnedUtc { get; init; }
+            public string LastStateUtc { get; init; }
+            public string FailedUtc { get; init; }
+            public int Events { get; init; }
+            public double Score { get; init; }
         }
 
         private sealed class BrokerEvent
