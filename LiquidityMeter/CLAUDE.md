@@ -39,7 +39,7 @@ The 12:47:00 inflection on 2026-05-05 (loss-trade narrative): cumulative had bee
 
 ## File map
 
-- `LiquidityMeter.csproj` — net8-windows, AnyCPU. **No nuget deps**, no unsafe code.
+- `LiquidityMeter.csproj` — net10.0-windows, AnyCPU. **No nuget deps**, no unsafe code.
 - `LiquidityMeter.cs` — entry point, settings (sortIndex 900-915 in two groups), DOM polling at sample cadence, paint dispatch. Subscribes to `NewLevel2` only as a freshness heartbeat.
 - `MeterEngine.cs` — sample buffer, rolling stats, side-aware event detection, cum/ROC math. Internal classes `Sample` + `MeterEvent` use a private `ITimestamped` interface for shared eviction logic.
 - `MeterPainter.cs` — left-center vertical strip rendering. Anti-aliased `FillRectangle` for the cum bar + `FillPolygon` for the needle. Tick marks at quarter scale points. Numeric `cum` and `roc` labels below the strip; event count above.

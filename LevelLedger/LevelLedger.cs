@@ -341,8 +341,13 @@ namespace LevelLedger
                 _l2Stale = !fresh;
                 if (_l2Stale) return;
 
-                var dom = this.Symbol.DepthOfMarket?
-                              .GetDepthOfMarketAggregatedCollections(_domParams);
+                if (!TryGetDomSnapshot(out var dom, out bool transientDomRace))
+                {
+                    if (transientDomRace) return;
+                    _l2Stale = true;
+                    return;
+                }
+
                 if (dom == null
                     || (dom.Bids == null || dom.Bids.Length == 0)
                     && (dom.Asks == null || dom.Asks.Length == 0))
@@ -365,6 +370,23 @@ namespace LevelLedger
                 Core.Instance.Loggers.Log(
                     $"[{nameof(LevelLedger)}] sample failed: {ex.Message}",
                     LoggingLevel.Error);
+            }
+        }
+
+        private bool TryGetDomSnapshot(out DepthOfMarketAggregatedCollections dom, out bool transientDomRace)
+        {
+            dom = null;
+            transientDomRace = false;
+            try
+            {
+                dom = this.Symbol.DepthOfMarket?
+                    .GetDepthOfMarketAggregatedCollections(_domParams);
+                return true;
+            }
+            catch (InvalidOperationException ex) when (IsCollectionModifiedRace(ex))
+            {
+                transientDomRace = true;
+                return false;
             }
         }
 
@@ -611,6 +633,12 @@ namespace LevelLedger
             if (string.Equals(l2.Id, "generated_from_level1", StringComparison.OrdinalIgnoreCase))
                 return true;
             return !double.IsFinite(l2.Price) || !double.IsFinite(l2.Size);
+        }
+
+        private static bool IsCollectionModifiedRace(Exception ex)
+        {
+            return ex.Message != null
+                && ex.Message.IndexOf("Collection was modified", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private bool L1Agrees(DepthOfMarketAggregatedCollections dom, double tickSize)

@@ -10,7 +10,7 @@ The indicator also writes captured snapshot rows + tick rows to parquet (indepen
 
 ## File map
 
-- `L2_Heatmap.csproj` — net8-windows, AnyCPU, `AllowUnsafeBlocks=true`, `OutputPath` deploys directly to `C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\`. References `TradingPlatform.BusinessLayer.dll` from the resolved Quantower install.
+- `L2_Heatmap.csproj` — net10.0-windows, AnyCPU, `AllowUnsafeBlocks=true`, `OutputPath` deploys directly to `C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\`. References `TradingPlatform.BusinessLayer.dll` from the resolved Quantower install.
 - `LiquidityHeatmapBuffer.cs` — rolling snapshot queue. `OnSample(dom, nowUtc)` accepts QT's `DepthOfMarketAggregatedCollections` directly. Adaptive saturation recomputes every 60 s from the buffer's own size distribution at the configured percentile (default p99).
 - `Palette.cs` — bid base (blue), ask base (orange), and the two ignition tones used by the above-saturation regime.
 - `ChartPainter.cs` — the render pass. Persistent off-screen `Bitmap` cached across frames. Cache rebuild uses `LockBits` + raw `int*` writes; this is the *only* `unsafe` scope in the project.

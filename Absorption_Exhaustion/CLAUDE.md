@@ -41,7 +41,7 @@ This is why the indicator stays truthful in trends: in the Python dry-run, the 2
 
 ## File map
 
-- `Absorption_Exhaustion.csproj` — net8-windows, AnyCPU. **No `AllowUnsafeBlocks`** — band painting is sparse compared to L2 heatmap and per-element `FillRectangle` is fine here. References `TradingPlatform.BusinessLayer.dll` from the resolved Quantower install. `OutputPath` deploys directly to `C:\Quantower\Settings\Scripts\Indicators\Absorption_Exhaustion\`.
+- `Absorption_Exhaustion.csproj` — net10.0-windows, AnyCPU. **No `AllowUnsafeBlocks`** — band painting is sparse compared to L2 heatmap and per-element `FillRectangle` is fine here. References `TradingPlatform.BusinessLayer.dll` from the resolved Quantower install. `OutputPath` deploys directly to `C:\Quantower\Settings\Scripts\Indicators\Absorption_Exhaustion\`.
 - `Absorption_Exhaustion.cs` — indicator entry point. Subscribes to `Symbol.NewLast` in `OnInit`, drains queue + closes stale bars in `OnUpdate`, paints in `OnPaintChart`, unsubscribes in `OnClear`. Settings dialog grouped via `SettingItemSeparatorGroup` (sortIndex 800-859, six groups).
 - `TradeBuffer.cs` — 5-second bar aggregation + rolling lookback. Bars hold OHLCV, signed delta, and a tick-keyed volume-by-price dictionary with separate buy/sell sums. `OnTrade` returns the bar that just closed (or null). `TryCloseStaleBar(now)` forces close on quiet stretches so detectors run even if no trades arrive.
 - `PrimitiveDetector.cs` — pure detection logic. `EvaluateClosedBar(bar)` yields a sequence of `PrimitiveFire` for the four primitives. Baseline computed from history *excluding* the bar itself.

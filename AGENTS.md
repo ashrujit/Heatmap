@@ -1,6 +1,6 @@
 # Heatmap — Quantower Indicator And Strategy Suite
 
-This repo hosts Quantower indicators and strategies built as standalone .NET 8 DLLs. Each project lives in its own subfolder, has its own `.csproj`, and deploys to its Quantower script directory via the project file's `OutputPath`.
+This repo hosts Quantower indicators and strategies built as standalone .NET 10 DLLs. Each project lives in its own subfolder, has its own `.csproj`, and deploys to its Quantower script directory via the project file's `OutputPath`.
 
 ## Documentation policy
 
@@ -11,13 +11,13 @@ This repo hosts Quantower indicators and strategies built as standalone .NET 8 D
 ## Toolchain
 
 - **OS:** Windows 11. Bash + PowerShell available; prefer Bash for file ops, PowerShell for `dotnet`/build.
-- **.NET SDK:** 10.0.203 installed at `C:\Users\j\AppData\Local\Microsoft\dotnet\dotnet.exe` (user-profile install, not machine-wide). SDK 10 builds `net8-windows` TFM fine. .NET 8 runtime (8.0.26) also installed at `C:\Program Files\dotnet\`.
-- **Quantower:** `C:\Quantower`, version `v1.145.9`. BusinessLayer reference DLL at `C:\Quantower\TradingPlatform\v1.145.9\bin\TradingPlatform.BusinessLayer.dll`.
+- **.NET SDK:** 10.0.203 installed at `C:\Users\j\AppData\Local\Microsoft\dotnet\dotnet.exe` (user-profile install, not machine-wide). Projects target `net10.0-windows` because Quantower `v1.146.13`'s BusinessLayer assembly references .NET 10 framework assemblies.
+- **Quantower:** `C:\Quantower`, version `v1.146.13`. BusinessLayer reference DLL at `C:\Quantower\TradingPlatform\v1.146.13\bin\TradingPlatform.BusinessLayer.dll`.
 - **No IDE.** `dotnet build` from each project dir is the entire build step. Project files are plain text.
 
 ### NuGet source (one-time setup, already done)
 
-The user-profile SDK install came with **no NuGet sources configured**, so first build failed with `NU1100: Unable to resolve 'Microsoft.NETCore.App.Ref (= 8.0.26)'`. SDK 10 needs to download .NET 8 reference packs from NuGet to build a `net8-windows` project. Fixed once with:
+The user-profile SDK install came with **no NuGet sources configured**, so earlier builds failed during restore. Keep `nuget.org` configured for package restore and vulnerability metadata. Fixed once with:
 
 ```
 dotnet nuget add source https://api.nuget.org/v3/index.json -n nuget.org

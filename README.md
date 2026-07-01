@@ -17,7 +17,7 @@ A suite of Quantower indicators for NQ-futures auction-flow analysis, plus offli
 
 - Windows 11
 - Quantower installed at `C:\Quantower\` (this project's `OutputPath`s and `HintPath`s are hardcoded to that location — see root [`CLAUDE.md`](CLAUDE.md) for details)
-- .NET SDK (8 or later — SDK 10 builds the `net8-windows` targets fine)
+- .NET SDK 10 or later; projects target `net10.0-windows` to match the current Quantower BusinessLayer assembly
 - Python 3.12+ with `uv` for the research scripts (Polars + numpy)
 
 ## Build & deploy

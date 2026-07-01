@@ -100,7 +100,7 @@ The cost: this single project is larger (~1500 lines vs ~700 each) and the engin
 
 ## File map
 
-- `L2_Surface.csproj` — net8-windows, AnyCPU, no nuget deps, no unsafe code.
+- `L2_Surface.csproj` — net10.0-windows, AnyCPU, no nuget deps, no unsafe code.
 - `L2_Surface.cs` — entry point, ~50 InputParameters across six groups (Common 800, Events 810, Inflection 820, Flow 830, Build Bands 840, Render 850), DOM polling + sample + paint dispatch. Pushes config into engine + painter on each sample so settings-dialog changes take effect without restart. Subscribes to `NewLevel2` only as a freshness heartbeat (not for delta processing).
 - `SurfaceEngine.cs` — single engine, ~600 lines. Shared sample/baseline/z-score infrastructure, plus per-layer detection and state:
   - Events: `_events` linked list (every emitted event with bias/z/price/type)

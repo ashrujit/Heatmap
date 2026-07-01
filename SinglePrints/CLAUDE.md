@@ -12,7 +12,7 @@ No labels, no strength coding, no alerts — same posture as the rest of the sui
 
 ## File map
 
-- `SinglePrints.csproj` — net8-windows, AnyCPU. **No nuget deps**, no unsafe code.
+- `SinglePrints.csproj` — net10.0-windows, AnyCPU. **No nuget deps**, no unsafe code.
 - `SinglePrints.cs` — Indicator entry, settings (sortIndex 900-913 in two groups), session-walk + fill logic + render dispatch.
 - `SessionBuilder.cs` — pure logic: bars-in-session → bracket-coverage map → contiguous-tick zones. Zero Quantower types, deterministic given inputs.
 - `Painter.cs` — converts zones to chart pixels via `IChartWindowCoordinatesConverter`. Single hue, alpha fade by session age.

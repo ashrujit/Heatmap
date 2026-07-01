@@ -308,6 +308,11 @@ namespace SinglePrints
             DateTime newestSessionDate = sessionRanges.Count > 0
                 ? sessionRanges[sessionRanges.Count - 1].date
                 : DateTime.MinValue;
+            if (newestSessionDate == DateTime.MinValue)
+            {
+                _zones = allZones;
+                return;
+            }
             int retainDays = Math.Max(1, RetentionSessions);
             DateTime cutoff = newestSessionDate.AddDays(-(retainDays - 1));
             allZones.RemoveAll(z => z.Filled || z.SessionDateNy < cutoff);
