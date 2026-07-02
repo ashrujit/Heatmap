@@ -22,6 +22,12 @@ namespace ExecAssistantRuntime
         Error,
     }
 
+    internal enum ContinuationKind
+    {
+        ProtectiveClear,
+        ExpiredRearm,
+    }
+
     internal enum OrderIntentKind
     {
         EnterBase,
@@ -103,6 +109,7 @@ namespace ExecAssistantRuntime
 
     internal sealed class ContinuationContext
     {
+        public ContinuationKind Kind { get; init; }
         public string ParentDirectiveId { get; init; }
         public SponsorClearContext ParentSponsorClear { get; init; }
         public long ParentContextMinTick { get; init; }
@@ -179,6 +186,7 @@ namespace ExecAssistantRuntime
         private SponsorContext _currentSponsor;
         private SponsorClearContext _lastSponsorClear;
         private ContinuationContext _continuation;
+        private bool _continuationLineageBroken;
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
@@ -250,6 +258,7 @@ namespace ExecAssistantRuntime
             _currentSponsor = null;
             _lastSponsorClear = null;
             _continuation = continuation;
+            _continuationLineageBroken = false;
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
@@ -290,7 +299,6 @@ namespace ExecAssistantRuntime
                 return false;
             }
             if (State == RuntimeExecutionState.Cancelled
-                || State == RuntimeExecutionState.Expired
                 || State == RuntimeExecutionState.Error
                 || State == RuntimeExecutionState.Halted
                 || State == RuntimeExecutionState.Halting
@@ -299,31 +307,62 @@ namespace ExecAssistantRuntime
                 reason = "continuation_parent_state_not_eligible";
                 return false;
             }
-            if (_lastSponsorClear?.Sponsor == null
-                || !IsContinuationProtectiveExit(_lastSponsorClear.FlattenReason))
+            if (_continuationLineageBroken)
             {
-                reason = "continuation_parent_has_no_protective_clear";
+                reason = "continuation_lineage_broken";
                 return false;
             }
-            if (!ContainsRange(_directive.ContextPriceRange, directive.ContextPriceRange)
-                || !ContainsRange(_directive.ContextPriceRange, directive.OrderPriceRange)
-                || (directive.AddPriceRange != null
-                    && !ContainsRange(_directive.ContextPriceRange, directive.AddPriceRange)))
+            if (!ContinuationRangesMatch(directive))
             {
-                reason = "continuation_ranges_exceed_parent_context";
+                reason = "continuation_ranges_changed";
                 return false;
             }
 
-            continuation = new ContinuationContext
+            if (_lastSponsorClear?.Sponsor != null
+                && IsContinuationProtectiveExit(_lastSponsorClear.FlattenReason))
             {
+                continuation = CreateContinuation(
+                    ContinuationKind.ProtectiveClear,
+                    _lastSponsorClear,
+                    _lastSponsorClear.ClearedUtc);
+                return true;
+            }
+
+            if (State == RuntimeExecutionState.Expired)
+            {
+                if (_baseAttempts != 0
+                    || _everLeveraged
+                    || _currentSponsor != null
+                    || _pendingEntryIntent != null)
+                {
+                    reason = "continuation_parent_not_unfilled_expiry";
+                    return false;
+                }
+
+                continuation = CreateContinuation(
+                    ContinuationKind.ExpiredRearm,
+                    parentSponsorClear: null,
+                    MaxUtc(_activatedUtc, _directive.NotBefore.UtcDateTime));
+                return true;
+            }
+
+            reason = "continuation_parent_has_no_protective_clear";
+            return false;
+        }
+
+        private ContinuationContext CreateContinuation(
+            ContinuationKind kind,
+            SponsorClearContext parentSponsorClear,
+            DateTime evidenceAfterUtc)
+            => new()
+            {
+                Kind = kind,
                 ParentDirectiveId = _directive.Id,
-                ParentSponsorClear = _lastSponsorClear,
+                ParentSponsorClear = parentSponsorClear,
                 ParentContextMinTick = PriceToTick(_directive.ContextPriceRange.Lower),
                 ParentContextMaxTick = PriceToTick(_directive.ContextPriceRange.Upper),
-                EvidenceAfterUtc = _lastSponsorClear.ClearedUtc,
+                EvidenceAfterUtc = NormalizeUtc(evidenceAfterUtc),
             };
-            return true;
-        }
 
         public IReadOnlyList<OrderIntent> SeedContinuation(
             DateTime nowUtc,
@@ -877,6 +916,7 @@ namespace ExecAssistantRuntime
         {
             _lastSponsorClear = null;
             _continuation = null;
+            _continuationLineageBroken = true;
         }
 
         public bool HasContinuationBoundaryCounterEvidence(
@@ -1939,10 +1979,31 @@ namespace ExecAssistantRuntime
                 _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
             };
 
-        private static bool ContainsRange(PriceRange outer, PriceRange inner)
-            => outer != null && inner != null
-                && inner.Lower >= outer.Lower
-                && inner.Upper <= outer.Upper;
+        private bool ContinuationRangesMatch(TradeDirective directive)
+            => SameRangeByTick(_directive.OrderPriceRange, directive.OrderPriceRange)
+                && SameRangeByTick(_directive.ContextPriceRange,
+                    directive.ContextPriceRange)
+                && SameOptionalRangeByTick(_directive.AddPriceRange,
+                    directive.AddPriceRange);
+
+        private bool SameOptionalRangeByTick(PriceRange left, PriceRange right)
+        {
+            if (left == null || right == null)
+                return left == null && right == null;
+            return SameRangeByTick(left, right);
+        }
+
+        private bool SameRangeByTick(PriceRange left, PriceRange right)
+            => left != null && right != null
+                && PriceToTick(left.Lower) == PriceToTick(right.Lower)
+                && PriceToTick(left.Upper) == PriceToTick(right.Upper);
+
+        private static DateTime MaxUtc(DateTime left, DateTime right)
+        {
+            left = NormalizeUtc(left);
+            right = NormalizeUtc(right);
+            return left >= right ? left : right;
+        }
 
         private static bool IsContinuationProtectiveExit(string reason)
             => !string.IsNullOrWhiteSpace(reason)

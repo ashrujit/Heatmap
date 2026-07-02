@@ -35,9 +35,10 @@ spike JSON shape as an alternate parser.
   directive. Urgent control commands such as `FLAT` are separate, out-of-band
   messages rather than edits to the active trade directive.
 - `CONTINUE` is explicit directive lineage, not automatic reissue. It may only
-  inherit the immediately previous protective-exit chain named by
-  `parent_directive_id`; arbitrary historical rails remain LevelLedger/strategy
-  context, not executable runtime memory.
+  name the immediately previous directive with unchanged ranges. It can preserve
+  either that parent's protective-exit chain or, when the parent expired flat
+  and unfilled, the parent's active-window context. Arbitrary historical rails
+  remain LevelLedger/strategy context, not executable runtime memory.
 - Normative trade directives are active-only inputs. Runtime terminal states
   belong in the append-only event log. `CANCEL_DIRECTIVE` and `FLAT` are
   immutable control commands.

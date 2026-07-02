@@ -767,6 +767,73 @@ namespace ExecAssistantRuntime
                     && noClearReason == "continuation_parent_has_no_protective_clear",
                 "CONTINUE requires a protective parent clear");
 
+            string expiringParentJson = ValidDirectiveJson()
+                .Replace("\"id\": \"selftest-long-01\"",
+                    "\"id\": \"selftest-long-expire-01\"")
+                .Replace("\"expires_at\": \"2026-06-19T12:00:00-04:00\"",
+                    "\"expires_at\": \"2026-06-19T10:01:00-04:00\"");
+            TradeDirective expiringParentDirective =
+                DirectiveContracts.ParseTradeDirective(expiringParentJson, 5);
+            string expiredContinuationJson = expiringParentJson
+                .Replace("\"id\": \"selftest-long-expire-01\"",
+                    "\"id\": \"selftest-long-expire-continue-01\"")
+                .Replace("\"expires_at\": \"2026-06-19T10:01:00-04:00\"",
+                    "\"expires_at\": \"2026-06-19T10:30:00-04:00\"")
+                .Replace(
+                    "\"notes\": \"self test\"",
+                    "\"lineage\": { \"mode\": \"CONTINUE\", "
+                    + "\"parent_directive_id\": \"selftest-long-expire-01\" }, "
+                    + "\"notes\": \"self test\"");
+            TradeDirective expiredChild = DirectiveContracts.ParseTradeDirective(
+                expiredContinuationJson,
+                5);
+            DateTime expireAcceptUtc = new(2026, 6, 19, 14, 0, 0, DateTimeKind.Utc);
+            var expiredParent = new ExecutionCoordinator(0.25);
+            expiredParent.AcceptDirective(
+                expiringParentDirective,
+                expireAcceptUtc,
+                Array.Empty<int>());
+            expiredParent.Tick(
+                expireAcceptUtc.AddSeconds(61),
+                Market(expireAcceptUtc.AddSeconds(61), 30503.75, 30504),
+                RuntimePosition.Flat,
+                evidence);
+            Require(expiredParent.State == RuntimeExecutionState.Expired,
+                "parent reaches expired state while unfilled");
+            Require(expiredParent.TryPrepareContinuation(expiredChild,
+                    out ContinuationContext expiredContinuation,
+                    out string expiredContinuationReason),
+                $"CONTINUE accepts unfilled expired parent: {expiredContinuationReason}");
+            Require(expiredContinuation.Kind == ContinuationKind.ExpiredRearm
+                    && expiredContinuation.ParentSponsorClear == null
+                    && expiredContinuation.EvidenceAfterUtc == expireAcceptUtc,
+                "expired CONTINUE preserves parent active-window context");
+
+            var expiredContinuationEvidence = new ExecutionEvidenceEngine(0.25);
+            EvidenceTransition expiredSeed = BuildConsumedDemandRail(
+                expiredContinuationEvidence,
+                expireAcceptUtc.AddSeconds(5),
+                30504);
+            double expiredSeedAsk = expiredSeed.Band.MaxTick * 0.25;
+            expiredParent.AcceptDirective(
+                expiredChild,
+                expireAcceptUtc.AddSeconds(90),
+                Array.Empty<int>(),
+                expiredContinuation);
+            expiredParent.InitializeObservedPosition(RuntimePosition.Flat);
+            OrderIntent expiredSeeded = expiredParent.SeedContinuation(
+                    expireAcceptUtc.AddSeconds(90),
+                    Market(expireAcceptUtc.AddSeconds(90),
+                        expiredSeedAsk - 0.25,
+                        expiredSeedAsk),
+                    RuntimePosition.Flat,
+                    expiredContinuationEvidence)
+                .SingleOrDefault();
+            Require(expiredSeeded?.Kind == OrderIntentKind.EnterBase
+                    && expiredSeeded.Reason
+                        == "continuation_direct_conversion_snapshot",
+                "expired CONTINUE seeds entry from parent-window rail");
+
             var parent = new ExecutionCoordinator(0.25);
             parent.AcceptDirective(directive, now, Array.Empty<int>());
             OrderIntent parentEntry = parent.ProcessEvidence(
@@ -812,6 +879,20 @@ namespace ExecAssistantRuntime
                     out ContinuationContext continuation,
                     out string continuationReason),
                 $"CONTINUE accepts protective parent clear: {continuationReason}");
+            Require(continuation.Kind == ContinuationKind.ProtectiveClear,
+                "protective CONTINUE records lineage kind");
+
+            TradeDirective changedRangeChild = DirectiveContracts.ParseTradeDirective(
+                continuationJson.Replace(
+                    "\"order_price_range\": { \"lower\": 30000, \"upper\": 30900 }",
+                    "\"order_price_range\": { \"lower\": 30010, \"upper\": 30900 }"),
+                5);
+            Require(!parent.TryPrepareContinuation(
+                    changedRangeChild,
+                    out _,
+                    out string changedRangeReason)
+                    && changedRangeReason == "continuation_ranges_changed",
+                "CONTINUE rejects changed order range");
 
             EvidenceBandView counter = new()
             {

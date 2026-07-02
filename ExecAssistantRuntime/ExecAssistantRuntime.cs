@@ -739,6 +739,7 @@ namespace ExecAssistantRuntime
                 ("target_price", directive.TargetPrice),
                 ("lineage_mode", directive.Lineage?.Mode.ToString()),
                 ("parent_directive_id", directive.Lineage?.ParentDirectiveId),
+                ("continuation_kind", continuation?.Kind.ToString()),
                 ("evidence_state", _evidenceState),
                 ("failure_assisted_entries_enabled",
                     FailureAssistedEntriesEnabled),

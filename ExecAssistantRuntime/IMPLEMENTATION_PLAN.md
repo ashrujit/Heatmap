@@ -7,8 +7,9 @@ immutable, human-dispatched NQ directive using copied LevelLedger evidence math.
 The strategy owns execution only. It does not discover opportunities, interpret
 notes, change direction, or formulate replacement directives.
 Explicit `CONTINUE` lineage is still human-dispatched: it may carry only the
-immediate protective-exit evidence chain of the named parent directive, and
-confirmed forward data loss breaks that chain.
+immediate protective-exit evidence chain of the named parent directive, or the
+active-window context of an unfilled expired parent with unchanged ranges.
+Confirmed forward data loss breaks that chain.
 
 The first live-capable cut must prove the complete mechanical path:
 
@@ -192,8 +193,9 @@ be used to resume old evidence.
 - re-arm only after flat/order reconciliation and only from a fresh opposing
   candidate formed after that boundary;
 - a fresh directive with `lineage.mode: "CONTINUE"` may reuse only the named
-  parent's immediate protective-exit chain while evidence continuity remains
-  intact;
+  parent's immediate protective-exit chain, or the active-window context of an
+  unfilled expired parent, while evidence continuity remains intact and ranges
+  remain unchanged;
 - stop re-arming after pre-entry invalidation, expiry, target, sponsor-aligned
   LF/HF, control, retry exhaustion, or any prior leverage.
 

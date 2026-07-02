@@ -348,7 +348,9 @@ The schema settles these transport semantics:
 - omitted `lineage` or `lineage.mode: NEW` starts from the normal
   post-acceptance evidence contract;
 - `lineage.mode: CONTINUE` requires `parent_directive_id` and can only name the
-  immediately previous directive still present in runtime memory.
+  immediately previous directive still present in runtime memory; child
+  order/context/add ranges must match the parent ranges after tick
+  normalization.
 
 JSON Schema cannot express every relational invariant. The runtime semantic
 validator must additionally reject:
@@ -380,14 +382,17 @@ ordinary fresh post-acceptance trigger. Existing live rails may support a fresh
 trigger, but old ownership transitions are never replayed.
 
 `CONTINUE` is for the common case where the strategy idea remains the same after
-the local EAR clip exits protectively. It is allowed only when all of the
-following hold:
+the local EAR clip exits protectively, or when an unfilled directive's time
+window expired while the same range context is still valid. It is allowed only
+when all of the following hold:
 
 - the directive names the immediately previous parent directive;
 - side is unchanged;
-- the parent has a recorded local protective clear such as sponsor failure,
-  sponsor consumption, reverse entry resolution, or lost base support;
-- the child order/context/add ranges stay inside the parent's context range;
+- the child order/context/add ranges match the parent ranges after tick
+  normalization;
+- either the parent has a recorded local protective clear such as sponsor
+  failure, sponsor consumption, reverse entry resolution, or lost base support,
+  or the parent expired flat and unfilled;
 - runtime evidence continuity has not been lost;
 - accepted opposite ownership has not established beyond the parent boundary
   (below the parent lower boundary for a long, above the parent upper boundary
@@ -396,9 +401,10 @@ following hold:
 Continuation does not authorize historical-memory mining. It may seed from
 evidence that belongs to the immediate parent-clear chain: a post-clear failed
 adverse rail with live same-side support, or a post-clear consumed same-side rail
-waiting for retest. Arbitrary RTH/ETH rails, volume-profile memory, and older
-LevelLedger arguments remain strategy context. The runtime uses them only if the
-human encodes a fresh directive around them.
+waiting for retest. For an unfilled expired parent, it may seed from eligible
+evidence formed during the parent's active window. Arbitrary RTH/ETH rails,
+volume-profile memory, and older LevelLedger arguments remain strategy context.
+The runtime uses them only if the human encodes a fresh directive around them.
 
 ## Execution Model
 
