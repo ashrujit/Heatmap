@@ -23,10 +23,12 @@ controls, but it deliberately does not become a planning tool.
 - `Always on top` is a right-click toggle because it is useful during active
   execution but should not consume permanent screen real estate.
 - `campaign` maps to EAR scaling. When campaign is enabled, the app derives the
-  add/campaign range from context edge to `HARD_TP` (context low to TP for
-  longs, TP to context high for shorts) and expands the outgoing EAR context
-  envelope as needed. When disabled, it sends `--no-adds`, `add_quantity=0`,
-  and `max_position_quantity=base_quantity`.
+  add/campaign range from the order edge to `HARD_TP` (order low to TP for
+  longs, TP to order high for shorts) and expands the outgoing EAR context
+  envelope as needed. The Order field is the executable entry gate; Context is
+  the evidence envelope and may be auto-derived from Order plus Target. When
+  disabled, it sends `--no-adds`, `add_quantity=0`, and
+  `max_position_quantity=base_quantity`.
 - EAR's checkpoint is authoritative for the instance quantity ceiling. The max
   field is still visible so a stale or absent checkpoint cannot hide what will
   be sent.

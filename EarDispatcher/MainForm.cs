@@ -70,6 +70,7 @@ internal sealed class MainForm : Form
     private void BuildUi()
     {
         Text = "EAR Dispatcher";
+        Icon = AppIcon.Create();
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(650, 520);
         ClientSize = new Size(700, 580);
@@ -121,7 +122,7 @@ internal sealed class MainForm : Form
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 148));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         main.Controls.Add(form, 0, 1);
 
         _longSide = new RadioButton
@@ -146,40 +147,38 @@ internal sealed class MainForm : Form
         AddLabel(form, "Base", 2, 0);
         form.Controls.Add(_priceBase, 3, 0);
 
-        _contextRange = Box("180-235");
-        _contextPreview = PreviewLabel();
-        AddLabel(form, "Context", 0, 1);
-        form.Controls.Add(_contextRange, 1, 1);
-        AddLabel(form, "=>", 2, 1);
-        form.Controls.Add(_contextPreview, 3, 1);
-
-        _campaign = new CheckBox
-        {
-            Text = "campaign",
-            Checked = true,
-            AutoSize = true,
-            ForeColor = Palette.Fore,
-            BackColor = Palette.Back,
-            Margin = new Padding(0, 4, 0, 0),
-        };
-        form.Controls.Add(_campaign, 4, 1);
-
         _orderRange = Box("205-218.5");
         _orderPreview = PreviewLabel();
+        AddLabel(form, "Order", 0, 1);
+        form.Controls.Add(_orderRange, 1, 1);
+        AddLabel(form, "=>", 2, 1);
+        form.Controls.Add(_orderPreview, 3, 1);
+
+        _contextRange = Box("180-235");
+        _contextPreview = PreviewLabel();
         _autoOrder = new CheckBox
         {
-            Text = "auto",
+            Text = "auto ctx",
+            Checked = true,
+            AutoSize = true,
+            ForeColor = Palette.Fore,
+            BackColor = Palette.Back,
+            Margin = new Padding(0, 4, 12, 0),
+        };
+        _campaign = new CheckBox
+        {
+            Text = "cam",
             Checked = true,
             AutoSize = true,
             ForeColor = Palette.Fore,
             BackColor = Palette.Back,
             Margin = new Padding(0, 4, 0, 0),
         };
-        AddLabel(form, "Order", 0, 2);
-        form.Controls.Add(_orderRange, 1, 2);
+        AddLabel(form, "Context", 0, 2);
+        form.Controls.Add(_contextRange, 1, 2);
         AddLabel(form, "=>", 2, 2);
-        form.Controls.Add(_orderPreview, 3, 2);
-        form.Controls.Add(_autoOrder, 4, 2);
+        form.Controls.Add(_contextPreview, 3, 2);
+        form.Controls.Add(RowPanel(_autoOrder, _campaign), 4, 2);
 
         _targetPrice = Box("");
         _targetReference = Box("");
@@ -360,8 +359,8 @@ internal sealed class MainForm : Form
     private void WireEvents()
     {
         _priceBase.TextChanged += (_, _) => OnAutoOrderSourceChanged();
-        _contextRange.TextChanged += (_, _) => OnAutoOrderSourceChanged();
-        _orderRange.TextChanged += (_, _) => OnOrderRangeChanged();
+        _contextRange.TextChanged += (_, _) => OnContextRangeChanged();
+        _orderRange.TextChanged += (_, _) => OnAutoOrderSourceChanged();
         _targetPrice.TextChanged += (_, _) => OnAutoOrderSourceChanged();
         _invalidationPrice.TextChanged += (_, _) => UpdatePreviews();
         _longSide.CheckedChanged += (_, _) => OnAutoOrderSourceChanged();
@@ -372,7 +371,11 @@ internal sealed class MainForm : Form
                 ApplyAutoOrder();
             UpdatePreviews();
         };
-        _campaign.CheckedChanged += (_, _) => UpdateCampaignState();
+        _campaign.CheckedChanged += (_, _) =>
+        {
+            UpdateCampaignState();
+            OnAutoOrderSourceChanged();
+        };
         _useRuntimeMax.CheckedChanged += (_, _) => UpdateMaxState();
         KeyDown += MainForm_KeyDown;
         UpdateCampaignState();
@@ -619,7 +622,7 @@ internal sealed class MainForm : Form
         ResolvedRange? addRange = null;
         if (campaign)
         {
-            addRange = CampaignRange(userContext, target, side);
+            addRange = CampaignRange(order, target, side);
             context = Envelope(context, addRange.Value);
         }
 
@@ -675,7 +678,7 @@ internal sealed class MainForm : Form
         UpdatePreviews();
     }
 
-    private void OnOrderRangeChanged()
+    private void OnContextRangeChanged()
     {
         if (!_updatingOrder && _autoOrder.Checked)
             _autoOrder.Checked = false;
@@ -691,11 +694,11 @@ internal sealed class MainForm : Form
                 return;
 
             _updatingOrder = true;
-            _orderRange.Text = text;
+            _contextRange.Text = text;
         }
         catch (InputException)
         {
-            // Leave the manually visible field untouched until context and TP are parseable.
+            // Leave the manually visible field untouched until order and TP are parseable.
         }
         finally
         {
@@ -706,11 +709,15 @@ internal sealed class MainForm : Form
     private string BuildAutoOrderText()
     {
         double basePrice = ParsePriceBase();
-        ResolvedRange context = PriceInput.ParseRange(_contextRange.Text, basePrice, "context");
+        ResolvedRange order = PriceInput.ParseRange(_orderRange.Text, basePrice, "order");
+        if (!_campaign.Checked)
+            return $"{FormatInputPrice(order.Lower, basePrice)}-{FormatInputPrice(order.Upper, basePrice)}";
+
         double target = PriceInput.ParsePrice(_targetPrice.Text, basePrice, "target");
-        double contextEdge = _longSide.Checked ? context.Lower : context.Upper;
-        var range = new ResolvedRange(Math.Min(contextEdge, target), Math.Max(contextEdge, target));
-        return $"{FormatInputPrice(range.Lower, basePrice)}-{FormatInputPrice(range.Upper, basePrice)}";
+        string side = _longSide.Checked ? "long" : "short";
+        ResolvedRange campaign = CampaignRange(order, target, side);
+        ResolvedRange context = Envelope(order, campaign);
+        return $"{FormatInputPrice(context.Lower, basePrice)}-{FormatInputPrice(context.Upper, basePrice)}";
     }
 
     private void UpdatePreviews()

@@ -36,3 +36,20 @@ campaign. The first section records the implemented live-policy work.
 - **OFI live policy:** no implementation. Continue initiative-vs-absorption and
   non-z-score candidate research as more sessions are recorded; the first
   fixture does not justify an OFI ownership or direction gate.
+
+## Observed 2026-07-02
+
+- **Post-LF-candidate add before held LF:** EAR's 14:12 short from the
+  29486.50-29487.75 supply direct conversion was correct, and sponsor promotion
+  down to 29450.50-29452.75 then 29445.25-29447.00 matched the intended
+  defensive sequence. The 14:20 add was not HF/LF-assisted; telemetry recorded
+  `failure_assisted=false` and a direct-conversion retest of the 29450.50-
+  29452.75 consumed supply rail. An adverse demand/LF candidate had already
+  formed around 29418.75-29440.00, but it had not yet reached `FailureHeld`, so
+  current policy did not block leverage. Net effect was operational rather than
+  thesis-damaging: the leveraged sponsor failure completed the parent directive
+  and required an explicit `CONTINUE`. Leave unchanged unless this repeats or
+  materially degrades execution; possible future questions are whether add
+  eligibility should notice fresh adverse failure candidates, or whether adds
+  should require current-sponsor alignment rather than any eligible same-side
+  direct-conversion rail.
