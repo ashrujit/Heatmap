@@ -53,6 +53,9 @@ spike JSON shape as an alternate parser.
   they can be found if Quantower returns success without an order id.
 - Live NQ entry/add routing uses vanilla market orders. Do not add IOC or
   marketable-limit policy until logs demonstrate a real fill problem.
+- Directive TTL is a base-admission window, not a campaign kill switch. Once
+  the base fills, fresh add evidence may still scale inside the directive's add
+  range; expiry still prevents new flat base entries and base retries.
 - L2 callbacks and broker callbacks must not perform file I/O. Serialize runtime
   decisions through one worker and write JSONL on a dedicated logger thread.
 - L1 best bid/ask is authoritative only for executable-market, order-routing,

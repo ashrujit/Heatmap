@@ -150,6 +150,12 @@ or after an unfilled expiry, use a new directive id with
 discard that lineage. If the order, context, or add range changes, issue a
 `NEW` directive.
 
+Directive expiry is the base-entry window. If no base is filled by expiry, the
+directive expires flat and a continuation or new directive is required. If the
+base filled before expiry, normal campaign management continues: fresh add
+evidence can still scale inside `add_price_range`, while target, sponsor,
+control, and protection exits remain active.
+
 A fresh opposite HF/LF while the directive is armed but flat cancels any runtime
 entry order and moves the directive to `Paused`. If that failure object
 invalidates, the same directive re-arms. Once a position exists, the initial

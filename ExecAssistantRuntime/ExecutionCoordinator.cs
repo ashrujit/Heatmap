@@ -630,7 +630,8 @@ namespace ExecAssistantRuntime
                 bool mayAdd = !position.IsFlat
                     && (State == RuntimeExecutionState.BaseOnly || State == RuntimeExecutionState.Leveraged)
                     && _directive.AddsAllowed
-                    && nowUtc <= _directive.ExpiresAt.UtcDateTime
+                    // The directive window gates base admission/retries only.
+                    // Once a base fill starts the campaign, fresh add evidence may continue.
                     && position.Quantity + _directive.AddQuantity <= _directive.MaxPositionQuantity;
                 if (!mayEnter && !mayAdd)
                     continue;

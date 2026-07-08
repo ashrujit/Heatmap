@@ -304,6 +304,35 @@ namespace ExecAssistantRuntime
                 evidence).SingleOrDefault();
             Require(addIntent?.Kind == OrderIntentKind.Add, "fresh add intent");
 
+            TradeDirective addAfterExpiryDirective = DirectiveContracts.ParseTradeDirective(
+                ValidDirectiveJson()
+                    .Replace("\"id\": \"selftest-long-01\"",
+                        "\"id\": \"selftest-add-after-expiry-01\"")
+                    .Replace("\"expires_at\": \"2026-06-19T12:00:00-04:00\"",
+                        "\"expires_at\": \"2026-06-19T10:00:20-04:00\""),
+                5);
+            var addAfterExpiry = new ExecutionCoordinator(0.25);
+            addAfterExpiry.AcceptDirective(
+                addAfterExpiryDirective, now, Array.Empty<int>());
+            OrderIntent expiringBase = addAfterExpiry.ProcessEvidence(
+                new[] { baseTransition },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(expiringBase?.Kind == OrderIntentKind.EnterBase,
+                "base may enter before directive expiry");
+            addAfterExpiry.OnOrderAttemptResult(expiringBase, accepted: true);
+            addAfterExpiry.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            OrderIntent postExpiryAdd = addAfterExpiry.ProcessEvidence(
+                new[] { freshAdd },
+                now.AddSeconds(25),
+                market,
+                basePosition,
+                evidence).SingleOrDefault();
+            Require(postExpiryAdd?.Kind == OrderIntentKind.Add,
+                "directive expiry does not block fresh adds after base fill");
+
             var lfCoordinator = new ExecutionCoordinator(0.25);
             lfCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
             OrderIntent lfBase = lfCoordinator.ProcessEvidence(
