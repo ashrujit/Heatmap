@@ -73,6 +73,12 @@ spike JSON shape as an alternate parser.
   displacement. Promotion is irreversible; only failure or adverse consumption
   of the exact current sponsor flattens. Normal campaign leverage does not use
   broker weighted-BE; BE is recovery-only after sponsor lineage has been lost.
+- Inside an active position, failure of a qualified old opposite-side reference
+  rail creates a short-lived reference-break context instead of redefining the
+  rail or failure itself. Same-side child rails beyond that failed reference
+  remain add-eligible, but they cannot inherit campaign-sponsor authority while
+  the context is active; the campaign sponsor stays with the parent/break
+  sponsor until the old reference is reclaimed or the context expires.
 - Sponsor lineage is explicit in the canonical JSONL audit: promotion opens a
   sponsor interval and the sponsored-position-to-flat transition closes it with
   `sponsor_cleared`, preserving the last sponsor and flatten reason. Clearance

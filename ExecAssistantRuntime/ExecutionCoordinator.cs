@@ -107,6 +107,18 @@ namespace ExecAssistantRuntime
         public DateTime ClearedUtc { get; init; }
     }
 
+    internal sealed class ReferenceBreakContext
+    {
+        public int ReferenceObjectId { get; init; }
+        public EvidenceSide ReferenceSide { get; init; }
+        public long ReferenceMinTick { get; init; }
+        public long ReferenceMaxTick { get; init; }
+        public DateTime ReferenceFormedUtc { get; init; }
+        public DateTime FailedUtc { get; init; }
+        public DateTime ExpiresUtc { get; init; }
+        public int? BreakSponsorObjectId { get; set; }
+    }
+
     internal sealed class ContinuationContext
     {
         public ContinuationKind Kind { get; init; }
@@ -159,6 +171,11 @@ namespace ExecAssistantRuntime
         private const int ReverseResolutionProximityTicks = 20;
         private const int FailureAssistedParentTtlSeconds = 300;
         private const int FailureAssistedChildTouchTicks = 4;
+        private const int ReferenceBreakMinAgeSeconds = 1200;
+        private const int ReferenceBreakContextTtlSeconds = 600;
+        private const int ReferenceBreakChildSeparationTicks = 8;
+        private const int ReferenceBreakReclaimDistanceTicks = 32;
+        private const int ReferenceBreakSponsorDistanceTicks = 80;
 
         private readonly double _tickSize;
         private readonly bool _failureAssistedEntriesEnabled;
@@ -185,6 +202,7 @@ namespace ExecAssistantRuntime
         private double _lastKnownAveragePrice;
         private SponsorContext _currentSponsor;
         private SponsorClearContext _lastSponsorClear;
+        private ReferenceBreakContext _referenceBreakContext;
         private ContinuationContext _continuation;
         private bool _continuationLineageBroken;
         private int _sponsorVersion;
@@ -257,6 +275,7 @@ namespace ExecAssistantRuntime
             _lastKnownAveragePrice = 0;
             _currentSponsor = null;
             _lastSponsorClear = null;
+            _referenceBreakContext = null;
             _continuation = continuation;
             _continuationLineageBroken = false;
             _sponsorVersion = 0;
@@ -541,6 +560,7 @@ namespace ExecAssistantRuntime
             bool hadActiveAdverseFailures = HasActiveAdverseFailures;
             ObserveAdverseFailures(transitions);
             ObserveFailureAssistedContext(transitions, nowUtc);
+            ObserveReferenceBreakContext(transitions, nowUtc, position);
             if (position.IsFlat)
             {
                 EvidenceTransition freshAdverseFailure = transitions.FirstOrDefault(
@@ -754,6 +774,7 @@ namespace ExecAssistantRuntime
                 _pendingReclaim = null;
                 _pendingRetest = null;
                 _failureAssistedParent = null;
+                _referenceBreakContext = null;
                 if (_currentSponsor != null)
                 {
                     _lastSponsorClear = new SponsorClearContext
@@ -832,6 +853,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _referenceBreakContext = null;
             OrderIntent intent = CreateFlattenIntent(nowUtc, market, reason,
                 terminal: true, rearm: false);
             _flattenDisposition.HaltAfterFlat = true;
@@ -850,6 +872,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _referenceBreakContext = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "cancel_directive"));
             if (position != null && !position.IsFlat)
             {
@@ -876,6 +899,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _referenceBreakContext = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "FLAT"));
             if (position != null && !position.IsFlat)
             {
@@ -899,6 +923,7 @@ namespace ExecAssistantRuntime
             _pendingRetest = null;
             _failureAssistedParent = null;
             _currentSponsor = null;
+            _referenceBreakContext = null;
             BreakContinuationLineage();
         }
 
@@ -909,6 +934,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _referenceBreakContext = null;
             BreakContinuationLineage();
         }
 
@@ -1448,6 +1474,18 @@ namespace ExecAssistantRuntime
                 Reason = reason,
                 Epoch = _epoch,
             };
+            ExpireReferenceBreakContext(promotedUtc);
+            TryBindReferenceBreakSponsor(sponsor, resolution,
+                "filled_reference_break_sponsor");
+            if (ReferenceBreakSuppressesCampaignPromotion(sponsor))
+            {
+                AddReferenceBreakAudit("reference_break_tactical_child",
+                    promotedUtc,
+                    _referenceBreakContext,
+                    sponsor,
+                    "filled_child_not_campaign_sponsor");
+                return;
+            }
             PromoteSponsor(sponsor, requireFavorableAdvance: _currentSponsor != null);
         }
 
@@ -1468,7 +1506,7 @@ namespace ExecAssistantRuntime
                 return;
             }
 
-            PromoteSponsor(new SponsorContext
+            var sponsor = new SponsorContext
             {
                 ObjectId = band.Id,
                 PriorObjectId = _currentSponsor.ObjectId,
@@ -1480,7 +1518,20 @@ namespace ExecAssistantRuntime
                 PromotedUtc = NormalizeUtc(transition.TimeUtc),
                 Reason = "accepted_same_side_ownership",
                 Epoch = _epoch,
-            }, requireFavorableAdvance: true);
+            };
+            ExpireReferenceBreakContext(transition.TimeUtc);
+            TryBindReferenceBreakSponsor(sponsor, resolution: null,
+                "owned_reference_break_sponsor");
+            if (ReferenceBreakSuppressesCampaignPromotion(sponsor))
+            {
+                AddReferenceBreakAudit("reference_break_tactical_child",
+                    transition.TimeUtc,
+                    _referenceBreakContext,
+                    sponsor,
+                    "owned_child_not_campaign_sponsor");
+                return;
+            }
+            PromoteSponsor(sponsor, requireFavorableAdvance: true);
         }
 
         private void PromoteSponsor(SponsorContext sponsor, bool requireFavorableAdvance)
@@ -1509,6 +1560,77 @@ namespace ExecAssistantRuntime
             => _directive.Direction == TradeDirection.Long
                 ? transition.CurrentMidTick > band.MaxTick
                 : transition.CurrentMidTick < band.MinTick;
+
+        private bool TryBindReferenceBreakSponsor(
+            SponsorContext candidate,
+            ResolutionContext resolution,
+            string reason)
+        {
+            ReferenceBreakContext context = _referenceBreakContext;
+            if (context == null || candidate == null)
+                return false;
+            DateTime promotedUtc = NormalizeUtc(candidate.PromotedUtc);
+            if (promotedUtc < context.FailedUtc || promotedUtc > context.ExpiresUtc)
+                return false;
+            if (context.BreakSponsorObjectId == candidate.ObjectId)
+                return true;
+
+            bool sameReferenceRoot = resolution?.RootObjectId
+                == context.ReferenceObjectId;
+            if ((!sameReferenceRoot
+                    && !ReferenceBreakSponsorEligible(context, candidate))
+                || ReferenceContinuationChild(context,
+                    candidate.MinTick, candidate.MaxTick))
+            {
+                return false;
+            }
+
+            context.BreakSponsorObjectId = candidate.ObjectId;
+            AddReferenceBreakAudit("reference_break_sponsor_bound",
+                promotedUtc,
+                context,
+                candidate,
+                sameReferenceRoot ? $"{reason}_root" : reason);
+            return true;
+        }
+
+        private bool ReferenceBreakSuppressesCampaignPromotion(
+            SponsorContext candidate)
+        {
+            ReferenceBreakContext context = _referenceBreakContext;
+            if (context == null || candidate == null || _currentSponsor == null)
+                return false;
+            DateTime promotedUtc = NormalizeUtc(candidate.PromotedUtc);
+            return promotedUtc >= context.FailedUtc
+                && promotedUtc <= context.ExpiresUtc
+                && candidate.Side == DesiredEvidenceSide()
+                && candidate.ObjectId != context.BreakSponsorObjectId
+                && ReferenceContinuationChild(context,
+                    candidate.MinTick, candidate.MaxTick);
+        }
+
+        private bool ReferenceBreakSponsorEligible(
+            ReferenceBreakContext context,
+            SponsorContext candidate)
+            => context != null
+                && candidate != null
+                && candidate.Side == DesiredEvidenceSide()
+                && !ReferenceContinuationChild(context,
+                    candidate.MinTick, candidate.MaxTick)
+                && RangeDistance(candidate.MinTick, candidate.MaxTick,
+                    context.ReferenceMinTick, context.ReferenceMaxTick)
+                    <= ReferenceBreakSponsorDistanceTicks;
+
+        private bool ReferenceContinuationChild(
+            ReferenceBreakContext context,
+            long minTick,
+            long maxTick)
+            => context != null
+                && (DesiredEvidenceSide() == EvidenceSide.Demand
+                    ? minTick > context.ReferenceMaxTick
+                        + ReferenceBreakChildSeparationTicks
+                    : maxTick < context.ReferenceMinTick
+                        - ReferenceBreakChildSeparationTicks);
 
         private void PauseWhileFlat()
         {
@@ -1592,6 +1714,121 @@ namespace ExecAssistantRuntime
 
                 ArmFailureAssistedParent(transition);
             }
+        }
+
+        private void ObserveReferenceBreakContext(
+            IReadOnlyList<EvidenceTransition> transitions,
+            DateTime nowUtc,
+            RuntimePosition position)
+        {
+            ExpireReferenceBreakContext(nowUtc);
+            if (_directive == null || transitions == null
+                || position == null || position.IsFlat)
+            {
+                return;
+            }
+
+            foreach (EvidenceTransition transition in transitions)
+            {
+                EvidenceBandView band = transition?.Band;
+                if (band == null)
+                    continue;
+
+                if (_referenceBreakContext != null
+                    && IsReferenceReclaim(transition, band))
+                {
+                    AddReferenceBreakAudit("reference_break_invalidated",
+                        transition.TimeUtc,
+                        _referenceBreakContext,
+                        child: null,
+                        "old_reference_reclaimed");
+                    _referenceBreakContext = null;
+                    continue;
+                }
+
+                if (IsQualifiedReferenceBreak(transition, band))
+                    ArmReferenceBreakContext(transition, band);
+            }
+        }
+
+        private bool IsQualifiedReferenceBreak(
+            EvidenceTransition transition,
+            EvidenceBandView band)
+        {
+            if (transition.Kind != EvidenceTransitionKind.RailFailed
+                || band.Role != EvidenceRole.Rail
+                || band.Side == DesiredEvidenceSide()
+                || band.FormedUtc == default
+                || !ContextEligible(band))
+            {
+                return false;
+            }
+
+            DateTime failedUtc = NormalizeUtc(transition.TimeUtc);
+            DateTime formedUtc = NormalizeUtc(band.FormedUtc);
+            return failedUtc >= _activatedUtc
+                && (failedUtc - formedUtc).TotalSeconds
+                    >= ReferenceBreakMinAgeSeconds;
+        }
+
+        private void ArmReferenceBreakContext(
+            EvidenceTransition transition,
+            EvidenceBandView band)
+        {
+            DateTime failedUtc = NormalizeUtc(transition.TimeUtc);
+            var context = new ReferenceBreakContext
+            {
+                ReferenceObjectId = band.Id,
+                ReferenceSide = band.Side,
+                ReferenceMinTick = band.MinTick,
+                ReferenceMaxTick = band.MaxTick,
+                ReferenceFormedUtc = NormalizeUtc(band.FormedUtc),
+                FailedUtc = failedUtc,
+                ExpiresUtc = failedUtc.AddSeconds(ReferenceBreakContextTtlSeconds),
+            };
+
+            if (ReferenceBreakSponsorEligible(context, _currentSponsor))
+                context.BreakSponsorObjectId = _currentSponsor.ObjectId;
+
+            _referenceBreakContext = context;
+            AddReferenceBreakAudit("reference_break_armed",
+                transition.TimeUtc,
+                context,
+                _currentSponsor,
+                context.BreakSponsorObjectId.HasValue
+                    ? "old_reference_failed_current_sponsor_bound"
+                    : "old_reference_failed");
+        }
+
+        private bool IsReferenceReclaim(
+            EvidenceTransition transition,
+            EvidenceBandView band)
+        {
+            ReferenceBreakContext context = _referenceBreakContext;
+            return context != null
+                && transition.Kind == EvidenceTransitionKind.RailOwned
+                && band.Role == EvidenceRole.Rail
+                && band.IsLiveRail
+                && band.Side == context.ReferenceSide
+                && NormalizeUtc(transition.TimeUtc) >= context.FailedUtc
+                && RangeDistance(band.MinTick, band.MaxTick,
+                    context.ReferenceMinTick, context.ReferenceMaxTick)
+                    <= ReferenceBreakReclaimDistanceTicks;
+        }
+
+        private void ExpireReferenceBreakContext(DateTime nowUtc)
+        {
+            if (_referenceBreakContext == null)
+                return;
+            nowUtc = NormalizeUtc(nowUtc);
+            if (nowUtc <= _referenceBreakContext.ExpiresUtc)
+                return;
+            AddReferenceBreakAudit("reference_break_expired",
+                nowUtc,
+                _referenceBreakContext,
+                child: null,
+                "context_expired");
+            _referenceBreakContext = null;
         }
 
         private bool IsFreshFavorableFailureHeld(EvidenceTransition transition)
@@ -1737,6 +1974,32 @@ namespace ExecAssistantRuntime
                 ChildSource = resolution.SupportSource,
                 ChildMinTick = resolution.SupportMinTick,
                 ChildMaxTick = resolution.SupportMaxTick,
+            });
+        }
+
+        private void AddReferenceBreakAudit(
+            string eventType,
+            DateTime timeUtc,
+            ReferenceBreakContext parent,
+            SponsorContext child,
+            string reason)
+        {
+            if (parent == null)
+                return;
+            _auditEvents.Add(new CoordinatorAuditEvent
+            {
+                EventType = eventType,
+                TimeUtc = NormalizeUtc(timeUtc),
+                DirectiveId = _directive?.Id,
+                Reason = reason,
+                ParentObjectId = parent.ReferenceObjectId,
+                ParentSide = parent.ReferenceSide,
+                ParentMinTick = parent.ReferenceMinTick,
+                ParentMaxTick = parent.ReferenceMaxTick,
+                ChildObjectId = child?.ObjectId,
+                ChildSource = child?.Source,
+                ChildMinTick = child?.MinTick,
+                ChildMaxTick = child?.MaxTick,
             });
         }
 

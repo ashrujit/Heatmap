@@ -1162,8 +1162,8 @@ namespace ExecAssistantRuntime
                 EvidenceSource.Consumed,
                 now.AddSeconds(14),
                 now.AddSeconds(25),
-                30500,
-                30501);
+                30504,
+                30505);
             OrderIntent add = coordinator.ProcessEvidence(
                 new[] { advancing }, now.AddSeconds(25), market,
                 basePosition, evidence).SingleOrDefault();
@@ -1195,18 +1195,74 @@ namespace ExecAssistantRuntime
                     leveragedPosition, evidence).Count == 0,
                 "short old sponsor failure ignored after promotion");
 
+            EvidenceTransition oldReferenceFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                610,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                now.AddMinutes(-70),
+                now.AddSeconds(28),
+                30502.25,
+                30502.75);
+            Require(coordinator.ProcessEvidence(
+                    new[] { oldReferenceFailure }, now.AddSeconds(28), market,
+                    leveragedPosition, evidence).Count == 0,
+                "old demand reference break arms context without flattening");
+
+            EvidenceTransition childSupply = RailTransition(
+                EvidenceTransitionKind.RailOwned,
+                602,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(29),
+                now.AddSeconds(40),
+                30499.75,
+                30500.00);
+            OrderIntent tacticalAdd = coordinator.ProcessEvidence(
+                new[] { childSupply }, now.AddSeconds(40), market,
+                leveragedPosition, evidence).SingleOrDefault();
+            Require(tacticalAdd?.Kind == OrderIntentKind.Add
+                    && coordinator.CurrentSponsor?.ObjectId == 601,
+                "child supply below old demand is add-eligible but not campaign sponsor");
+            coordinator.OnOrderAttemptResult(tacticalAdd, accepted: true);
+            var secondLeveragedPosition = new RuntimePosition
+            {
+                PositionId = "short-sponsor-selftest",
+                Direction = TradeDirection.Short,
+                Quantity = 4,
+                AveragePrice = 30502.25,
+            };
+            coordinator.OnPositionChanged(
+                secondLeveragedPosition, now.AddSeconds(41), market);
+            Require(coordinator.CurrentSponsor?.ObjectId == 601,
+                "filled child add preserves parent reference-break sponsor");
+
+            EvidenceTransition childFailure = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                602,
+                EvidenceSide.Supply,
+                EvidenceSource.Consumed,
+                now.AddSeconds(29),
+                now.AddSeconds(42),
+                30499.75,
+                30500.00);
+            Require(coordinator.ProcessEvidence(
+                    new[] { childFailure }, now.AddSeconds(42), market,
+                    secondLeveragedPosition, evidence).Count == 0,
+                "child sponsor failure cannot terminally flatten parent campaign");
+
             EvidenceTransition currentFailure = RailTransition(
                 EvidenceTransitionKind.RailFailed,
                 601,
                 EvidenceSide.Supply,
                 EvidenceSource.Consumed,
                 now.AddSeconds(14),
-                now.AddSeconds(28),
-                30500,
-                30501);
+                now.AddSeconds(43),
+                30504,
+                30505);
             OrderIntent flatten = coordinator.ProcessEvidence(
-                new[] { currentFailure }, now.AddSeconds(28), market,
-                leveragedPosition, evidence).SingleOrDefault();
+                new[] { currentFailure }, now.AddSeconds(43), market,
+                secondLeveragedPosition, evidence).SingleOrDefault();
             Require(flatten?.Kind == OrderIntentKind.Flatten
                     && flatten.TerminalAfterFlat
                     && flatten.Reason == "sponsor_failed:601",
