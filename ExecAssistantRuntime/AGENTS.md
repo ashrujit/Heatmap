@@ -102,6 +102,11 @@ spike JSON shape as an alternate parser.
   configured book-lookback interval and the corresponding sample count have
   accumulated. Publish `AwaitingBook`, `Warming`, `Ready`, or `BookUnusable` in
   the checkpoint so the operator can see this boundary.
+- Live startup treats a restored `IsTradingAllowed == false` as transient
+  broker readiness until proven otherwise. Quantower can restore a strategy
+  before connected symbol/account handles are tradable; EAR should stay alive,
+  refresh those handles by id/connection, publish `TradingUnavailable`, and run
+  the normal recovery scan only after trading permission returns.
 - `directive_accepted` is the canonical contract audit and must include the
   accepted order, context, and add range boundaries. Do not rely on the latest
   input file to reconstruct constrained or missed execution.

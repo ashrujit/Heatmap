@@ -18,6 +18,7 @@ namespace ExecAssistantRuntime
         private const int SponsorFailureRebuildWindowSeconds = 60;
         private const int SponsorFailureRebuildMaxDistanceTicks = 120;
         private const int SponsorContextRailLimit = 5;
+        private const int TradingPermissionLogIntervalSeconds = 30;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -161,6 +162,9 @@ namespace ExecAssistantRuntime
         private double? _shadowHardTarget;
         private RuntimeExecutionState _lastLoggedState = RuntimeExecutionState.Idle;
         private int _lastLoggedSponsorVersion;
+        private bool _startupRecoveryComplete;
+        private bool _tradingPermissionReady = true;
+        private DateTime _lastTradingPermissionEventUtc = DateTime.MinValue;
 
         public ExecAssistantRuntime()
         {
@@ -186,27 +190,21 @@ namespace ExecAssistantRuntime
 
         protected override void OnRun()
         {
-            if (!ResolveAccountAndSymbol())
-            {
-                Stop();
-                return;
-            }
-
             try
             {
                 ResetForRun();
                 _events = new RuntimeEventLog(ExpandPath(EventLogPath),
                     message => Log(message, StrategyLoggingLevel.Error));
                 _checkpointStore = new RuntimeCheckpointStore(ExpandPath(CheckpointPath));
+                if (!ResolveAccountAndSymbol())
+                {
+                    Stop();
+                    return;
+                }
                 _evidence = NewEvidenceEngine();
                 _coordinator = new ExecutionCoordinator(
                     _tickSize,
                     FailureAssistedEntriesEnabled);
-                _gateway = new QuantowerOrderGateway(
-                    RuntimeSymbol,
-                    RuntimeAccount,
-                    _events,
-                    _runTradingEnabled);
                 if (RunStartupSelfTests)
                 {
                     RuntimeSelfTests.RunAll();
@@ -222,17 +220,11 @@ namespace ExecAssistantRuntime
                 };
 
                 _running = true;
-                Subscribe();
                 LoadCheckpoint();
-                RecoverAtStartup();
-                if (!ShadowLivePositionRequiresAction())
-                {
-                    PollControl();
-                    PollDirective();
-                }
+                bool activityStarted = TryStartRuntimeActivity(DateTime.UtcNow);
                 int interval = Math.Max(100, WorkerPollMs);
                 _workerTimer = new Timer(_ => Worker(), null, interval, interval);
-                _events.Write("runtime_started",
+                _events.Write("runtime_initialized",
                     ("symbol", RuntimeSymbol.Name),
                     ("execution_symbol", RuntimeSymbol.Name),
                     ("execution_symbol_id", RuntimeSymbol.Id),
@@ -240,35 +232,16 @@ namespace ExecAssistantRuntime
                     ("market_data_symbol", _marketDataSymbol.Name),
                     ("market_data_symbol_id", _marketDataSymbol.Id),
                     ("market_data_connection_id", _marketDataSymbol.ConnectionId),
-                    ("market_data_is_execution_symbol",
-                        SameSymbol(RuntimeSymbol, _marketDataSymbol)),
                     ("account", RuntimeAccount.Name),
-                    ("tick_size", _tickSize),
-                    ("execution_tick_size", EffectiveTickSize(RuntimeSymbol)),
-                    ("market_data_tick_size", EffectiveTickSize(_marketDataSymbol)),
                     ("trading_enabled", _runTradingEnabled),
-                    ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
-                    ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
-                    ("quote_freshness_ms", Math.Max(250, QuoteFreshnessMs)),
-                    ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
-                    ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
-                    ("failure_assisted_entries_enabled",
-                        FailureAssistedEntriesEnabled),
-                    ("ll_book_lookback_seconds", Math.Max(10, BookLookbackSeconds)),
-                    ("ll_event_z_threshold", Math.Max(1.0, EventZThreshold)),
-                    ("ll_cluster_min_events", Math.Max(2, ClusterMinEvents)),
-                    ("ll_cluster_ticks", Math.Max(1, ClusterTicks)),
-                    ("ll_cluster_seconds", Math.Max(1, ClusterSeconds)),
-                    ("ll_confirm_move_ticks", Math.Max(1, ConfirmMoveTicks)),
-                    ("ll_confirm_seconds", Math.Max(0, ConfirmSeconds)),
-                    ("ll_failure_buffer_ticks", Math.Max(0, FailureBufferTicks)),
-                    ("ll_failure_confirm_ticks", Math.Max(1, FailureConfirmTicks)),
-                    ("ll_failure_seconds", Math.Max(0, FailureSeconds)),
-                    ("directive_path", ExpandPath(DirectivePath)),
-                    ("control_path", ExpandPath(ControlPath)));
-                Log($"Runtime started for exec {RuntimeSymbol.Name}, "
-                    + $"data {_marketDataSymbol.Name}, account {RuntimeAccount.Name}; "
-                    + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
+                    ("broker_trading_allowed", _tradingPermissionReady),
+                    ("startup_recovery_complete", _startupRecoveryComplete));
+                if (!activityStarted)
+                {
+                    Log($"Runtime initialized for exec {RuntimeSymbol.Name}, "
+                        + $"data {_marketDataSymbol.Name}, account {RuntimeAccount.Name}; "
+                        + "waiting for Quantower trading permission.");
+                }
             }
             catch (Exception ex)
             {
@@ -277,6 +250,70 @@ namespace ExecAssistantRuntime
                 try { _events?.Write("runtime_start_error", ("message", ex.Message)); } catch { }
                 Stop();
             }
+        }
+
+        private bool TryStartRuntimeActivity(DateTime nowUtc)
+        {
+            if (_startupRecoveryComplete)
+                return true;
+            if (!EnsureTradingPermissionReady(nowUtc, forceEvent: false))
+            {
+                SaveCheckpointIfDue(nowUtc, force: true, stateOverride: "TradingUnavailable");
+                return false;
+            }
+
+            _gateway = new QuantowerOrderGateway(
+                RuntimeSymbol,
+                RuntimeAccount,
+                _events,
+                _runTradingEnabled);
+            Subscribe();
+            RecoverAtStartup();
+            _startupRecoveryComplete = true;
+            if (!ShadowLivePositionRequiresAction())
+            {
+                PollControl();
+                PollDirective();
+            }
+
+            _events.Write("runtime_started",
+                ("symbol", RuntimeSymbol.Name),
+                ("execution_symbol", RuntimeSymbol.Name),
+                ("execution_symbol_id", RuntimeSymbol.Id),
+                ("execution_connection_id", RuntimeSymbol.ConnectionId),
+                ("market_data_symbol", _marketDataSymbol.Name),
+                ("market_data_symbol_id", _marketDataSymbol.Id),
+                ("market_data_connection_id", _marketDataSymbol.ConnectionId),
+                ("market_data_is_execution_symbol",
+                    SameSymbol(RuntimeSymbol, _marketDataSymbol)),
+                ("account", RuntimeAccount.Name),
+                ("tick_size", _tickSize),
+                ("execution_tick_size", EffectiveTickSize(RuntimeSymbol)),
+                ("market_data_tick_size", EffectiveTickSize(_marketDataSymbol)),
+                ("trading_enabled", _runTradingEnabled),
+                ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
+                ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
+                ("quote_freshness_ms", Math.Max(250, QuoteFreshnessMs)),
+                ("book_freshness_sec", Math.Max(1, BookFreshnessSec)),
+                ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
+                ("failure_assisted_entries_enabled",
+                    FailureAssistedEntriesEnabled),
+                ("ll_book_lookback_seconds", Math.Max(10, BookLookbackSeconds)),
+                ("ll_event_z_threshold", Math.Max(1.0, EventZThreshold)),
+                ("ll_cluster_min_events", Math.Max(2, ClusterMinEvents)),
+                ("ll_cluster_ticks", Math.Max(1, ClusterTicks)),
+                ("ll_cluster_seconds", Math.Max(1, ClusterSeconds)),
+                ("ll_confirm_move_ticks", Math.Max(1, ConfirmMoveTicks)),
+                ("ll_confirm_seconds", Math.Max(0, ConfirmSeconds)),
+                ("ll_failure_buffer_ticks", Math.Max(0, FailureBufferTicks)),
+                ("ll_failure_confirm_ticks", Math.Max(1, FailureConfirmTicks)),
+                ("ll_failure_seconds", Math.Max(0, FailureSeconds)),
+                ("directive_path", ExpandPath(DirectivePath)),
+                ("control_path", ExpandPath(ControlPath)));
+            Log($"Runtime started for exec {RuntimeSymbol.Name}, "
+                + $"data {_marketDataSymbol.Name}, account {RuntimeAccount.Name}; "
+                + $"mode={(_runTradingEnabled ? "LIVE" : "SHADOW")}.");
+            return true;
         }
 
         protected override void OnStop()
@@ -297,6 +334,8 @@ namespace ExecAssistantRuntime
             {
                 DateTime nowUtc = DateTime.UtcNow;
                 DrainBrokerEvents();
+                if (!TryStartRuntimeActivity(nowUtc))
+                    return;
                 if (ShadowLivePositionRequiresAction())
                     return;
                 ExecutableMarket market = SnapshotMarket(nowUtc);
@@ -1533,15 +1572,17 @@ namespace ExecAssistantRuntime
                 return;
             _lastCheckpointUtc = nowUtc;
             RuntimePosition position = positionOverride ?? CurrentPosition();
-            TradeDirective directive = _coordinator.Directive;
+            TradeDirective directive = _coordinator?.Directive;
             _checkpoint = new RuntimeCheckpointData
             {
-                RuntimeState = stateOverride ?? _coordinator.State.ToString(),
+                RuntimeState = stateOverride ?? _coordinator?.State.ToString() ?? "Initializing",
                 LastDirectiveId = directive?.Id ?? _checkpoint?.LastDirectiveId,
                 LastDirectiveDigest = directive?.Digest ?? _checkpoint?.LastDirectiveDigest,
                 LastDirectiveJson = _acceptedDirectiveRaw ?? _checkpoint?.LastDirectiveJson,
                 ProcessedControlIds = _processedControlOrder.ToList(),
                 TradingEnabled = _runTradingEnabled,
+                BrokerTradingAllowed = !_runTradingEnabled || _tradingPermissionReady,
+                StartupRecoveryComplete = _startupRecoveryComplete,
                 ExecutionSymbol = RuntimeSymbol?.Name,
                 ExecutionSymbolId = RuntimeSymbol?.Id,
                 ExecutionConnectionId = RuntimeSymbol?.ConnectionId,
@@ -2466,6 +2507,10 @@ namespace ExecAssistantRuntime
             _evidenceState = "AwaitingBook";
             _bookContinuity.Reset();
             _runTradingEnabled = TradingEnabled;
+            _gateway = null;
+            _startupRecoveryComplete = false;
+            _tradingPermissionReady = !_runTradingEnabled;
+            _lastTradingPermissionEventUtc = DateTime.MinValue;
             _lastDirectiveFileHash = null;
             _lastControlFileHash = null;
             _acceptedDirectiveRaw = null;
@@ -2489,27 +2534,20 @@ namespace ExecAssistantRuntime
 
         private bool ResolveAccountAndSymbol()
         {
+            RefreshRuntimeBindings();
             if (RuntimeSymbol == null)
             {
                 Log("No symbol selected.", StrategyLoggingLevel.Error);
                 return false;
             }
-            _marketDataSymbol = MarketDataSymbol ?? RuntimeSymbol;
             if (_marketDataSymbol == null)
             {
                 Log("No market data symbol selected.", StrategyLoggingLevel.Error);
                 return false;
             }
-            RuntimeAccount ??= RuntimeSymbol.GetDefaultAccount();
             if (RuntimeAccount == null)
             {
                 Log("No account selected and no default account is available.",
-                    StrategyLoggingLevel.Error);
-                return false;
-            }
-            if (!RuntimeSymbol.IsTradingAllowed(RuntimeAccount))
-            {
-                Log($"Trading is not allowed for {RuntimeSymbol.Name}/{RuntimeAccount.Name}.",
                     StrategyLoggingLevel.Error);
                 return false;
             }
@@ -2527,6 +2565,114 @@ namespace ExecAssistantRuntime
             return true;
         }
 
+        private bool EnsureTradingPermissionReady(DateTime nowUtc, bool forceEvent)
+        {
+            if (!_runTradingEnabled)
+            {
+                _tradingPermissionReady = true;
+                return true;
+            }
+
+            RefreshRuntimeBindings();
+            bool allowed = false;
+            string reason = null;
+            try
+            {
+                allowed = RuntimeSymbol != null
+                    && RuntimeAccount != null
+                    && RuntimeSymbol.IsTradingAllowed(RuntimeAccount);
+                if (!allowed)
+                    reason = "is_trading_allowed_false";
+            }
+            catch (Exception ex)
+            {
+                reason = ex.Message;
+            }
+
+            if (allowed)
+            {
+                if (!_tradingPermissionReady || forceEvent)
+                {
+                    _events?.Write("trading_permission_ready",
+                        ("symbol", RuntimeSymbol?.Name),
+                        ("symbol_id", RuntimeSymbol?.Id),
+                        ("connection_id", RuntimeSymbol?.ConnectionId),
+                        ("account", RuntimeAccount?.Name),
+                        ("account_id", RuntimeAccount?.Id));
+                }
+                _tradingPermissionReady = true;
+                return true;
+            }
+
+            _tradingPermissionReady = false;
+            if (forceEvent
+                || _lastTradingPermissionEventUtc == DateTime.MinValue
+                || (nowUtc - _lastTradingPermissionEventUtc).TotalSeconds
+                    >= TradingPermissionLogIntervalSeconds)
+            {
+                _lastTradingPermissionEventUtc = nowUtc;
+                _events?.Write("trading_permission_waiting",
+                    ("symbol", RuntimeSymbol?.Name),
+                    ("symbol_id", RuntimeSymbol?.Id),
+                    ("connection_id", RuntimeSymbol?.ConnectionId),
+                    ("account", RuntimeAccount?.Name),
+                    ("account_id", RuntimeAccount?.Id),
+                    ("reason", reason));
+                if (RuntimeSymbol != null && RuntimeAccount != null)
+                {
+                    Log($"Trading is not allowed yet for "
+                        + $"{RuntimeSymbol.Name}/{RuntimeAccount.Name}; waiting.");
+                }
+            }
+            return false;
+        }
+
+        private void RefreshRuntimeBindings()
+        {
+            RuntimeSymbol = ResolveConnectedSymbol(RuntimeSymbol);
+            if (MarketDataSymbol != null)
+                MarketDataSymbol = ResolveConnectedSymbol(MarketDataSymbol);
+            _marketDataSymbol = ResolveConnectedSymbol(MarketDataSymbol ?? RuntimeSymbol);
+
+            RuntimeAccount = ResolveConnectedAccount(RuntimeAccount);
+            if (RuntimeAccount == null && RuntimeSymbol != null)
+                RuntimeAccount = ResolveConnectedAccount(RuntimeSymbol.GetDefaultAccount());
+        }
+
+        private static Symbol ResolveConnectedSymbol(Symbol selected)
+        {
+            if (selected == null)
+                return null;
+            try
+            {
+                Symbol[] symbols = Core.Instance.Symbols;
+                return symbols.FirstOrDefault(s => SameSymbolIdentity(s, selected))
+                    ?? symbols.FirstOrDefault(s => SameSymbolName(s, selected))
+                    ?? selected;
+            }
+            catch
+            {
+                return selected;
+            }
+        }
+
+        private static Account ResolveConnectedAccount(Account selected)
+        {
+            if (selected == null)
+                return null;
+            try
+            {
+                Account[] accounts = Core.Instance.Accounts;
+                return accounts.FirstOrDefault(a => SameAccountIdentity(a, selected))
+                    ?? accounts.FirstOrDefault(a => SameAccountName(a, selected))
+                    ?? selected;
+            }
+            catch
+            {
+                return selected;
+            }
+        }
+
         private static double EffectiveTickSize(Symbol symbol)
             => symbol != null && double.IsFinite(symbol.TickSize) && symbol.TickSize > 0
                 ? symbol.TickSize
@@ -2538,6 +2684,34 @@ namespace ExecAssistantRuntime
         private static bool SameSymbol(Symbol left, Symbol right)
             => left != null && right != null
                 && string.Equals(left.Id, right.Id, StringComparison.Ordinal)
+                && string.Equals(left.ConnectionId, right.ConnectionId,
+                    StringComparison.Ordinal);
+
+        private static bool SameSymbolIdentity(Symbol left, Symbol right)
+            => left != null && right != null
+                && !string.IsNullOrWhiteSpace(left.Id)
+                && string.Equals(left.Id, right.Id, StringComparison.Ordinal)
+                && string.Equals(left.ConnectionId, right.ConnectionId,
+                    StringComparison.Ordinal);
+
+        private static bool SameSymbolName(Symbol left, Symbol right)
+            => left != null && right != null
+                && !string.IsNullOrWhiteSpace(left.Name)
+                && string.Equals(left.Name, right.Name, StringComparison.Ordinal)
+                && string.Equals(left.ConnectionId, right.ConnectionId,
+                    StringComparison.Ordinal);
+
+        private static bool SameAccountIdentity(Account left, Account right)
+            => left != null && right != null
+                && !string.IsNullOrWhiteSpace(left.Id)
+                && string.Equals(left.Id, right.Id, StringComparison.Ordinal)
+                && string.Equals(left.ConnectionId, right.ConnectionId,
+                    StringComparison.Ordinal);
+
+        private static bool SameAccountName(Account left, Account right)
+            => left != null && right != null
+                && !string.IsNullOrWhiteSpace(left.Name)
+                && string.Equals(left.Name, right.Name, StringComparison.Ordinal)
                 && string.Equals(left.ConnectionId, right.ConnectionId,
                     StringComparison.Ordinal);
 
