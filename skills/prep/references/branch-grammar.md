@@ -1,16 +1,16 @@
 # Prep Branch Grammar
 
-Use this reference when building a premarket opportunity map, mapping IB evidence, planning a balance day, or refining branches after a TPO period.
+Use this reference for premarket maps, balance days, IB evidence, one-period refinement, and live opportunity discussion.
 
 ## Core Branch Set
 
-Keep only the branches that the current structure actually supports. Most mornings should reduce to two or three:
+Keep only branches supported by current structure. Most mornings reduce to two or three:
 
 1. Clean drive or open-test-drive in the direction of overnight imbalance.
-2. Reclaim or rejection branch against overnight positioning.
-3. Open-auction, balance, or edge-search branch when neither side has easy campaign permission.
+2. Reclaim or rejection against overnight positioning.
+3. Open-auction, balance, or edge-search when neither directional branch proves itself.
 
-Each branch needs a burden of proof. Do not treat the branch as valid because price moved in that direction.
+Each branch needs a burden of proof, an early useful tell, and a falsifier. Movement alone does not validate it.
 
 ## Branch Template
 
@@ -18,299 +18,292 @@ Each branch needs a burden of proof. Do not treat the branch as valid because pr
 Branch:
 Why prepared:
 Must prove:
+Earliest sufficient evidence:
 Weakens if:
-Invalid if:
+I am wrong if:
 Opportunity:
-Participation:
-First target / owed area:
-Danger boundary:
+Participation character:
+Natural objective:
+Confirmation cost:
 ```
 
-Use `opportunity` labels consistently:
+Use opportunity labels consistently:
 
-- `campaign`: conditions support pressing or holding for a larger auction objective.
-- `early campaign`: if real, price should not offer a comfortable retest; available price may be necessary.
-- `probe`: participation is valid, but take profits into references and do not assume continuation.
-- `edge reaction`: trade only around balance extremes, failed breaks, or clear rejection.
-- `leave alone`: branch may be intellectually possible, but current location or proof quality is poor.
+- `early campaign`: if real, price should not offer comfortable re-entry; available price may matter.
+- `campaign`: acceptance supports pressing or holding for a larger auction objective.
+- `probe`: the failure or repair is tradeable, but evidence does not support assuming full continuation.
+- `edge reaction`: the opportunity exists only around a balance extreme, failed break, or clear rejection.
+- `no meaningful opportunity`: direction may be intellectually plausible, but remaining path, price quality, or session conditions are poor.
+
+## Opportunity Lifecycle
+
+Label prospective opportunities so a conditional opinion is not mistaken for a trade instruction:
+
+```text
+smelled -> forming -> active -> completed
+                    \-> falsified
+```
+
+- `smelled`: structure creates plausible asymmetry, but price has not reached the decision point.
+- `forming`: price is testing the reference or condition that can activate the idea.
+- `active`: the specified failure, acceptance, or conversion has occurred and meaningful path remains.
+- `falsified`: the observable `I am wrong if` condition occurred. Remove the idea immediately.
+- `completed`: the natural auction objective traded or most of the intended path was consumed.
+- `absent`: no side has a coherent opportunity worth ranking.
+
+Never upgrade lifecycle merely because later evidence looks more certain. Confirmation can arrive after the original opportunity is completed.
+
+## Proof Versus Price Quality
+
+Track both clocks:
+
+```text
+Evidence increases -> directional confidence can improve
+Price travels      -> remaining opportunity can deteriorate
+```
+
+For every live hypothesis distinguish:
+
+- `earliest sufficient evidence`: enough auction information to make the hypothesis real.
+- `stronger confirmation`: useful evidence that may arrive later, such as VWAP recapture or broader acceptance.
+- `confirmation cost`: distance, target path, or clean price already consumed while waiting.
+- `opportunity expiry`: reference or objective after which the original idea is late or completed.
+
+Do not require complete directional control before naming a responsive trade. Do not call a fully confirmed move attractive when it is entering developing HVN/VPOC churn or has already reached its natural objective.
+
+## Chase And Bias Audit
+
+Run this before recommending that the user reinterpret a one-way move as urgent participation:
+
+```text
+What was the prepared burden of proof?
+What evidence has actually appeared?
+What easier evidence is being substituted because the move was missed?
+Is price truly escaping, or is the decision point still ahead?
+If the move leaves without acceptable participation, is that simply a missed trade?
+What opposing opportunity becomes visible once urgency is removed?
+```
+
+Common story substitutions:
+
+- Open reclaim treated as proof of acceptance above ETH value.
+- VWAP buying treated as proof that an upper edge will convert.
+- Thirty minutes of one-way repair treated as a new campaign when it is approaching its natural test.
+- Strong confirmation near the opposite edge treated as a fresh entry rather than completion.
+
+Name the substitution directly without taking ownership of the user's trade decision.
 
 ## Common Premarket Structures
 
 ### ETH Balance Below Prior Value
 
-Example context: prior day was balanced or overlapping prior sessions; ETH builds a `b` profile or balance below prior VAL.
-
-Short drive or OTD short branch:
+Short drive or OTD short:
 
 - Premise: overnight business accepted below prior value, or sellers are pressing a lower distribution.
-- Must prove: hold below ETH value or ETH base, deny re-entry into ETH value, and build below the overnight lower edge.
-- Strong evidence: pullbacks fail below ETH VAL/VPOC, A period extends lower without repairing back into ETH value, and B period does not reclaim the base.
-- Opportunity: `early campaign` if the drive is clean. Waiting for a perfect higher test may miss the trade because the branch should not offer re-entry.
+- Must prove: hold below ETH value/base, deny re-entry, and build below the overnight lower edge.
+- Early tell: pullbacks fail below ETH VAL/VPOC and A period extends without repair.
+- Opportunity: `early campaign` when denial is clean.
 - Weakens if: price re-enters ETH value, repairs the lower distribution, or cannot hold below ETH VPOC.
+- Wrong if: the area the drive had to deny is reclaimed and accepted.
 
-Long reclaim branch:
+Long reclaim:
 
-- Premise: overnight shorts are trapped below prior value or lower prices were only inventory adjustment.
-- Must prove: reclaim ETH base, build above ETH value, then reclaim prior VAL and convert it into support.
-- Strong evidence: A/B periods hold above ETH VPOC after reclaim, prior VAL shifts from resistance to support, and pullbacks fail above prior VAL.
-- Opportunity: usually `probe` until prior value is reclaimed and converted. A large spike into prior value is not enough.
-- Weakens if: prior VAL contains price, the move only tags PD value and returns to ETH value, or fresh demand fails inside prior value.
+- Premise: overnight shorts are trapped below value or lower prices were inventory adjustment.
+- Must prove: reclaim ETH base/value, then reclaim and convert prior VAL or the relevant upper ETH reference.
+- Early tell: the failed lower drive repairs important references without deep selling on retest.
+- Opportunity: `probe` during repair; `campaign` only after the prepared conversion.
+- Weakens if: the upper reference contains price or the move only tags it and returns.
+- Wrong if: the repair base fails and sellers rebuild below it.
 
-Balance/open-auction branch:
+Open auction / edge search:
 
-- Premise: ETH location is important but neither side converts it into RTH ownership.
-- Must prove: both drive attempts fail, middle stays fast, and edges become the only clean locations.
-- Opportunity: `edge reaction`; avoid campaigns through the middle unless fresh ownership develops.
+- Premise: neither directional branch converts ETH location into RTH acceptance.
+- Must prove: both drive attempts fail, the middle stays rotational, and edges become the clean decision points.
+- Opportunity: rank the best developing edge failure even while current action is `wait`.
+- Wrong if: one side builds beyond an edge and denies re-entry.
 
 ### ETH Balance Above Prior Value
 
 Invert the proof:
 
 - Long drive must hold above ETH value and deny re-entry.
-- Short reclaim must first break ETH base, then re-enter prior value, then convert prior VAH or value edge from support into resistance.
-- A downside move that only falls into prior value is not proof until it accepts there and holds failed attempts back above.
+- Short reclaim must break ETH base, re-enter prior value, and convert the relevant edge into resistance.
+- A downside move that merely enters prior value is not proof until it accepts and survives attempts back above.
 
 ### Inside Prior Value
 
-If ETH builds inside prior value, treat the open as balance first unless the open quickly proves otherwise.
+Treat the open as balance first unless it quickly proves otherwise.
 
 - Campaign long needs acceptance above value or a clean failed break below value.
 - Campaign short needs acceptance below value or a clean failed break above value.
-- Inside the value area, expect rotations and false starts.
-- Participation is usually `probe` or `edge reaction` until one side builds outside value and survives retests.
+- Inside value, expect rotations and false starts.
+- Rank edge reactions over middle continuation until a new distribution builds outside value.
 
 ## Balance-Day Map
 
 For overlapping profiles, accepted ranges, or multi-day balance:
 
-- Define balance high, balance low, value center, major HVNs, LVNs, and poor extremes.
-- The middle is a poor campaign location unless fresh ownership creates a new distribution.
-- Edges matter because they can reject, break, or fail.
+- Define balance high/low, value center, major HVNs/LVNs, and poor extremes.
+- The middle is a poor campaign location unless a new distribution builds there.
 - A breakout must build outside the edge and deny re-entry.
 - A failed breakout back into balance targets value center, then the opposite edge if acceptance continues.
-- A return from an edge to the middle is not automatically a new campaign; it can be simple repair.
+- A return from an edge to the middle can be repair rather than a new campaign.
 
-Branch set for balance:
+Branch set:
 
 ```text
 1. Accepted breakout
-   Must prove: build outside edge, hold retest, deny re-entry.
-   Opportunity: campaign only after acceptance; early campaign only if drive is clean and no re-entry.
+   Must prove: build outside edge, survive retest, deny re-entry.
+   Opportunity: campaign while meaningful external path remains.
 
 2. Failed breakout
-   Must prove: attempt outside edge fails back inside, then edge converts against the breakout side.
-   Opportunity: campaign toward center/opposite edge if failure is clean; otherwise probe.
+   Must prove: outside attempt fails and the edge converts against the breakout side.
+   Opportunity: campaign toward center/opposite edge if early and clean; otherwise probe.
 
 3. Open auction / edge search
-   Must prove: both sides fail, middle stays fast, no durable ownership away from edge.
-   Opportunity: edge reactions only; avoid pressing middle continuation.
+   Must prove: repeated two-way failure and no acceptance away from value.
+   Opportunity: smell and rank edge failures; expect middle churn.
 ```
 
 ## IB Evidence
 
-Map evidence before the open so the first hour reduces branches instead of creating new stories.
+Define these tells before the open.
 
 ### A Period
 
 Watch:
 
 - Opening location relative to ETH value, prior value, and balance edges.
-- Whether the first drive denies re-entry into the area it left.
-- Whether movement builds outside a reference or only tags it.
+- Whether the first drive denies re-entry or only travels quickly.
+- Whether movement builds outside a reference or merely tags it.
 - Whether price returns through the open/VWAP/value without resistance.
-- Whether early single prints remain open or repair quickly.
+- Whether early single prints remain open or repair.
 
 Interpretation:
 
-- Clean drive plus no re-entry supports an `early campaign`.
-- Drive into prior value without conversion is only a test.
-- Fast return into the prior range weakens open-drive assumptions.
-- Two-sided failure promotes open-auction or edge-search.
+- Clean drive plus denial supports an `early campaign`.
+- Drive into prior value without conversion is a test.
+- Fast return into the prior range weakens the drive.
+- Two-sided failure promotes open-auction and moves opportunity toward the edges.
 
 ### B Period
 
 Watch:
 
-- Does B extend A in the same direction or repair A's excess/single prints?
-- Does B convert the key reference from resistance to support or support to resistance?
-- Does B hold outside ETH/prior value, or pull the auction back into the middle?
-- Does a failed A drive create an opposite campaign, or only return to balance?
+- Whether B extends A or repairs A's excess/single prints.
+- Whether the key reference converts or contains price.
+- Whether B holds outside ETH/prior value or returns to the middle.
+- Whether a failed A drive creates an opposite opportunity or only balance repair.
 
 Interpretation:
 
-- B continuation after A denial strengthens campaign permission.
-- B repair of A drive downgrades the branch to probe or failed-drive.
-- B acceptance back inside value usually weakens the original drive and promotes balance.
+- B continuation after A denial strengthens the campaign.
+- B repair downgrades the original drive and can create an opposite probe.
+- Acceptance back inside value usually promotes balance.
 
 ### Full IB
 
-After the first hour:
+- Extension beyond a cleanly accepted edge supports the trend branch.
+- Failed extension back inside supports failed-breakout or balance repair.
+- Repeated failures keep campaigns low-quality but can improve edge asymmetry.
+- Quickly revisited IB extremes remain unfinished references.
 
-- IB extension beyond a cleanly accepted edge supports the trend branch.
-- Failed IB extension back inside the range supports failed-breakout or balance repair.
-- No extension and repeated failures keep campaigns low-quality.
-- If both IB extremes are poor or quickly revisited, treat them as unfinished references, not durable extremes.
+## One-Period And Live Refinement
 
-## One-Period Refinement
-
-At every completed 30-minute period, answer:
+At each completed period or meaningful live question answer:
 
 ```text
-Which branch lost required evidence?
-Which branch gained required evidence?
-Which reference converted?
-Which reference contained price?
-Is the next opportunity a campaign, probe, edge reaction, or leave alone?
-What specific trade idea is now disallowed?
+Opinion:
+Opportunity lifecycle:
+Which branch lost evidence?
+Which branch gained evidence?
+What did the move prove?
+What did it not prove?
+What tempting inference may be substituting for the original burden?
+What is the best prospective opportunity?
+What is the earliest sufficient evidence?
+What does waiting for stronger proof cost?
+I am wrong if:
+If wrong, what becomes the next question?
 ```
 
-Reduce optionality aggressively:
+Reduce optionality aggressively, but do not confuse `current action is wait` with `no prospective opportunity exists`.
 
-- If price re-entered the area a drive had to deny, the clean drive branch is weakened.
-- If price converted a value edge and survived, the reclaim branch strengthens.
-- If price keeps rotating through value without survival, campaigns shrink.
-- If the only trade requires chasing into the middle of balance, mark it `leave alone`.
+## Failed Drive And Repair Sequence
 
-## Transition Discipline
-
-When a drive succeeds first and then fails to continue, do not wait for the
-opposite side to earn campaign ownership before naming the next opportunity.
-Separate these states:
+When a drive fails to continue, separate these states:
 
 1. `Original campaign active`
-   - Required evidence is still holding.
-   - Pullbacks should not re-enter the area the drive had to deny.
-   - Same-direction continuation or add logic may remain valid.
+   - Required denial still holds.
+   - Same-direction continuation remains the best opportunity while path remains.
 
-2. `Original campaign paused`
-   - The drive reached an objective or swept an edge but did not accept beyond it.
-   - Fresh entries in the original direction need renewed acceptance.
-   - Opposite-direction repair becomes allowed as a probe.
+2. `Original campaign weakened or falsified`
+   - The drive reached an objective but did not accept, or price reclaimed what it had to deny.
+   - Do not sell/buy the first repair touch as though the original drive remains intact.
 
-3. `Repair probe active`
-   - The original side failed continuation and price is reclaiming important references.
-   - The target is the next owed repair/test area, not a full reversal objective.
-   - Size/adds should be conservative until same-side ownership survives.
+3. `Repair opportunity`
+   - Failed continuation allows repair toward the next owed reference.
+   - Do not confuse repair with full opposite acceptance.
 
-4. `Campaign conversion`
-   - The repair side converts the major reference, builds value beyond it, and survives tests.
-   - The opportunity may upgrade from probe to campaign if price quality remains acceptable.
-   - If conversion happens above/below the planned entry, label the next trade `late confirmation`
-     or `continuation`, not the original repair entry.
+4. `Opposite-edge decision`
+   - If repair approaches the other edge, smell both resolutions before they occur.
+   - Failure there can activate a responsive move back through the range.
+   - Acceptance beyond it falsifies the responsive hypothesis and promotes the breakout/reclaim branch.
 
-5. `Balance after failed continuation`
-   - Both sides have failed enough that the next opportunity is edge reaction only.
-   - Do not keep forcing the repair side as a campaign through the middle.
+5. `HVN/VPOC churn`
+   - If neither edge resolves and volume builds in the middle, remaining directional opportunity deteriorates.
+   - Later confirmation through the middle may carry higher churn and stop exposure.
 
-For each transition, state:
+Do not wait for the opposite side to demonstrate total control before naming its opportunity. The point is to identify the hypothesis before its path is consumed.
+
+## Session Clock And Energy
+
+Time of day changes whether a structurally valid branch can still develop:
+
+- Early session: sufficient time and energy may remain for a failed edge to rotate through IB.
+- After an extended one-way move: distinguish fresh initiative from a mature move reaching its natural test.
+- Late morning/lunch: repeated VPOC/HVN formation can make direction correct but participation costly.
+- Late session: ask whether the required build, retest, and target path can realistically complete before close.
+
+State whether the scenario has enough time and auction energy. Do not use time of day as a generic reason to avoid an opinion.
+
+## Disagreement Protocol
+
+Treat disagreement as an invitation to refine:
 
 ```text
-Now allowed:
-Now disallowed:
-Upgrade proof:
-Downgrade proof:
-Price-quality warning:
+My current claim:
+Premise under dispute:
+Evidence for the user's interpretation:
+Evidence against it:
+Observation that separates the two:
+What would change my mind:
 ```
+
+Do not surrender the view merely because the user proposes another side. Equally, do not defend it after its falsifier occurs. Productive disagreement should expose whether the user is trading the prepared branch, an anticipatory version of it, or a newly substituted story.
 
 ## EA Draft Candidate Grammar
 
-Prep may draft named EA candidates when participation is being discussed. Drafts
-are not dispatches. Use this format:
+Only load this section into the response when the user explicitly asks for directive wording or an executable candidate.
 
 ```text
 EA candidate A - [probe/campaign/continuation/edge reaction] (draft, not dispatched)
-Side: long/short
-Entry range: inclusive order range
-Target: HARD_TP price and reference
-Size/adds: base, add, max, or no-add
-Invalidation: pre-entry invalidation if needed
-TTL: minutes or exact expiry
+Side:
+Entry range:
+Target:
+Size/adds:
+Invalidation:
+TTL:
 Opportunity class:
 Price quality:
 Why this exists:
 Dispatch note:
 ```
 
-Candidate rules:
-
-- Name every candidate. Do not make the user refer to "the above" if multiple drafts exist.
-- If a behavior-changing field is unknown, write `needs:` instead of guessing.
-- Prefer one best candidate and one alternate only when the alternate is genuinely different
-  in price quality or opportunity class.
-- A probe candidate should usually be base-only or no-add unless the user has explicit
-  session defaults and the structure justifies adds.
-- A campaign candidate may allow adds only after ownership conversion and survivable tests.
-- A continuation candidate must warn when the ideal conversion/retest entry has already passed.
-- Do not use a wide context phrase such as `above open` as the order range. Translate it into
-  a concrete executable price range or mark the field as `needs: entry range`.
-- Do not turn `anything above IBL` into a directive unless that is truly the risk boundary and
-  the user explicitly accepts the size of that risk.
-
-## Immutable Directive Lifecycle
-
-Because EAR directives are immutable, Prep should treat probe and campaign as
-separate executable contracts unless the user explicitly asks EA to continue a
-same-side campaign after a local protective exit.
-
-Common sequence:
-
-```text
-1. Probe draft:
-   Seller failure allows long repair toward IBH, but demand has not yet stacked.
-   Candidate is base-only/no-add, target is repair objective, invalidation is the failed-repair base.
-
-2. Conversion:
-   IBH or another major reference converts, old supply fails, and demand survives.
-   State that the probe has validated into campaign permission.
-
-3. Campaign draft:
-   New candidate may target the larger objective and may allow adds if the entry is still fair.
-   If price is already beyond the conversion entry, mark it as continuation/late confirmation.
-
-4. Balance/exhaustion:
-   Responsive supply, failed higher demand, or two-way failure downgrades continuation.
-   New longs become edge reactions or leave-alone until fresh ownership appears.
-```
-
-## Output Examples
-
-### ETH Below Prior Value
-
-```text
-Prepared branches:
-1. OTD short below ETH value
-   Premise: ETH built below PD VAL; if sellers own it, RTH should not let price back into ETH value.
-   Must prove: hold below ETH VAL/VPOC and extend below ETH low without repair.
-   Weakens if: A or B re-enters ETH value and holds.
-   Opportunity: early campaign if denial is clean.
-   Participation: available prices; do not wait for ideal higher retest if drive is accepted.
-
-2. Long reclaim into PD value
-   Premise: overnight sellers may be trapped below value.
-   Must prove: reclaim ETH base, then convert PD VAL as support.
-   Weakens if: PD VAL contains price or the move returns to ETH value.
-   Opportunity: probe until PD VAL converts.
-   Participation: wait for conversion, not just a large spike.
-
-3. Open auction / edge search
-   Premise: neither side converts ETH position into RTH acceptance.
-   Must prove: both attempts fail and middle stays fast.
-   Opportunity: edge reaction only.
-```
-
-### Multi-Day Balance
-
-```text
-Prepared branches:
-1. Accepted breakout above balance
-   Must prove: build above balance high, survive retest, deny re-entry.
-   Opportunity: campaign after acceptance.
-
-2. Failed breakout back into balance
-   Must prove: outside attempt fails, balance high converts to resistance.
-   Opportunity: campaign toward center only if failure is clean; otherwise probe.
-
-3. Open auction inside balance
-   Must prove: no edge acceptance, repeated two-way failure.
-   Opportunity: edge reaction; leave middle alone.
-```
+- Name every candidate.
+- Mark unknown behavior-changing fields with `needs:`.
+- A probe is usually base-only/no-add unless explicit defaults and structure justify otherwise.
+- A campaign may allow adds only after its auction conversion survives.
+- A continuation candidate must warn when the ideal opportunity has passed.
+- Translate context phrases into concrete ranges or mark `needs: entry range`.
+- Treat probe and campaign as separate immutable EAR contracts.

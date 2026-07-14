@@ -1,4 +1,4 @@
 interface:
   display_name: "Prep"
-  short_description: "Premarket auction campaign map"
-  default_prompt: "Use $prep to build a premarket RTH opportunity map from recent profiles, overnight positioning, and IB branch evidence."
+  short_description: "Falsifiable auction opportunity refinement"
+  default_prompt: "Use $prep to form and refine an opinionated, falsifiable RTH opportunity map without turning it into a trade decision."
