@@ -29,6 +29,10 @@ controls, but it deliberately does not become a planning tool.
   the evidence envelope and may be auto-derived from Order plus Target. When
   disabled, it sends `--no-adds`, `add_quantity=0`, and
   `max_position_quantity=base_quantity`.
+- `DirectiveSketchProbe` import is form-fill only. A valid probe draft may set
+  side, Order, TP, and turn `auto ctx` back on, but it must not dispatch,
+  validate, alter sizing/base/add/abort/reference/tag/notes, or write EAR
+  runtime directive files directly.
 - EAR's checkpoint is authoritative for the instance quantity ceiling. The max
   field is still visible so a stale or absent checkpoint cannot hide what will
   be sent.

@@ -45,6 +45,9 @@ internal sealed class MainForm : Form
     private bool _updatingOrder;
     private string _statusText = "idle";
     private int? _runtimeMaxPosition;
+    private System.Windows.Forms.Timer? _sketchPollTimer;
+    private DateTime _lastSketchWriteUtc = DateTime.MinValue;
+    private string _lastSketchSignature = "";
 
     public MainForm()
     {
@@ -53,6 +56,7 @@ internal sealed class MainForm : Form
         BuildUi();
         ApplySettings();
         WireEvents();
+        StartSketchDraftImport();
     }
 
     protected override async void OnShown(EventArgs e)
@@ -63,6 +67,8 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        _sketchPollTimer?.Stop();
+        _sketchPollTimer?.Dispose();
         SaveSettings();
         base.OnFormClosing(e);
     }
@@ -919,6 +925,194 @@ internal sealed class MainForm : Form
         _statusLine.Text = TopMost ? $"status [top]: {label}" : $"status: {label}";
     }
 
+    private void StartSketchDraftImport()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.SketchDraftPath)
+            && string.IsNullOrWhiteSpace(_settings.RuntimeDir))
+        {
+            return;
+        }
+
+        _sketchPollTimer = new System.Windows.Forms.Timer { Interval = 350 };
+        _sketchPollTimer.Tick += (_, _) => PollSketchDraft();
+        PrimeSketchDraftImportCursor();
+        _sketchPollTimer.Start();
+    }
+
+    private void PrimeSketchDraftImportCursor()
+    {
+        try
+        {
+            string path = ExpandSketchDraftPath();
+            if (path.Length > 0 && File.Exists(path))
+                _lastSketchWriteUtc = File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException
+            or PathTooLongException or UnauthorizedAccessException)
+        {
+            // A bad or unavailable probe path should not affect manual dispatch.
+        }
+    }
+
+    private void PollSketchDraft()
+    {
+        if (_busy)
+            return;
+
+        string path;
+        try
+        {
+            path = ExpandSketchDraftPath();
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return;
+        }
+
+        if (path.Length == 0 || !File.Exists(path))
+            return;
+
+        DateTime writeUtc;
+        try
+        {
+            writeUtc = File.GetLastWriteTimeUtc(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (writeUtc <= _lastSketchWriteUtc)
+            return;
+
+        string text;
+        try
+        {
+            text = File.ReadAllText(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        _lastSketchWriteUtc = writeUtc;
+        if (!TryParseSketchImport(text, out SketchImport? import) || import == null)
+            return;
+
+        if (string.Equals(import.Signature, _lastSketchSignature, StringComparison.Ordinal))
+            return;
+
+        ApplySketchImport(import);
+        _lastSketchSignature = import.Signature;
+    }
+
+    private string ExpandSketchDraftPath()
+    {
+        string configured = _settings.SketchDraftPath;
+        if (string.IsNullOrWhiteSpace(configured))
+            configured = Path.Combine(_settings.RuntimeDir, "directive-sketch-probe.json");
+
+        string expanded = Environment.ExpandEnvironmentVariables(configured);
+        return string.IsNullOrWhiteSpace(expanded) ? "" : Path.GetFullPath(expanded);
+    }
+
+    private void ApplySketchImport(SketchImport import)
+    {
+        if (import.Side == "short")
+            _shortSide.Checked = true;
+        else
+            _longSide.Checked = true;
+
+        _orderRange.Text = $"{FormatArg(import.OrderLower)}-{FormatArg(import.OrderUpper)}";
+        _targetPrice.Text = FormatArg(import.TargetPrice);
+
+        if (!_autoOrder.Checked)
+            _autoOrder.Checked = true;
+        else
+            ApplyAutoOrder();
+
+        UpdatePreviews();
+        SetStatusText(
+            $"sketch {import.Side.ToUpperInvariant()} {FormatDisplay(import.OrderLower)}-{FormatDisplay(import.OrderUpper)} tp {FormatDisplay(import.TargetPrice)}");
+    }
+
+    private static bool TryParseSketchImport(string text, [NotNullWhen(true)] out SketchImport? import)
+    {
+        import = null;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(text);
+            JsonElement root = document.RootElement;
+            if (!TryGetString(root, "status", out string? status))
+                return false;
+            if (!status.Equals("ok", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!TryGetObject(root, "active_draft", out JsonElement draft))
+                return false;
+            if (!TryGetString(draft, "side", out string? side))
+                return false;
+
+            side = side.Trim().ToLowerInvariant();
+            if (side is not ("long" or "short"))
+                return false;
+
+            if (!TryGetObject(draft, "order_context_range", out JsonElement range)
+                || !TryGetFiniteDouble(range, "lower", out double lower)
+                || !TryGetFiniteDouble(range, "upper", out double upper)
+                || !TryGetFiniteDouble(draft, "target_price", out double target))
+            {
+                return false;
+            }
+
+            if (lower > upper)
+                (lower, upper) = (upper, lower);
+            if (side == "long" && target <= upper)
+                return false;
+            if (side == "short" && target >= lower)
+                return false;
+
+            string generatedAt = TryGetString(root, "generated_at_utc", out string? value) ? value : "";
+            string signature = string.Join("|",
+                generatedAt,
+                side,
+                lower.ToString("R", CultureInfo.InvariantCulture),
+                upper.ToString("R", CultureInfo.InvariantCulture),
+                target.ToString("R", CultureInfo.InvariantCulture));
+            import = new SketchImport(side, lower, upper, target, signature);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetObject(JsonElement parent, string propertyName, out JsonElement value)
+        => parent.TryGetProperty(propertyName, out value) && value.ValueKind == JsonValueKind.Object;
+
+    private static bool TryGetString(JsonElement parent, string propertyName, [NotNullWhen(true)] out string? value)
+    {
+        value = null;
+        if (!parent.TryGetProperty(propertyName, out JsonElement element))
+            return false;
+
+        value = element.ValueKind == JsonValueKind.String ? element.GetString() : element.ToString();
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool TryGetFiniteDouble(JsonElement parent, string propertyName, out double value)
+    {
+        value = 0;
+        if (!parent.TryGetProperty(propertyName, out JsonElement element))
+            return false;
+
+        bool parsed = element.ValueKind == JsonValueKind.Number
+            ? element.TryGetDouble(out value)
+            : double.TryParse(element.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        return parsed && double.IsFinite(value);
+    }
+
     private string WithRaw(string summary, JsonElement root)
     {
         if (!_settings.ShowRawJson)
@@ -1309,6 +1503,13 @@ internal sealed class MainForm : Form
     }
 
     private sealed record DispatchCommand(IReadOnlyList<string> Arguments);
+
+    private sealed record SketchImport(
+        string Side,
+        double OrderLower,
+        double OrderUpper,
+        double TargetPrice,
+        string Signature);
 }
 
 internal static class PriceInput
@@ -1459,6 +1660,8 @@ internal sealed class DispatcherSettings
 {
     public string RuntimeDir { get; set; } =
         Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Documents\ExecAssistantRuntime");
+    public string SketchDraftPath { get; set; } =
+        Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Documents\ExecAssistantRuntime\directive-sketch-probe.json");
     public string PythonExe { get; set; } = "python";
     public string Side { get; set; } = "long";
     public string PriceBase { get; set; } = "30000";
