@@ -183,6 +183,7 @@ What to watch, review, or practice next session.
 ## Writing Rules
 
 - Prefer decision-quality over completeness.
+- When the account feed contains intentionally duplicated or near-identical trades from mirrored accounts, select one account-level execution stream and use only that stream for the journal. Do not aggregate or double-count the mirrored entries; note the selection briefly when relevant.
 - Do not invent trades, prices, emotions, or motives. Mark unknowns plainly.
 - Do not judge by P&L. Judge by quality of read, risk definition, execution, and adaptation.
 - Separate professional process from outcome. A profitable improvisational day can be a weaker process day than a small-loss prepared day if the branch map was missing.
