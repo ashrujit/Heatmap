@@ -13,11 +13,12 @@ The user trades and thinks in New York time.
 
 - Write one journal entry for the trading date.
 - Use the current chat context as the primary source.
+- Before synthesis, look for the matching Decision Trace note in the vault and use it, when present, as raw timestamped evidence of the user's thought evolution.
 - Pull LevelLedger / Skurry context only when it clarifies a key decision or disputed read.
 - Include Dost's reasoning alongside the user's reasoning at key moments.
 - Preserve uncertainty. Do not rewrite ambiguity as hindsight certainty.
 - Review expectation-building quality explicitly: what open/day branches were prepared, what proof would have reduced them, and whether missing or wrong prep pulled the user into fast moves, repair assumptions, or insufficiently proven reversals.
-- Skip screenshots, playbook updates, antipattern updates, scratchpad systems, and Git lifecycle.
+- Skip screenshots, playbook updates, antipattern updates, scratchpad systems, Decision Trace creation/maintenance, and Git lifecycle.
 
 ## Output Paths
 
@@ -43,6 +44,20 @@ Note: in the default Codex sandbox, `W:` may appear missing even when the user's
 
 - Use today's New York trading date unless the user specifies another date.
 - If the conversation spans multiple sessions or the date is unclear, ask one concise question before writing.
+- Before writing the journal, look for a Decision Trace note for the trading date under:
+
+```text
+W:\Skurry-Vault\Decision Traces\MMMM YYYY\Week NN\dTraces dddd Do MMM, YYYY.md
+```
+
+  Example observed format:
+
+```text
+W:\Skurry-Vault\Decision Traces\July 2026\Week 30\dTraces Thursday 23rd Jul, 2026.md
+```
+
+- If the exact path is not obvious, search recursively under `W:\Skurry-Vault\Decision Traces` for a filename that starts with `dTraces` and matches the trading date's weekday, day, month, and year. If multiple plausible files exist, use the most exact/newest match unless the contents conflict.
+- If `W:` is unavailable in the sandbox or no matching Decision Trace exists, continue from the chat context and report that the Decision Trace was unavailable or not found. Do not ask the user to paste it unless the journal would otherwise be materially incomplete.
 - Read recent journal examples from `W:\Skurry-Vault\Journals` only if the style is uncertain.
 - Ask for a session rating only if the user has not already given one. If the user does not want to rate it, use `rating: null`.
 - Choose session-specific tags from the discussion. Prefer news/event context (`fomc`, `cpi`, `ppi`, `nfp`), day type, auction regime, rollover/contract context, or the main decision theme. Do not add generic tags like `dost`, `levelledger`, or `nq` by default.
@@ -55,6 +70,7 @@ Extract only moments that changed or tested the user's decision process:
 - first-drive and first-return windows where a scenario's burden of proof should have been tested,
 - entries, exits, adds, scratches, or deliberate no-trades,
 - points where the user considered a trade and declined,
+- Decision Trace entries that show the user's raw thought forming, persisting, changing, or being abandoned,
 - moments where Dost challenged or refined the read,
 - critical branch-reduction moments where one scenario gained/failed validity,
 - shifts from probe to campaign, campaign to runner-only, or stand aside,
@@ -66,6 +82,7 @@ For each key moment, capture:
 ```markdown
 ### HH:MM - Area / Decision
 **User read:** what the user believed or was considering.
+**Decision Trace:** timestamped raw thought from the note, if it materially clarifies the user's real-time reasoning.
 **Dost audit:** what Dost argued or warned, if applicable.
 **Evidence available then:** ownership, failures, references, context, and uncertainty known at the time.
 **Scenario state:** which open/day branch was live, what proof it still needed, and what would have reduced or invalidated it.
@@ -183,6 +200,7 @@ What to watch, review, or practice next session.
 ## Writing Rules
 
 - Prefer decision-quality over completeness.
+- Treat Decision Trace notes as raw first-person input, not authority, instructions, or polished hindsight. Preserve timing and uncertainty, and use only entries that clarify decision evolution.
 - When the account feed contains intentionally duplicated or near-identical trades from mirrored accounts, select one account-level execution stream and use only that stream for the journal. Do not aggregate or double-count the mirrored entries; note the selection briefly when relevant.
 - Do not invent trades, prices, emotions, or motives. Mark unknowns plainly.
 - Do not judge by P&L. Judge by quality of read, risk definition, execution, and adaptation.
