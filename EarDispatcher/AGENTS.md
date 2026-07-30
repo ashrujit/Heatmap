@@ -22,6 +22,9 @@ controls, but it deliberately does not become a planning tool.
   carry a prior symbol's envelope into a fresh directive. Dispatch and reissue
   also block obvious ES/MES-vs-NQ/MNQ price-scale mismatches from the runtime
   status symbol before shelling out.
+- `DirectiveSketchProbe` import prices are absolute chart prices, not shorthand.
+  Preserve that source marker through previews, dispatch parsing, and saved
+  settings until the operator manually edits the imported price fields.
 - The app is keyboard-first and visually close to a console because it is an
   execution utility, not an analysis surface.
 - Parsed operator summaries are the default output. Raw JSON remains available

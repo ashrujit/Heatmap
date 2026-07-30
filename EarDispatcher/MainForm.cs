@@ -43,6 +43,10 @@ internal sealed class MainForm : Form
 
     private bool _busy;
     private bool _updatingOrder;
+    private bool _programmaticPriceUpdate;
+    private bool _contextRangeAbsoluteInput;
+    private bool _orderRangeAbsoluteInput;
+    private bool _targetPriceAbsoluteInput;
     private string _statusText = "idle";
     private int? _runtimeMaxPosition;
     private System.Windows.Forms.Timer? _sketchPollTimer;
@@ -366,8 +370,18 @@ internal sealed class MainForm : Form
     {
         _priceBase.TextChanged += (_, _) => OnAutoOrderSourceChanged();
         _contextRange.TextChanged += (_, _) => OnContextRangeChanged();
-        _orderRange.TextChanged += (_, _) => OnAutoOrderSourceChanged();
-        _targetPrice.TextChanged += (_, _) => OnAutoOrderSourceChanged();
+        _orderRange.TextChanged += (_, _) =>
+        {
+            if (!_programmaticPriceUpdate)
+                _orderRangeAbsoluteInput = false;
+            OnAutoOrderSourceChanged();
+        };
+        _targetPrice.TextChanged += (_, _) =>
+        {
+            if (!_programmaticPriceUpdate)
+                _targetPriceAbsoluteInput = false;
+            OnAutoOrderSourceChanged();
+        };
         _invalidationPrice.TextChanged += (_, _) => UpdatePreviews();
         _longSide.CheckedChanged += (_, _) => OnAutoOrderSourceChanged();
         _shortSide.CheckedChanged += (_, _) => OnAutoOrderSourceChanged();
@@ -655,8 +669,8 @@ internal sealed class MainForm : Form
     private DispatchCommand BuildDispatchCommand(bool dryRun)
     {
         double basePrice = ParsePriceBase();
-        ResolvedRange order = PriceInput.ParseRange(_orderRange.Text, basePrice, "order");
-        double target = PriceInput.ParsePrice(_targetPrice.Text, basePrice, "target");
+        ResolvedRange order = ParseOrderRange(basePrice);
+        double target = ParseTargetPrice(basePrice);
 
         int baseQty = ParsePositiveInt(_baseQuantity.Text, "base quantity");
         bool campaign = _campaign.Checked;
@@ -678,7 +692,7 @@ internal sealed class MainForm : Form
         }
         else
         {
-            ResolvedRange userContext = PriceInput.ParseRange(_contextRange.Text, basePrice, "context");
+            ResolvedRange userContext = ParseContextRange(basePrice);
             context = Envelope(userContext, order);
             if (addRange.HasValue)
                 context = Envelope(context, addRange.Value);
@@ -753,6 +767,8 @@ internal sealed class MainForm : Form
 
     private void OnContextRangeChanged()
     {
+        if (!_updatingOrder && !_programmaticPriceUpdate)
+            _contextRangeAbsoluteInput = false;
         if (!_updatingOrder && _autoOrder.Checked)
             _autoOrder.Checked = false;
         UpdatePreviews();
@@ -767,6 +783,7 @@ internal sealed class MainForm : Form
                 return;
 
             _updatingOrder = true;
+            _contextRangeAbsoluteInput = _orderRangeAbsoluteInput || _targetPriceAbsoluteInput;
             _contextRange.Text = text;
         }
         catch (InputException)
@@ -782,15 +799,16 @@ internal sealed class MainForm : Form
     private string BuildAutoOrderText()
     {
         double basePrice = ParsePriceBase();
-        ResolvedRange order = PriceInput.ParseRange(_orderRange.Text, basePrice, "order");
+        ResolvedRange order = ParseOrderRange(basePrice);
+        bool forceAbsoluteOutput = _orderRangeAbsoluteInput || _targetPriceAbsoluteInput;
         if (!_campaign.Checked)
-            return $"{FormatInputPrice(order.Lower, basePrice)}-{FormatInputPrice(order.Upper, basePrice)}";
+            return $"{FormatInputPrice(order.Lower, basePrice, forceAbsoluteOutput)}-{FormatInputPrice(order.Upper, basePrice, forceAbsoluteOutput)}";
 
-        double target = PriceInput.ParsePrice(_targetPrice.Text, basePrice, "target");
+        double target = ParseTargetPrice(basePrice);
         string side = _longSide.Checked ? "long" : "short";
         ResolvedRange campaign = CampaignRange(order, target, side);
         ResolvedRange context = Envelope(order, campaign);
-        return $"{FormatInputPrice(context.Lower, basePrice)}-{FormatInputPrice(context.Upper, basePrice)}";
+        return $"{FormatInputPrice(context.Lower, basePrice, forceAbsoluteOutput)}-{FormatInputPrice(context.Upper, basePrice, forceAbsoluteOutput)}";
     }
 
     private void UpdatePreviews()
@@ -805,19 +823,26 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _contextPreview.Text = PreviewRange(_contextRange.Text, basePrice, "context");
-        _orderPreview.Text = PreviewRange(_orderRange.Text, basePrice, "order");
-        _targetPreview.Text = PreviewPrice(_targetPrice.Text, basePrice, "target");
+        _contextPreview.Text = PreviewRange(
+            _contextRange.Text, basePrice, "context", _contextRangeAbsoluteInput);
+        _orderPreview.Text = PreviewRange(
+            _orderRange.Text, basePrice, "order", _orderRangeAbsoluteInput);
+        _targetPreview.Text = PreviewPrice(
+            _targetPrice.Text, basePrice, "target", _targetPriceAbsoluteInput);
         _invalidationPreview.Text = PreviewPrice(_invalidationPrice.Text, basePrice, "invalidation");
     }
 
-    private static string PreviewRange(string text, double basePrice, string name)
+    private static string PreviewRange(
+        string text,
+        double basePrice,
+        string name,
+        bool forceAbsolute = false)
     {
         if (string.IsNullOrWhiteSpace(text))
             return "";
         try
         {
-            ResolvedRange range = PriceInput.ParseRange(text, basePrice, name);
+            ResolvedRange range = PriceInput.ParseRange(text, basePrice, name, forceAbsolute);
             return $"{FormatDisplay(range.Lower)} - {FormatDisplay(range.Upper)}";
         }
         catch (InputException ex)
@@ -826,13 +851,17 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static string PreviewPrice(string text, double basePrice, string name)
+    private static string PreviewPrice(
+        string text,
+        double basePrice,
+        string name,
+        bool forceAbsolute = false)
     {
         if (string.IsNullOrWhiteSpace(text))
             return "";
         try
         {
-            double price = PriceInput.ParsePrice(text, basePrice, name);
+            double price = PriceInput.ParsePrice(text, basePrice, name, forceAbsolute);
             return FormatDisplay(price);
         }
         catch (InputException ex)
@@ -877,6 +906,18 @@ internal sealed class MainForm : Form
         return value;
     }
 
+    private ResolvedRange ParseContextRange(double basePrice)
+        => PriceInput.ParseRange(
+            _contextRange.Text, basePrice, "context", _contextRangeAbsoluteInput);
+
+    private ResolvedRange ParseOrderRange(double basePrice)
+        => PriceInput.ParseRange(
+            _orderRange.Text, basePrice, "order", _orderRangeAbsoluteInput);
+
+    private double ParseTargetPrice(double basePrice)
+        => PriceInput.ParsePrice(
+            _targetPrice.Text, basePrice, "target", _targetPriceAbsoluteInput);
+
     private int ParseMaxPosition()
     {
         if (_useRuntimeMax.Checked && _runtimeMaxPosition.HasValue)
@@ -919,6 +960,9 @@ internal sealed class MainForm : Form
         _contextRange.Text = _settings.ContextRange;
         _orderRange.Text = _settings.OrderRange;
         _targetPrice.Text = _settings.TargetPrice;
+        _contextRangeAbsoluteInput = _settings.ContextRangeAbsolute;
+        _orderRangeAbsoluteInput = _settings.OrderRangeAbsolute;
+        _targetPriceAbsoluteInput = _settings.TargetPriceAbsolute;
         _targetReference.Text = _settings.TargetReference;
         _invalidationPrice.Text = _settings.InvalidationPrice;
         _campaign.Checked = _settings.CampaignEnabled;
@@ -943,6 +987,9 @@ internal sealed class MainForm : Form
         _settings.ContextRange = _contextRange.Text;
         _settings.OrderRange = _orderRange.Text;
         _settings.TargetPrice = _targetPrice.Text;
+        _settings.ContextRangeAbsolute = _contextRangeAbsoluteInput;
+        _settings.OrderRangeAbsolute = _orderRangeAbsoluteInput;
+        _settings.TargetPriceAbsolute = _targetPriceAbsoluteInput;
         _settings.TargetReference = _targetReference.Text;
         _settings.InvalidationPrice = _invalidationPrice.Text;
         _settings.CampaignEnabled = _campaign.Checked;
@@ -961,6 +1008,9 @@ internal sealed class MainForm : Form
 
     private void ClearEntryFields()
     {
+        _contextRangeAbsoluteInput = false;
+        _orderRangeAbsoluteInput = false;
+        _targetPriceAbsoluteInput = false;
         _contextRange.Clear();
         _orderRange.Clear();
         _targetPrice.Clear();
@@ -1085,18 +1135,29 @@ internal sealed class MainForm : Form
 
     private void ApplySketchImport(SketchImport import)
     {
-        if (import.Side == "short")
-            _shortSide.Checked = true;
-        else
-            _longSide.Checked = true;
+        _programmaticPriceUpdate = true;
+        try
+        {
+            _orderRangeAbsoluteInput = true;
+            _targetPriceAbsoluteInput = true;
 
-        _orderRange.Text = $"{FormatArg(import.OrderLower)}-{FormatArg(import.OrderUpper)}";
-        _targetPrice.Text = FormatArg(import.TargetPrice);
+            if (import.Side == "short")
+                _shortSide.Checked = true;
+            else
+                _longSide.Checked = true;
 
-        if (!_autoOrder.Checked)
-            _autoOrder.Checked = true;
-        else
-            ApplyAutoOrder();
+            _orderRange.Text = $"{FormatArg(import.OrderLower)}-{FormatArg(import.OrderUpper)}";
+            _targetPrice.Text = FormatArg(import.TargetPrice);
+
+            if (!_autoOrder.Checked)
+                _autoOrder.Checked = true;
+            else
+                ApplyAutoOrder();
+        }
+        finally
+        {
+            _programmaticPriceUpdate = false;
+        }
 
         UpdatePreviews();
         SetStatusText(
@@ -1558,8 +1619,14 @@ internal sealed class MainForm : Form
     private static string FormatDisplay(double value)
         => value.ToString("0.00", CultureInfo.InvariantCulture);
 
-    private static string FormatInputPrice(double price, double basePrice)
+    private static string FormatInputPrice(
+        double price,
+        double basePrice,
+        bool forceAbsolute = false)
     {
+        if (forceAbsolute)
+            return FormatArg(price);
+
         double shorthand = price - basePrice;
         if (shorthand >= 0 && shorthand < PriceInput.ShorthandLimit)
             return FormatArg(shorthand);
@@ -1685,7 +1752,11 @@ internal static class PriceInput
         @"\s*(?:-|\.{2}|\bto\b|\s+)\s*",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    public static ResolvedRange ParseRange(string text, double basePrice, string name)
+    public static ResolvedRange ParseRange(
+        string text,
+        double basePrice,
+        string name,
+        bool forceAbsolute = false)
     {
         string trimmed = text.Trim();
         if (trimmed.Length == 0)
@@ -1698,14 +1769,18 @@ internal static class PriceInput
         if (parts.Length != 2)
             throw new InputException($"{name} range needs two prices");
 
-        double first = ParsePrice(parts[0], basePrice, $"{name} lower");
-        double second = ParsePrice(parts[1], basePrice, $"{name} upper");
+        double first = ParsePrice(parts[0], basePrice, $"{name} lower", forceAbsolute);
+        double second = ParsePrice(parts[1], basePrice, $"{name} upper", forceAbsolute);
         return first <= second
             ? new ResolvedRange(first, second)
             : new ResolvedRange(second, first);
     }
 
-    public static double ParsePrice(string text, double basePrice, string name)
+    public static double ParsePrice(
+        string text,
+        double basePrice,
+        string name,
+        bool forceAbsolute = false)
     {
         string trimmed = text.Trim();
         if (trimmed.Length == 0)
@@ -1717,7 +1792,7 @@ internal static class PriceInput
             throw new InputException($"{name} price is invalid");
         }
 
-        return raw < ShorthandLimit ? basePrice + raw : raw;
+        return !forceAbsolute && raw < ShorthandLimit ? basePrice + raw : raw;
     }
 }
 
@@ -1835,6 +1910,9 @@ internal sealed class DispatcherSettings
     public string ContextRange { get; set; } = "";
     public string OrderRange { get; set; } = "";
     public string TargetPrice { get; set; } = "";
+    public bool ContextRangeAbsolute { get; set; }
+    public bool OrderRangeAbsolute { get; set; }
+    public bool TargetPriceAbsolute { get; set; }
     public string TargetReference { get; set; } = "";
     public string InvalidationPrice { get; set; } = "";
     public bool CampaignEnabled { get; set; } = true;
