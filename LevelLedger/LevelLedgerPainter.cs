@@ -387,10 +387,10 @@ namespace LevelLedger
             string suffix = $"{zBadge}{updates}";
 
             Color baseColor = RowColor(row);
-            int alpha = row.Superseded ? 95 : RowAlpha(row);
+            int alpha = row.Superseded || row.Strike ? 95 : RowAlpha(row);
             using var brush = new SolidBrush(Color.FromArgb(alpha, baseColor));
 
-            if (row.Superseded)
+            if (row.Superseded || row.Strike)
             {
                 using var strikePen = new Pen(Color.FromArgb(80, baseColor), 1f);
                 g.DrawLine(strikePen, x, y + font.Height / 2 + 1, x + Math.Min(w, 235), y + font.Height / 2 + 1);
@@ -509,6 +509,10 @@ namespace LevelLedger
                     return row.Direction > 0 ? Color.FromArgb(125, 205, 165)
                          : row.Direction < 0 ? Color.FromArgb(220, 125, 110)
                          : Neutral;
+                case RowKind.Ownership:
+                    return row.Direction > 0 ? FreshDemandRail
+                         : row.Direction < 0 ? FreshSupplyRail
+                         : Neutral;
                 case RowKind.NodeBuild:
                 default:
                     return Neutral;
@@ -525,6 +529,8 @@ namespace LevelLedger
                     return 235;
                 case RowKind.TradeImpulse:
                     return 210;
+                case RowKind.Ownership:
+                    return 220;
                 case RowKind.NodeMigration:
                     return 200;
                 case RowKind.NodeBuild:

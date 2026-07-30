@@ -115,6 +115,12 @@ The second folded overlay is ownership rails:
 - Rails can receive the same delayed refill badge as panel rows. The badge is
   intentionally secondary paint: rail creation, testing, failure, and thesis
   selection do not depend on it.
+- Ownership rail lifecycle can also print compact panel rows when
+  `Panel: Ownership Events` is enabled. These rows are not new trade signals;
+  they reuse the panel's time/price/phrase grammar so the text box can say
+  which rail id leaned, consumed, became the current sponsor/thesis rail, or
+  failed. Keep this row stream milestone-only; do not print candidate/test/hold
+  churn into the panel.
 - `OWNERSHIP_RAILS.md` captures the 2026-05-28 and 2026-05-29 reasoning that led to this grammar. Keep future tuning notes there when they are about trader cognition, fixture reads, or visual semantics rather than code invariants.
 
 The third folded overlay is VOD stacks:

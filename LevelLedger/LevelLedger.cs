@@ -75,6 +75,9 @@ namespace LevelLedger
             minimum: 7, maximum: 14, increment: 0.5, decimalPlaces: 1)]
         public double FontSize = 9.0;
 
+        [InputParameter("Panel: Ownership Events", sortIndex: 926)]
+        public bool PanelOwnershipEvents = true;
+
         [InputParameter("VOD+BUILD Dots: Enabled", sortIndex: 940)]
         public bool VodBuildDotsEnabled = true;
 
@@ -480,6 +483,7 @@ namespace LevelLedger
             _engine.ChartBuildBandFailureSec = BuildBandFailureSec;
             _engine.ChartBuildBandMaxRails = BuildBandMaxRails;
             _engine.ChartBuildBandRetentionMinutes = BuildBandRetentionMinutes;
+            _engine.OwnershipRowsEnabled = PanelOwnershipEvents;
             _engine.ChartFailureZonesEnabled = FailureZonesEnabled;
             _engine.ChartReversalFailsEnabled = ReversalFailsEnabled;
             _engine.ChartReversalFailExtremeTicks = ReversalFailTailTicks;

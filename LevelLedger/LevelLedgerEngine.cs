@@ -164,6 +164,7 @@ namespace LevelLedger
         public int ChartBuildBandFailureSec { get; set; } = 20;
         public int ChartBuildBandMaxRails { get; set; } = 12;
         public int ChartBuildBandRetentionMinutes { get; set; } = 0;
+        public bool OwnershipRowsEnabled { get; set; } = true;
         public bool ChartFailureZonesEnabled { get; set; } = true;
         public bool ChartReversalFailsEnabled { get; set; } = true;
         public int ChartReversalFailExtremeTicks { get; set; } = 96;
@@ -276,6 +277,7 @@ namespace LevelLedger
             var rows = _rows
                 .Where(r => r.TimeUtc >= start)
                 .Where(r => !r.Superseded || (nowUtc - r.SupersededUtc).TotalSeconds <= SupersededKeepSeconds)
+                .Where(r => OwnershipRowsEnabled || r.Kind != RowKind.Ownership)
                 .OrderBy(r => r.TimeUtc)
                 .ThenBy(r => r.Id)
                 .TakeLast(Math.Max(1, maxRows))
@@ -302,7 +304,7 @@ namespace LevelLedger
         {
             PruneBuildBands(nowUtc);
             long currentTick = LastKnownTick ?? 0;
-            MarkThesisRails(currentTick);
+            MarkThesisRails(nowUtc, currentTick);
             return SelectBuildBandsForDisplay(nowUtc, currentTick)
                 .Select(b => b.Clone())
                 .ToArray();
@@ -582,6 +584,7 @@ namespace LevelLedger
                 SourceSide = candidate.Side,
             };
             _buildBands.AddLast(band);
+            AddOwnershipRow(nowUtc, band, OwnershipRowState.Owned);
             MarkBandRefillPending(band, nowUtc);
             RecordFailureObjectsFromRail(band, nowUtc, currentMidTick);
             candidate.State = BuildBandCandidateState.Confirmed;
@@ -624,6 +627,7 @@ namespace LevelLedger
                         band.FailPriceTick = currentMidTick;
                         band.WasThesis = band.WasThesis || band.IsThesis;
                         band.LastStateUtc = nowUtc;
+                        AddOwnershipRow(nowUtc, band, OwnershipRowState.Failed);
                         MarkBandRefillPending(band, nowUtc);
                         RecordNoOwnerZone(band, nowUtc);
                         RecordBuildBandFailure(band, nowUtc);
@@ -1493,6 +1497,7 @@ namespace LevelLedger
             foreach (var r in _rows)
             {
                 if (r.Superseded) continue;
+                if (r.Kind == RowKind.Ownership) continue;
                 if (r.Direction == 0 || direction == 0) continue;
                 if (r.Direction == direction) continue;
                 if (Math.Abs(r.PriceTick - priceTick) <= mergeTicks
@@ -1520,6 +1525,63 @@ namespace LevelLedger
             _rows.Add(row);
             MarkRowRefillPending(row, timeUtc);
         }
+
+        private void AddOwnershipRow(
+            DateTime timeUtc,
+            BuildBandOverlay band,
+            OwnershipRowState state)
+        {
+            if (!OwnershipRowsEnabled
+                || band == null
+                || band.Role != BuildBandRole.Rail)
+            {
+                return;
+            }
+
+            LedgerRow row = _rows.LastOrDefault(r =>
+                r.Kind == RowKind.Ownership
+                && r.OwnershipObjectId == band.Id);
+            if (row == null)
+            {
+                row = new LedgerRow
+                {
+                    Id = _nextRowId++,
+                    Kind = RowKind.Ownership,
+                    OwnershipObjectId = band.Id,
+                    Updates = 0,
+                };
+                _rows.Add(row);
+            }
+
+            row.TimeUtc = timeUtc;
+            row.LastUpdateUtc = timeUtc;
+            row.PriceTick = CenterTick(band);
+            row.Direction = band.Side == BuildBandSide.Demand ? 1 : -1;
+            row.Text = OwnershipRowText(band, state);
+            row.Strike = state == OwnershipRowState.Failed;
+            row.Strength = Math.Max(row.Strength, band.Score);
+            row.DisplayZ = Math.Max(row.DisplayZ, band.MaxAbsZ);
+            row.SignalRatio = 0.0;
+            row.Superseded = false;
+            row.Updates++;
+        }
+
+        private static long CenterTick(BuildBandOverlay band)
+            => (band.MinTick + band.MaxTick) / 2;
+
+        private static string OwnershipRowText(BuildBandOverlay band, OwnershipRowState state)
+        {
+            string source = band.Source == BuildBandSource.Consumed
+                ? $"{SideWord(band.SourceSide)} consumed -> {SideWord(band.Side)}"
+                : $"lean {SideWord(band.Side)}";
+            string prefix = state == OwnershipRowState.Sponsor ? "SPONSOR "
+                : state == OwnershipRowState.Failed ? "FAILED "
+                : "";
+            return $"#{band.Id} {prefix}{source}";
+        }
+
+        private static string SideWord(BuildBandSide side)
+            => side == BuildBandSide.Demand ? "demand" : "supply";
 
         private void MarkRowRefillPending(LedgerRow row, DateTime anchorUtc)
         {
@@ -1806,7 +1868,7 @@ namespace LevelLedger
             return band.Score + heldBoost + roleBoost - distance * 0.08 - ageMin * 0.12;
         }
 
-        private void MarkThesisRails(long currentTick)
+        private void MarkThesisRails(DateTime nowUtc, long currentTick)
         {
             foreach (var band in _buildBands)
             {
@@ -1816,11 +1878,11 @@ namespace LevelLedger
                 band.IsThesis = false;
             }
 
-            MarkThesisRailForSide(BuildBandSide.Demand, currentTick);
-            MarkThesisRailForSide(BuildBandSide.Supply, currentTick);
+            MarkThesisRailForSide(BuildBandSide.Demand, nowUtc, currentTick);
+            MarkThesisRailForSide(BuildBandSide.Supply, nowUtc, currentTick);
         }
 
-        private void MarkThesisRailForSide(BuildBandSide side, long currentTick)
+        private void MarkThesisRailForSide(BuildBandSide side, DateTime nowUtc, long currentTick)
         {
             var candidates = _buildBands
                 .Where(b => b.Role == BuildBandRole.Rail
@@ -1841,8 +1903,11 @@ namespace LevelLedger
                 if (backing < OwnershipThesisMinStack - 1)
                     continue;
 
+                bool firstSponsorSelection = !candidate.WasThesis;
                 candidate.IsThesis = true;
                 candidate.WasThesis = true;
+                if (firstSponsorSelection)
+                    AddOwnershipRow(nowUtc, candidate, OwnershipRowState.Sponsor);
                 return;
             }
         }
@@ -2225,6 +2290,14 @@ namespace LevelLedger
         NodeBuild,
         NodeMigration,
         Chaos,
+        Ownership,
+    }
+
+    internal enum OwnershipRowState
+    {
+        Owned,
+        Sponsor,
+        Failed,
     }
 
     internal enum VodChaosSide
@@ -2413,6 +2486,8 @@ namespace LevelLedger
         public double SignalRatio;
         public bool Superseded;
         public DateTime SupersededUtc;
+        public bool Strike;
+        public int? OwnershipObjectId;
         public int Updates;
         public RefillState Refill;
         public DateTime? RefillAnchorUtc;
