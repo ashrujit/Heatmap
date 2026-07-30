@@ -12,6 +12,11 @@ controls, but it deliberately does not become a planning tool.
   runtime files directly. `earctl` remains the single operator transport for
   atomic writes, schema validation, acknowledgement waits, reissue, cancel, and
   `FLAT`.
+- Multiple live EAR instances are selected through named Dispatcher runtime
+  profiles. A profile owns both the `earctl --runtime-dir` folder and the
+  passive `DirectiveSketchProbe` draft path so a visible operator choice selects
+  the whole file pair instead of leaving sketch import and dispatch pointed at
+  different runtimes.
 - The UI accepts compact price shorthand, but every shorthand price is expanded
   from the editable base field and previewed as a full price before dispatch.
   Hidden price inference is not allowed.

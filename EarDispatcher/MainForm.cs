@@ -23,6 +23,8 @@ internal sealed class MainForm : Form
     private TextBox _targetPrice = null!;
     private TextBox _targetReference = null!;
     private TextBox _invalidationPrice = null!;
+    private ComboBox _runtimeProfile = null!;
+    private Label _runtimeProfileDetail = null!;
     private CheckBox _autoOrder = null!;
     private CheckBox _campaign = null!;
     private NumericUpDown _timeoutMinutes = null!;
@@ -49,6 +51,7 @@ internal sealed class MainForm : Form
     private bool _targetPriceAbsoluteInput;
     private string _statusText = "idle";
     private int? _runtimeMaxPosition;
+    private bool _loadingRuntimeProfile;
     private System.Windows.Forms.Timer? _sketchPollTimer;
     private DateTime _lastSketchWriteUtc = DateTime.MinValue;
     private string _lastSketchSignature = "";
@@ -111,14 +114,53 @@ internal sealed class MainForm : Form
         ContextMenuStrip = menu;
         main.ContextMenuStrip = menu;
 
+        var headerPanel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            ColumnCount = 3,
+            RowCount = 2,
+            AutoSize = true,
+            BackColor = Palette.Back,
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
+        main.Controls.Add(headerPanel, 0, 0);
+
         var header = new Label
         {
             Text = "EAR Dispatcher",
-            AutoSize = true,
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Height = 24,
             Font = new Font(Font, FontStyle.Bold),
-            Margin = new Padding(0, 0, 0, 8),
+            ForeColor = Palette.Fore,
+            BackColor = Palette.Back,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 0, 0, 0),
         };
-        main.Controls.Add(header, 0, 0);
+        headerPanel.Controls.Add(header, 0, 0);
+
+        var runtimeLabel = PlainLabel("Runtime", 64);
+        runtimeLabel.TextAlign = ContentAlignment.MiddleRight;
+        headerPanel.Controls.Add(runtimeLabel, 1, 0);
+
+        _runtimeProfile = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Dock = DockStyle.Fill,
+            BackColor = Palette.Input,
+            ForeColor = Palette.Fore,
+            FlatStyle = FlatStyle.Flat,
+            Margin = new Padding(0, 0, 0, 2),
+        };
+        headerPanel.Controls.Add(_runtimeProfile, 2, 0);
+
+        _runtimeProfileDetail = PreviewLabel();
+        _runtimeProfileDetail.Height = 20;
+        headerPanel.SetColumnSpan(_runtimeProfileDetail, 3);
+        headerPanel.Controls.Add(_runtimeProfileDetail, 0, 1);
 
         var form = new TableLayoutPanel
         {
@@ -368,6 +410,7 @@ internal sealed class MainForm : Form
 
     private void WireEvents()
     {
+        _runtimeProfile.SelectedIndexChanged += RuntimeProfile_SelectedIndexChanged;
         _priceBase.TextChanged += (_, _) => OnAutoOrderSourceChanged();
         _contextRange.TextChanged += (_, _) => OnContextRangeChanged();
         _orderRange.TextChanged += (_, _) =>
@@ -402,6 +445,31 @@ internal sealed class MainForm : Form
         UpdateMaxState();
         ApplyAutoOrder();
         UpdatePreviews();
+    }
+
+    private async void RuntimeProfile_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_loadingRuntimeProfile)
+            return;
+
+        if (_busy)
+        {
+            SelectRuntimeProfile(_settings.ActiveProfile);
+            ShowOutput("busy", "runtime profile cannot change while a command is running");
+            return;
+        }
+
+        string profileName = SelectedRuntimeProfileName();
+        if (!_settings.TrySelectRuntimeProfile(profileName))
+            return;
+
+        _runtimeMaxPosition = null;
+        _lastSketchSignature = "";
+        PrimeSketchDraftImportCursor();
+        UpdateRuntimeProfileChrome();
+        SaveSettings();
+        SetStatusText("runtime selected");
+        await RunStatusAsync(silent: true);
     }
 
     private async void MainForm_KeyDown(object? sender, KeyEventArgs e)
@@ -564,7 +632,8 @@ internal sealed class MainForm : Form
             SetBusy(false, "idle");
         }
 
-        string confirmText = $"{(continueLineage ? "CONTINUE" : "REISSUE")} last accepted directive?";
+        string confirmText =
+            $"{(continueLineage ? "CONTINUE" : "REISSUE")} last accepted directive on {_settings.ActiveProfile}?";
         if (TryParseJson(status.Output, out JsonDocument? statusDoc))
         {
             using (statusDoc)
@@ -614,7 +683,9 @@ internal sealed class MainForm : Form
         if (_busy)
             return;
 
-        if (!Confirm("Cancel active directive? EAR may flatten directive-owned position.", defaultYes: true))
+        if (!Confirm(
+                $"Cancel active directive on {_settings.ActiveProfile}? EAR may flatten directive-owned position.",
+                defaultYes: true))
             return;
 
         var args = new List<string>
@@ -631,7 +702,7 @@ internal sealed class MainForm : Form
         if (_busy)
             return;
 
-        if (!Confirm("Issue FLAT for the bound EAR account/symbol?"))
+        if (!Confirm($"Issue FLAT for {_settings.ActiveProfile}'s bound EAR account/symbol?"))
             return;
 
         var args = new List<string>
@@ -956,6 +1027,10 @@ internal sealed class MainForm : Form
 
     private void ApplySettings()
     {
+        LoadRuntimeProfiles();
+        _settings.TrySelectRuntimeProfile(SelectedRuntimeProfileName());
+        UpdateRuntimeProfileChrome();
+
         _priceBase.Text = _settings.PriceBase;
         _contextRange.Text = _settings.ContextRange;
         _orderRange.Text = _settings.OrderRange;
@@ -982,6 +1057,7 @@ internal sealed class MainForm : Form
 
     private void SaveSettings()
     {
+        _settings.TrySelectRuntimeProfile(SelectedRuntimeProfileName());
         _settings.Side = _longSide.Checked ? "long" : "short";
         _settings.PriceBase = _priceBase.Text;
         _settings.ContextRange = _contextRange.Text;
@@ -1004,6 +1080,60 @@ internal sealed class MainForm : Form
         _settings.Tag = _tag.Text;
         _settings.Notes = _notes.Text;
         _settings.Save();
+    }
+
+    private void LoadRuntimeProfiles()
+    {
+        _loadingRuntimeProfile = true;
+        try
+        {
+            _runtimeProfile.Items.Clear();
+            foreach (RuntimeProfile profile in _settings.RuntimeProfiles)
+                _runtimeProfile.Items.Add(profile.Name);
+            SelectRuntimeProfile(_settings.ActiveProfile);
+            _loadingRuntimeProfile = true;
+            if (_runtimeProfile.SelectedIndex < 0 && _runtimeProfile.Items.Count > 0)
+                _runtimeProfile.SelectedIndex = 0;
+        }
+        finally
+        {
+            _loadingRuntimeProfile = false;
+        }
+    }
+
+    private void SelectRuntimeProfile(string profileName)
+    {
+        _loadingRuntimeProfile = true;
+        try
+        {
+            int index = -1;
+            for (int i = 0; i < _runtimeProfile.Items.Count; i++)
+            {
+                if (string.Equals(_runtimeProfile.Items[i]?.ToString(), profileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index >= 0)
+                _runtimeProfile.SelectedIndex = index;
+        }
+        finally
+        {
+            _loadingRuntimeProfile = false;
+        }
+    }
+
+    private string SelectedRuntimeProfileName()
+        => _runtimeProfile.SelectedItem?.ToString() ?? _settings.ActiveProfile;
+
+    private void UpdateRuntimeProfileChrome()
+    {
+        RuntimeProfile profile = _settings.ActiveRuntimeProfile();
+        Text = $"EAR Dispatcher - {profile.Name}";
+        _runtimeProfileDetail.Text = $"dir: {AbbrevPath(profile.RuntimeDir)} | sketch: {AbbrevPath(profile.SketchDraftPath)}";
+        SetStatusText(_statusText);
     }
 
     private void ClearEntryFields()
@@ -1039,7 +1169,12 @@ internal sealed class MainForm : Form
     private void SetStatusText(string label)
     {
         _statusText = label;
-        _statusLine.Text = TopMost ? $"status [top]: {label}" : $"status: {label}";
+        if (_statusLine is null)
+            return;
+
+        string profile = string.IsNullOrWhiteSpace(_settings.ActiveProfile) ? "runtime" : _settings.ActiveProfile;
+        string suffix = TopMost ? $"{profile}, top" : profile;
+        _statusLine.Text = $"status [{suffix}]: {label}";
     }
 
     private void StartSketchDraftImport()
@@ -1619,6 +1754,22 @@ internal sealed class MainForm : Form
     private static string FormatDisplay(double value)
         => value.ToString("0.00", CultureInfo.InvariantCulture);
 
+    private static string AbbrevPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return "";
+
+        string expanded = Environment.ExpandEnvironmentVariables(path);
+        string user = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(user)
+            && expanded.StartsWith(user, StringComparison.OrdinalIgnoreCase))
+        {
+            expanded = "%USERPROFILE%" + expanded[user.Length..];
+        }
+
+        return expanded.Length <= 76 ? expanded : "..." + expanded[^73..];
+    }
+
     private static string FormatInputPrice(
         double price,
         double basePrice,
@@ -1900,10 +2051,15 @@ internal sealed record CommandResult(int ExitCode, string Output, string Error)
 
 internal sealed class DispatcherSettings
 {
-    public string RuntimeDir { get; set; } =
+    private static readonly string DefaultRuntimeDir =
         Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Documents\ExecAssistantRuntime");
+
+    public string RuntimeDir { get; set; } =
+        DefaultRuntimeDir;
     public string SketchDraftPath { get; set; } =
         Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Documents\ExecAssistantRuntime\directive-sketch-probe.json");
+    public string ActiveProfile { get; set; } = "Default";
+    public List<RuntimeProfile> RuntimeProfiles { get; set; } = new();
     public string PythonExe { get; set; } = "python";
     public string Side { get; set; } = "long";
     public string PriceBase { get; set; } = "30000";
@@ -1940,16 +2096,99 @@ internal sealed class DispatcherSettings
         try
         {
             if (!File.Exists(SettingsPath))
-                return new DispatcherSettings();
+            {
+                var defaults = new DispatcherSettings();
+                defaults.NormalizeRuntimeProfiles();
+                return defaults;
+            }
             string text = File.ReadAllText(SettingsPath);
-            return JsonSerializer.Deserialize<DispatcherSettings>(text)
+            var settings = JsonSerializer.Deserialize<DispatcherSettings>(text)
                 ?? new DispatcherSettings();
+            settings.NormalizeRuntimeProfiles();
+            return settings;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            return new DispatcherSettings();
+            var settings = new DispatcherSettings();
+            settings.NormalizeRuntimeProfiles();
+            return settings;
         }
     }
+
+    public void NormalizeRuntimeProfiles()
+    {
+        RuntimeProfiles ??= new List<RuntimeProfile>();
+
+        var normalized = new List<RuntimeProfile>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (RuntimeProfile profile in RuntimeProfiles)
+        {
+            string name = profile.Name.Trim();
+            if (string.IsNullOrWhiteSpace(name) || !names.Add(name))
+                continue;
+
+            string runtimeDir = string.IsNullOrWhiteSpace(profile.RuntimeDir)
+                ? RuntimeDir
+                : profile.RuntimeDir;
+            string sketchPath = string.IsNullOrWhiteSpace(profile.SketchDraftPath)
+                ? Path.Combine(runtimeDir, "directive-sketch-probe.json")
+                : profile.SketchDraftPath;
+            normalized.Add(new RuntimeProfile(name, runtimeDir, sketchPath));
+        }
+
+        if (normalized.Count == 0)
+            normalized.Add(new RuntimeProfile("Default", RuntimeDir, SketchDraftPathFor(RuntimeDir, SketchDraftPath)));
+
+        AddProfileIfMissing(normalized, names, "NQ", Path.Combine(DefaultRuntimeDir, "NQ"));
+        AddProfileIfMissing(normalized, names, "ES", Path.Combine(DefaultRuntimeDir, "ES"));
+
+        RuntimeProfiles = normalized;
+        if (string.IsNullOrWhiteSpace(ActiveProfile)
+            || RuntimeProfiles.All(profile => !profile.Name.Equals(ActiveProfile, StringComparison.OrdinalIgnoreCase)))
+        {
+            ActiveProfile = RuntimeProfiles[0].Name;
+        }
+
+        TrySelectRuntimeProfile(ActiveProfile);
+    }
+
+    public RuntimeProfile ActiveRuntimeProfile()
+    {
+        RuntimeProfile? profile = RuntimeProfiles.FirstOrDefault(
+            item => item.Name.Equals(ActiveProfile, StringComparison.OrdinalIgnoreCase));
+        return profile ?? RuntimeProfiles[0];
+    }
+
+    public bool TrySelectRuntimeProfile(string profileName)
+    {
+        RuntimeProfile? profile = RuntimeProfiles.FirstOrDefault(
+            item => item.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+            return false;
+
+        ActiveProfile = profile.Name;
+        RuntimeDir = Environment.ExpandEnvironmentVariables(profile.RuntimeDir);
+        SketchDraftPath = Environment.ExpandEnvironmentVariables(
+            SketchDraftPathFor(RuntimeDir, profile.SketchDraftPath));
+        return true;
+    }
+
+    private static void AddProfileIfMissing(
+        List<RuntimeProfile> profiles,
+        HashSet<string> names,
+        string name,
+        string runtimeDir)
+    {
+        if (!names.Add(name))
+            return;
+
+        profiles.Add(new RuntimeProfile(name, runtimeDir, Path.Combine(runtimeDir, "directive-sketch-probe.json")));
+    }
+
+    private static string SketchDraftPathFor(string runtimeDir, string sketchDraftPath)
+        => string.IsNullOrWhiteSpace(sketchDraftPath)
+            ? Path.Combine(runtimeDir, "directive-sketch-probe.json")
+            : sketchDraftPath;
 
     public void Save()
     {
@@ -1967,6 +2206,24 @@ internal sealed class DispatcherSettings
             // Settings persistence is convenience only; dispatch behavior must not depend on it.
         }
     }
+}
+
+internal sealed class RuntimeProfile
+{
+    public RuntimeProfile()
+    {
+    }
+
+    public RuntimeProfile(string name, string runtimeDir, string sketchDraftPath)
+    {
+        Name = name;
+        RuntimeDir = runtimeDir;
+        SketchDraftPath = sketchDraftPath;
+    }
+
+    public string Name { get; set; } = "";
+    public string RuntimeDir { get; set; } = "";
+    public string SketchDraftPath { get; set; } = "";
 }
 
 internal static class Palette
