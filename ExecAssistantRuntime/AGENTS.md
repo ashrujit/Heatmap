@@ -90,6 +90,18 @@ spike JSON shape as an alternate parser.
   exits should be classified from adverse ownership, surviving same-side
   protection, and quick rebuild evidence before sponsor promotion or flatten
   rules are changed.
+- Instrument execution differences live behind the Strategy's `Execution Policy`
+  setting, not inside directive JSON. `NQ Classic` preserves the original
+  market-on-proximity entry behavior. `ES Rail Interaction` is opt-in and changes
+  execution mechanics only: rail entries arm, wait for contact/puncture, then
+  route on favorable escape; positioned sponsor protection adds an `8t/10s`
+  adverse no-reentry semantic stop. Confirmed rail/sponsor failure still
+  market-flattens immediately. This keeps LevelLedger band math and the v1
+  directive schema stable while ES evidence is gathered.
+- ES rail-interaction entries still route through the existing market-entry
+  gateway. Boundary limit-entry routing is intentionally deferred because it
+  needs a separate order/cancel/partial-fill lifecycle rather than a small
+  coordinator policy branch.
 - A fresh opposite HF/LF is local auction evidence first. While flat it pauses
   entry and cancels runtime entry orders until that failure object invalidates.
   While positioned it cannot override an intact causal sponsor. It becomes

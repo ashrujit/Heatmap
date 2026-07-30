@@ -3,7 +3,9 @@
 ## Objective
 
 Replace the passive-order spike with a Quantower Strategy that executes one
-immutable, human-dispatched NQ directive using copied LevelLedger evidence math.
+immutable, human-dispatched directive using copied LevelLedger evidence math.
+`NQ Classic` remains the default execution policy; `ES Rail Interaction` is an
+opt-in policy for ES rail-test mechanics.
 The strategy owns execution only. It does not discover opportunities, interpret
 notes, change direction, or formulate replacement directives.
 Explicit `CONTINUE` lineage is still human-dispatched: it may carry only the
@@ -141,6 +143,12 @@ as soon as the full transition is valid. Direct conversion submits only within
 twenty ticks of the converted wall; otherwise it remains armed for a live
 retest while the wall survives.
 
+With `Execution Policy=ES Rail Interaction`, valid direct conversion,
+supported reclaim, and LF/HF-assisted child resolutions arm a rail interaction
+instead. The rail must be contacted or punctured and then escape favorably
+before a market entry/add is routed. This removes market-on-proximity for ES
+without introducing limit-entry lifecycle risk.
+
 ### Event Log And Checkpoint
 
 `RuntimeEventLog.cs` writes append-only JSONL on a dedicated writer thread.
@@ -189,6 +197,9 @@ be used to resume old evidence.
 ### Base Stop And Retry
 
 - stop on the reverse of the entry resolution, never on arbitrary tick distance;
+- in `ES Rail Interaction`, also stop on the current sponsor leaving eight ticks
+  adverse and failing to re-enter the sponsor band for ten seconds; confirmed
+  sponsor/rail failure still exits immediately if it arrives first;
 - flatten the complete base quantity at market;
 - re-arm only after flat/order reconciliation and only from a fresh opposing
   candidate formed after that boundary;
@@ -289,5 +300,6 @@ confirmation.
 - opportunity discovery and all Codex skills;
 - multi-execution-symbol or multi-account operation inside one instance;
 - automated strategy reversal or reissue;
-- adaptive ES routing or liquidity-aware limit placement;
+- ES boundary limit-entry routing, adaptive ES routing, and liquidity-aware
+  marketable-limit placement;
 - changing LevelLedger or sharing a mutable math library with it.

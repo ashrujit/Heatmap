@@ -19,6 +19,8 @@ namespace ExecAssistantRuntime
         private const int SponsorFailureRebuildMaxDistanceTicks = 120;
         private const int SponsorContextRailLimit = 5;
         private const int TradingPermissionLogIntervalSeconds = 30;
+        private const int ExecutionPolicyNqClassic = 0;
+        private const int ExecutionPolicyEsRailInteraction = 1;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -73,6 +75,25 @@ namespace ExecAssistantRuntime
 
         [InputParameter("LF/HF Assisted Entries Enabled", sortIndex: 15)]
         public bool FailureAssistedEntriesEnabled = true;
+
+        [InputParameter("Execution Policy", sortIndex: 16, variants: new object[]
+        {
+            "NQ Classic", ExecutionPolicyNqClassic,
+            "ES Rail Interaction", ExecutionPolicyEsRailInteraction,
+        })]
+        public int ExecutionPolicy = ExecutionPolicyNqClassic;
+
+        [InputParameter("ES Entry Escape (ticks)", sortIndex: 17,
+            minimum: 0, maximum: 16, increment: 1, decimalPlaces: 0)]
+        public int EsEntryEscapeTicks = 0;
+
+        [InputParameter("ES Stop Breach (ticks)", sortIndex: 18,
+            minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
+        public int EsSemanticStopBreachTicks = 8;
+
+        [InputParameter("ES Stop No-Reentry (sec)", sortIndex: 19,
+            minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
+        public int EsSemanticStopHoldSeconds = 10;
 
         [InputParameter("LL Book Lookback (sec)", sortIndex: 20,
             minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
@@ -169,7 +190,7 @@ namespace ExecAssistantRuntime
         public ExecAssistantRuntime()
         {
             Name = "Exec Assistant Runtime";
-            Description = "Directive-bound NQ execution strategy using copied LevelLedger ownership evidence.";
+            Description = "Directive-bound execution strategy using copied LevelLedger ownership evidence.";
         }
 
         public override string[] MonitoringConnectionsIds
@@ -204,7 +225,8 @@ namespace ExecAssistantRuntime
                 _evidence = NewEvidenceEngine();
                 _coordinator = new ExecutionCoordinator(
                     _tickSize,
-                    FailureAssistedEntriesEnabled);
+                    FailureAssistedEntriesEnabled,
+                    NewExecutionPolicySettings());
                 if (RunStartupSelfTests)
                 {
                     RuntimeSelfTests.RunAll();
@@ -298,6 +320,12 @@ namespace ExecAssistantRuntime
                 ("book_unusable_grace_sec", Math.Max(1, BookUnusableGraceSec)),
                 ("failure_assisted_entries_enabled",
                     FailureAssistedEntriesEnabled),
+                ("execution_policy", ExecutionPolicyName()),
+                ("es_entry_escape_ticks", Math.Max(0, EsEntryEscapeTicks)),
+                ("es_semantic_stop_breach_ticks",
+                    Math.Max(1, EsSemanticStopBreachTicks)),
+                ("es_semantic_stop_hold_seconds",
+                    Math.Max(1, EsSemanticStopHoldSeconds)),
                 ("ll_book_lookback_seconds", Math.Max(10, BookLookbackSeconds)),
                 ("ll_event_z_threshold", Math.Max(1.0, EventZThreshold)),
                 ("ll_cluster_min_events", Math.Max(2, ClusterMinEvents)),
@@ -782,6 +810,7 @@ namespace ExecAssistantRuntime
                 ("evidence_state", _evidenceState),
                 ("failure_assisted_entries_enabled",
                     FailureAssistedEntriesEnabled),
+                ("execution_policy", ExecutionPolicyName()),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
                 + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
@@ -1591,6 +1620,10 @@ namespace ExecAssistantRuntime
                 MarketDataConnectionId = _marketDataSymbol?.ConnectionId,
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
                 WorkerPollMs = Math.Max(100, WorkerPollMs),
+                ExecutionPolicy = ExecutionPolicyName(),
+                EsEntryEscapeTicks = Math.Max(0, EsEntryEscapeTicks),
+                EsSemanticStopBreachTicks = Math.Max(1, EsSemanticStopBreachTicks),
+                EsSemanticStopHoldSeconds = Math.Max(1, EsSemanticStopHoldSeconds),
                 EvidenceState = _evidenceState,
                 EvidenceEpochReason = _evidenceEpochReason,
                 EvidenceEpochStartedUtc = _evidenceEpochStartedUtc == DateTime.MinValue
@@ -1890,7 +1923,16 @@ namespace ExecAssistantRuntime
                     ("child_min_tick", audit.ChildMinTick),
                     ("child_max_tick", audit.ChildMaxTick),
                     ("child_lower", childLower),
-                    ("child_upper", childUpper));
+                    ("child_upper", childUpper),
+                    ("market_tick", audit.MarketTick),
+                    ("market_price", audit.MarketTick.HasValue
+                        ? audit.MarketTick.Value * _tickSize
+                        : null),
+                    ("breach_ticks", audit.BreachTicks),
+                    ("hold_seconds", audit.HoldSeconds),
+                    ("breach_utc", audit.BreachUtc.HasValue
+                        ? audit.BreachUtc.Value.ToString("O", CultureInfo.InvariantCulture)
+                        : null));
             }
         }
 
@@ -1987,6 +2029,8 @@ namespace ExecAssistantRuntime
                     && (string.Equals(intent.Reason, "HF", StringComparison.Ordinal)
                         || string.Equals(intent.Reason, "LF", StringComparison.Ordinal)
                         || intent.Reason?.StartsWith("sponsor_", StringComparison.Ordinal) == true
+                        || intent.Reason?.StartsWith("es_semantic_stop",
+                            StringComparison.Ordinal) == true
                         || intent.Reason?.StartsWith("forward_data_loss", StringComparison.Ordinal) == true
                         || intent.Reason?.StartsWith("protection_failed", StringComparison.Ordinal) == true);
                 LogOperator($"Directive {intent.DirectiveId}: {detail} accepted "
@@ -2730,6 +2774,22 @@ namespace ExecAssistantRuntime
                 FailureConfirmTicks = Math.Max(1, FailureConfirmTicks),
                 FailureSeconds = Math.Max(0, FailureSeconds),
             });
+
+        private ExecutionPolicySettings NewExecutionPolicySettings()
+            => new()
+            {
+                Mode = ExecutionPolicy == ExecutionPolicyEsRailInteraction
+                    ? ExecutionPolicyMode.EsRailInteraction
+                    : ExecutionPolicyMode.NqClassic,
+                EsEntryEscapeTicks = Math.Max(0, EsEntryEscapeTicks),
+                EsSemanticStopBreachTicks = Math.Max(1, EsSemanticStopBreachTicks),
+                EsSemanticStopHoldSeconds = Math.Max(1, EsSemanticStopHoldSeconds),
+            };
+
+        private string ExecutionPolicyName()
+            => ExecutionPolicy == ExecutionPolicyEsRailInteraction
+                ? "ES_RAIL_INTERACTION"
+                : "NQ_CLASSIC";
 
         private bool IsCoordinatorTerminal()
             => _coordinator.State == RuntimeExecutionState.Completed

@@ -61,6 +61,10 @@ class EarctlTests(unittest.TestCase):
             "market_data_symbol": "NQU6",
             "instance_max_quantity": 5,
             "worker_poll_ms": 250,
+            "execution_policy": "NQ_CLASSIC",
+            "es_entry_escape_ticks": 0,
+            "es_semantic_stop_breach_ticks": 8,
+            "es_semantic_stop_hold_seconds": 10,
             "evidence_state": "Ready",
             "evidence_epoch_reason": "startup",
             "evidence_epoch_started_utc": earctl.timestamp(
@@ -268,6 +272,7 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual("SHADOW", status["runtime"]["mode"])
             self.assertEqual("MNQU6", status["runtime"]["execution_symbol"])
             self.assertEqual("NQU6", status["runtime"]["market_data_symbol"])
+            self.assertEqual("NQ_CLASSIC", status["runtime"]["execution_policy"])
             self.assertEqual("Ready", status["evidence"]["state"])
             self.assertEqual(31, status["evidence"]["sample_count"])
             self.assertEqual("entry_order_unresolved",

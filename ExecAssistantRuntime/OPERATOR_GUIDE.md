@@ -2,7 +2,8 @@
 
 ## Current Live Scope
 
-The deployed strategy supports the settled NQ execution path:
+The deployed strategy supports the settled NQ execution path by default, plus
+an opt-in ES rail-interaction policy:
 
 - strict immutable v1 directive and control JSON;
 - copied LevelLedger ownership rails, conversion, failure, and LF/HF math;
@@ -24,6 +25,20 @@ The deployed strategy supports the settled NQ execution path:
 - `CANCEL_DIRECTIVE`, `FLAT`, and fail-closed restart recovery;
 - append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
   lifecycle messages.
+
+With `Execution Policy=ES Rail Interaction`, entry and stop mechanics diverge
+from NQ while the directive schema and LevelLedger evidence math stay the same:
+
+- direct conversion, supported reclaim, and LF/HF-assisted child rails arm a
+  rail interaction instead of entering merely because price is near the rail;
+- the armed rail must be contacted or punctured, then price must escape in the
+  directive direction before the runtime routes the market entry/add;
+- fresh direct-conversion rails may enter immediately only when the executable
+  quote is already at least one tick beyond the favorable edge;
+- positioned sponsor protection adds an ES semantic stop: `8` ticks adverse
+  beyond the current sponsor plus `10` seconds without re-entry into that rail;
+- confirmed current-sponsor/rail failure still flattens immediately and does
+  not wait for the no-reentry timer.
 
 `HARD_TP` is the sole accepted target mode in both shadow and live operation.
 The parser rejects any other value before directive activation.
@@ -73,6 +88,11 @@ Safety:
 - `LF/HF Assisted Entries Enabled=true` is the default. A favorable LF/HF can
   arm the next same-side ownership rail as an entry/add anchor; it does not
   make the LF/HF itself directly tradeable;
+- `Execution Policy=NQ Classic` is the default and preserves NQ market-on-
+  proximity retest behavior;
+- `Execution Policy=ES Rail Interaction` is the ES policy. Start with
+  `ES Entry Escape (ticks)=0`, `ES Stop Breach (ticks)=8`, and
+  `ES Stop No-Reentry (sec)=10`;
 - startup self-tests should remain enabled.
 
 Market-data continuity:
@@ -94,6 +114,8 @@ gateway cannot disagree about mode. Stop and restart the strategy after changing
 it; changing the setting on a running instance has no effect until restart.
 `Market Data Symbol` is also captured at strategy start; stop and restart after
 changing it.
+`Execution Policy` and the ES policy settings are also captured at strategy
+start; stop and restart after changing them.
 
 The LL-prefixed settings intentionally mirror LevelLedger's current ownership
 defaults. Do not tune them casually. Runtime and visual behavior may diverge if
@@ -122,6 +144,8 @@ The status snapshot also reports evidence state, epoch reason/start, accumulated
 samples, and warm-up remaining. `AwaitingBook` means no usable sample has
 started the epoch; `Warming` is non-actionable; `Ready` permits evidence action;
 `BookUnusable` pauses it.
+It also reports `execution_policy` and the active ES rail/stop parameters, so
+verify those before judging a shadow replay.
 
 ## First Shadow Run
 
@@ -163,6 +187,13 @@ filled entry support is its sponsor. A local opposite HF/LF does not flatten
 while that sponsor remains intact. Same-sequence sponsor failure is terminal;
 if a base sponsor fails first, a subsequently held adverse HF/LF invalidates the
 flat retry before another base fills. Tests and holds do not move weighted BE.
+
+In ES mode, a same-side ownership rail can be valid context without being an
+immediate order. The runtime emits `es_rail_interaction_armed`,
+`es_rail_interaction_contact`, and `es_rail_interaction_entry` audit events.
+For exits it emits `es_semantic_stop_armed`, `es_semantic_stop_cleared`, and
+`es_semantic_stop_fired`. These events are the first monitoring surface for
+deciding whether to tighten from `8t/10s` to `4t/10s` or `4t/5s`.
 
 With `LF/HF Assisted Entries Enabled`, a fresh favorable LF for a long or HF for
 a short is parent context for the next newly owned same-side rail beyond it.

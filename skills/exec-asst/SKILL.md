@@ -1,6 +1,6 @@
 ---
 name: exec-asst
-description: Refine, validate, dispatch, inspect, reissue, cancel, or flatten ExecAssistantRuntime (EAR) trade directives. Use when the user has already chosen an NQ execution plan and asks to send a long/short directive, translate a plan into EAR JSON, check EAR status, reissue the prior directive, cancel it, or issue FLAT. Do not use for opportunity discovery, premarket planning, or general auction debate; those belong to Dost or the user.
+description: Refine, validate, dispatch, inspect, reissue, cancel, or flatten ExecAssistantRuntime (EAR) trade directives. Use when the user has already chosen an execution plan and asks to send a long/short directive, translate a plan into EAR JSON, check EAR status, reissue the prior directive, cancel it, or issue FLAT. Do not use for opportunity discovery, premarket planning, or general auction debate; those belong to Dost or the user.
 ---
 
 # Exec Assistant
@@ -42,7 +42,7 @@ python skills\exec-asst\scripts\earctl.py status
 
 Run `status`. Report the checkpoint age, runtime state, last directive outcome,
 position quantity/average, trading mode, evidence state/warm-up remaining,
-dispatch blockers, and material recent errors. The compact status is the
+execution policy, dispatch blockers, and material recent errors. The compact status is the
 operator view; use `status --raw` only when diagnosing the underlying files or
 event history. Do not dispatch anything.
 
@@ -138,6 +138,9 @@ Settled defaults that do not require another question:
 - stop grammar: reverse entry resolution, current-sponsor failure after
   leverage, and local-first LF/HF handling (flat
   pause; positioned termination only when sponsor-aligned);
+- instrument execution policy: owned by the running Quantower strategy instance,
+  not by directive JSON. `NQ_CLASSIC` and `ES_RAIL_INTERACTION` both consume the
+  same directive contract;
 - activation: now;
 - expiry: 30 minutes.
 

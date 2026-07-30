@@ -31,6 +31,13 @@ EAR should see local LF/HF repair and then decide whether fresh evidence still
 justifies entry after re-arm. Tight human-perfect wick ranges can hide relevant
 contest context and make a correct pause look like a missed isolated trade.
 
+Instrument-specific execution mechanics are not encoded in directive JSON. The
+running Quantower strategy instance owns `execution_policy`. `NQ_CLASSIC`
+preserves the original market-on-proximity direct-retest behavior.
+`ES_RAIL_INTERACTION` uses the same resolution fields but waits for rail
+contact/puncture and favorable escape before routing an entry/add; it also adds
+the current-sponsor `8t/10s` adverse no-reentry stop.
+
 ## Directive Lineage
 
 Omitted `lineage` means `NEW`: the directive starts from fresh post-acceptance
@@ -106,4 +113,5 @@ must never be treated as proof that EAR accepted it.
 Checkpoint evidence state is independent of directive state. `AwaitingBook` and
 `Warming` are non-actionable, `Ready` permits evidence decisions, and
 `BookUnusable` pauses them. Status includes epoch reason/start, sample count,
-required samples, and remaining warm-up time.
+required samples, remaining warm-up time, execution policy, and the active ES
+policy parameters.

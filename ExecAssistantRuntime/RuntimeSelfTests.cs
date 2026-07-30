@@ -494,6 +494,7 @@ namespace ExecAssistantRuntime
             FailureAssistedEntryTests(directive, now, evidence);
             ContinuationTests(directive, now, market, evidence);
             StaleDirectRetestTests(directive, now);
+            EsRailInteractionPolicyTests(directive, now);
 
             var candidateEntry = new ResolutionContext { SupportObjectId = 77 };
             var consumedOpposite = new EvidenceBandView
@@ -607,6 +608,144 @@ namespace ExecAssistantRuntime
                     basePosition,
                     evidence).Count == 0,
                 "flat direct retest is stale after base fill");
+        }
+
+        private static void EsRailInteractionPolicyTests(
+            TradeDirective directive,
+            DateTime now)
+        {
+            var evidence = new ExecutionEvidenceEngine(0.25);
+            EvidenceTransition rail = BuildConsumedDemandRail(
+                evidence, now.AddMinutes(6), 30500);
+            double lower = rail.Band.MinTick * 0.25;
+            double upper = rail.Band.MaxTick * 0.25;
+            var policy = new ExecutionPolicySettings
+            {
+                Mode = ExecutionPolicyMode.EsRailInteraction,
+                EsEntryEscapeTicks = 0,
+                EsSemanticStopBreachTicks = 8,
+                EsSemanticStopHoldSeconds = 10,
+            };
+            var coordinator = new ExecutionCoordinator(
+                0.25,
+                failureAssistedEntriesEnabled: true,
+                policy);
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+
+            OrderIntent touchOnly = coordinator.ProcessEvidence(
+                new[] { rail },
+                rail.TimeUtc,
+                Market(rail.TimeUtc, lower - 0.25, lower),
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(touchOnly == null,
+                "ES rail interaction does not market-enter on band contact");
+            CoordinatorAuditEvent[] armed = coordinator.DrainAuditEvents().ToArray();
+            Require(armed.Any(e => e.EventType == "es_rail_interaction_armed")
+                    && armed.Any(e => e.EventType == "es_rail_interaction_contact"),
+                "ES rail interaction arms and records first contact");
+
+            DateTime escapeUtc = rail.TimeUtc.AddSeconds(3);
+            OrderIntent escapeEntry = coordinator.Tick(
+                escapeUtc,
+                Market(escapeUtc, upper, upper + 0.25),
+                RuntimePosition.Flat,
+                evidence).SingleOrDefault();
+            Require(escapeEntry?.Kind == OrderIntentKind.EnterBase
+                    && escapeEntry.Reason == "es_rail_escape:direct_conversion",
+                "ES rail interaction enters on favorable escape");
+
+            coordinator.OnOrderAttemptResult(escapeEntry, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "es-policy-selftest",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = upper + 0.25,
+            };
+            coordinator.OnPositionChanged(basePosition, escapeUtc.AddSeconds(1),
+                Market(escapeUtc.AddSeconds(1), upper, upper + 0.25));
+            Require(coordinator.CurrentSponsor?.ObjectId == rail.Band.Id,
+                "ES filled entry still initializes sponsor");
+
+            DateTime breachUtc = escapeUtc.AddSeconds(10);
+            Require(coordinator.Tick(
+                    breachUtc,
+                    Market(breachUtc, lower - 2.00, lower - 1.75),
+                    basePosition,
+                    evidence).Count == 0,
+                "ES semantic stop arms without immediate flatten");
+            Require(coordinator.DrainAuditEvents()
+                    .Any(e => e.EventType == "es_semantic_stop_armed"),
+                "ES semantic stop arm is audited");
+
+            DateTime reentryUtc = breachUtc.AddSeconds(5);
+            Require(coordinator.Tick(
+                    reentryUtc,
+                    Market(reentryUtc, lower, lower + 0.25),
+                    basePosition,
+                    evidence).Count == 0,
+                "ES semantic stop waits through re-entry");
+            Require(coordinator.DrainAuditEvents()
+                    .Any(e => e.EventType == "es_semantic_stop_cleared"),
+                "ES semantic stop clears on re-entry into band");
+
+            DateTime secondBreachUtc = breachUtc.AddSeconds(20);
+            coordinator.Tick(
+                secondBreachUtc,
+                Market(secondBreachUtc, lower - 2.00, lower - 1.75),
+                basePosition,
+                evidence);
+            OrderIntent semanticStop = coordinator.Tick(
+                secondBreachUtc.AddSeconds(11),
+                Market(secondBreachUtc.AddSeconds(11), lower - 2.25, lower - 2.00),
+                basePosition,
+                evidence).SingleOrDefault();
+            Require(semanticStop?.Kind == OrderIntentKind.Flatten
+                    && semanticStop.Reason.StartsWith(
+                        "es_semantic_stop:8t_10s:", StringComparison.Ordinal)
+                    && semanticStop.RearmAfterFlat
+                    && !semanticStop.TerminalAfterFlat,
+                "ES semantic stop flattens after 8t breach holds for 10s");
+
+            var failureFirst = new ExecutionCoordinator(
+                0.25,
+                failureAssistedEntriesEnabled: true,
+                policy);
+            failureFirst.AcceptDirective(directive, now, Array.Empty<int>());
+            OrderIntent immediate = failureFirst.ProcessEvidence(
+                new[] { rail },
+                rail.TimeUtc,
+                Market(rail.TimeUtc, upper, upper + 0.25),
+                RuntimePosition.Flat,
+                evidence).Single();
+            failureFirst.OnOrderAttemptResult(immediate, accepted: true);
+            failureFirst.OnPositionChanged(basePosition, rail.TimeUtc.AddSeconds(1),
+                Market(rail.TimeUtc.AddSeconds(1), upper, upper + 0.25));
+            failureFirst.Tick(
+                rail.TimeUtc.AddSeconds(2),
+                Market(rail.TimeUtc.AddSeconds(2), lower - 2.00, lower - 1.75),
+                basePosition,
+                evidence);
+            EvidenceTransition failed = RailTransition(
+                EvidenceTransitionKind.RailFailed,
+                rail.Band.Id,
+                EvidenceSide.Demand,
+                EvidenceSource.Consumed,
+                rail.Band.FormedUtc,
+                rail.TimeUtc.AddSeconds(3),
+                lower,
+                upper);
+            OrderIntent railFailure = failureFirst.ProcessEvidence(
+                new[] { failed },
+                failed.TimeUtc,
+                Market(failed.TimeUtc, lower - 2.00, lower - 1.75),
+                basePosition,
+                evidence).SingleOrDefault();
+            Require(railFailure?.Kind == OrderIntentKind.Flatten
+                    && railFailure.Reason == $"sponsor_failed:{rail.Band.Id}",
+                "confirmed rail failure exits before ES no-reentry timer");
         }
 
         private static void FailureAssistedEntryTests(

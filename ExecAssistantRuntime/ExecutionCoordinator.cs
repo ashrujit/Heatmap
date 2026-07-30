@@ -38,6 +38,28 @@ namespace ExecAssistantRuntime
         CancelRuntimeOrders,
     }
 
+    internal enum ExecutionPolicyMode
+    {
+        NqClassic,
+        EsRailInteraction,
+    }
+
+    internal sealed class ExecutionPolicySettings
+    {
+        public static readonly ExecutionPolicySettings NqClassic = new()
+        {
+            Mode = ExecutionPolicyMode.NqClassic,
+        };
+
+        public ExecutionPolicyMode Mode { get; init; } = ExecutionPolicyMode.NqClassic;
+        public int EsEntryEscapeTicks { get; init; } = 0;
+        public int EsSemanticStopBreachTicks { get; init; } = 8;
+        public int EsSemanticStopHoldSeconds { get; init; } = 10;
+
+        public bool UsesEsRailInteraction
+            => Mode == ExecutionPolicyMode.EsRailInteraction;
+    }
+
     internal sealed class ExecutableMarket
     {
         public DateTime TimeUtc { get; init; }
@@ -143,6 +165,10 @@ namespace ExecAssistantRuntime
         public EvidenceSource? ChildSource { get; init; }
         public long? ChildMinTick { get; init; }
         public long? ChildMaxTick { get; init; }
+        public long? MarketTick { get; init; }
+        public int? BreachTicks { get; init; }
+        public int? HoldSeconds { get; init; }
+        public DateTime? BreachUtc { get; init; }
     }
 
     internal sealed class OrderIntent
@@ -179,6 +205,7 @@ namespace ExecAssistantRuntime
 
         private readonly double _tickSize;
         private readonly bool _failureAssistedEntriesEnabled;
+        private readonly ExecutionPolicySettings _policy;
         private readonly HashSet<int> _usedRootObjectIds = new();
         private readonly HashSet<int> _baselineFailureIds = new();
         private readonly HashSet<int> _activeAdverseFailureIds = new();
@@ -204,18 +231,30 @@ namespace ExecAssistantRuntime
         private SponsorClearContext _lastSponsorClear;
         private ReferenceBreakContext _referenceBreakContext;
         private ContinuationContext _continuation;
+        private SemanticStopState _semanticStop;
         private bool _continuationLineageBroken;
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
-            : this(tickSize, failureAssistedEntriesEnabled: true)
+            : this(tickSize, failureAssistedEntriesEnabled: true,
+                  ExecutionPolicySettings.NqClassic)
         {
         }
 
         public ExecutionCoordinator(double tickSize, bool failureAssistedEntriesEnabled)
+            : this(tickSize, failureAssistedEntriesEnabled,
+                  ExecutionPolicySettings.NqClassic)
+        {
+        }
+
+        public ExecutionCoordinator(
+            double tickSize,
+            bool failureAssistedEntriesEnabled,
+            ExecutionPolicySettings policy)
         {
             _tickSize = double.IsFinite(tickSize) && tickSize > 0 ? tickSize : 0.25;
             _failureAssistedEntriesEnabled = failureAssistedEntriesEnabled;
+            _policy = policy ?? ExecutionPolicySettings.NqClassic;
         }
 
         public RuntimeExecutionState State { get; private set; } = RuntimeExecutionState.Idle;
@@ -277,6 +316,7 @@ namespace ExecAssistantRuntime
             _lastSponsorClear = null;
             _referenceBreakContext = null;
             _continuation = continuation;
+            _semanticStop = null;
             _continuationLineageBroken = false;
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
@@ -491,6 +531,12 @@ namespace ExecAssistantRuntime
                 return intents;
 
             ExpireFailureAssistedParent(nowUtc);
+            OrderIntent semanticStop = EvaluateEsSemanticStop(nowUtc, market, position);
+            if (semanticStop != null)
+            {
+                intents.Add(semanticStop);
+                return intents;
+            }
             if (_pendingEntryIntent == null
                 && (State == RuntimeExecutionState.Armed
                     || State == RuntimeExecutionState.BaseOnly
@@ -704,6 +750,7 @@ namespace ExecAssistantRuntime
                 _lastFillUtc = nowUtc;
                 _freshRootAfterUtc = nowUtc;
                 _entryAnchorFailed = false;
+                _semanticStop = null;
                 if (filledIntent.Kind == OrderIntentKind.EnterBase)
                 {
                     _awaitingSponsorAlignedFailure = false;
@@ -776,6 +823,7 @@ namespace ExecAssistantRuntime
                 _pendingRetest = null;
                 _failureAssistedParent = null;
                 _referenceBreakContext = null;
+                _semanticStop = null;
                 if (_currentSponsor != null)
                 {
                     _lastSponsorClear = new SponsorClearContext
@@ -855,6 +903,7 @@ namespace ExecAssistantRuntime
             _pendingRetest = null;
             _failureAssistedParent = null;
             _referenceBreakContext = null;
+            _semanticStop = null;
             OrderIntent intent = CreateFlattenIntent(nowUtc, market, reason,
                 terminal: true, rearm: false);
             _flattenDisposition.HaltAfterFlat = true;
@@ -874,6 +923,7 @@ namespace ExecAssistantRuntime
             _pendingRetest = null;
             _failureAssistedParent = null;
             _referenceBreakContext = null;
+            _semanticStop = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "cancel_directive"));
             if (position != null && !position.IsFlat)
             {
@@ -901,6 +951,7 @@ namespace ExecAssistantRuntime
             _pendingRetest = null;
             _failureAssistedParent = null;
             _referenceBreakContext = null;
+            _semanticStop = null;
             intents.Add(CreateCancelOrdersIntent(nowUtc, market, "FLAT"));
             if (position != null && !position.IsFlat)
             {
@@ -925,6 +976,7 @@ namespace ExecAssistantRuntime
             _failureAssistedParent = null;
             _currentSponsor = null;
             _referenceBreakContext = null;
+            _semanticStop = null;
             BreakContinuationLineage();
         }
 
@@ -936,6 +988,7 @@ namespace ExecAssistantRuntime
             _pendingRetest = null;
             _failureAssistedParent = null;
             _referenceBreakContext = null;
+            _semanticStop = null;
             BreakContinuationLineage();
         }
 
@@ -1133,6 +1186,17 @@ namespace ExecAssistantRuntime
 
             if (!QuoteEligible(market, isAdd) || AtOrBeyondTarget(market))
                 return null;
+            if (_policy.UsesEsRailInteraction)
+            {
+                return TryEsRailInteractionEntry(
+                    transition.TimeUtc,
+                    market,
+                    position,
+                    resolution,
+                    isAdd,
+                    "direct_conversion",
+                    allowImmediateFavorable: true);
+            }
             long quoteTick = PriceToTick(market.Executable(_directive.Direction));
             if (RangeDistance(quoteTick, band.MinTick, band.MaxTick)
                 <= DirectConversionMaxDistanceTicks)
@@ -1199,6 +1263,17 @@ namespace ExecAssistantRuntime
                 FailureParentHeldUtc = parent.HeldUtc,
             };
 
+            if (_policy.UsesEsRailInteraction)
+            {
+                return TryEsRailInteractionEntry(
+                    transition.TimeUtc,
+                    market,
+                    position,
+                    resolution,
+                    isAdd,
+                    "failure_parent_child_direct",
+                    allowImmediateFavorable: true);
+            }
             long quoteTick = PriceToTick(market.Executable(_directive.Direction));
             if (RangeDistance(quoteTick, band.MinTick, band.MaxTick)
                 <= DirectConversionMaxDistanceTicks)
@@ -1245,6 +1320,17 @@ namespace ExecAssistantRuntime
             {
                 ResolutionContext resolution = SupportedContext(failed, confirmedSupport,
                     transition.TimeUtc);
+                if (_policy.UsesEsRailInteraction)
+                {
+                    return TryEsRailInteractionEntry(
+                        transition.TimeUtc,
+                        market,
+                        position,
+                        resolution,
+                        isAdd,
+                        "supported_reclaim_confirmed",
+                        allowImmediateFavorable: false);
+                }
                 return CreateEntryIntent(transition.TimeUtc, market, position,
                     resolution, isAdd, "supported_reclaim_confirmed");
             }
@@ -1321,6 +1407,18 @@ namespace ExecAssistantRuntime
             };
             ResolutionContext resolution = SupportedContext(failed, support, nowUtc);
             _pendingReclaim = null;
+            if (_policy.UsesEsRailInteraction)
+            {
+                return TryEsRailInteractionEntry(
+                    nowUtc,
+                    market,
+                    position,
+                    resolution,
+                    pending.IsAdd,
+                    "supported_reclaim_candidate",
+                    allowImmediateFavorable: false,
+                    supportRequiresLiveRail: false);
+            }
             return CreateEntryIntent(nowUtc, market, position, resolution,
                 pending.IsAdd, "supported_reclaim_candidate");
         }
@@ -1355,13 +1453,17 @@ namespace ExecAssistantRuntime
                 return null;
             }
             EvidenceBandView band = evidence.FindBand(pending.Resolution.RootObjectId);
-            if (band == null || !band.IsLiveRail)
+            if (!pending.RequiresRailInteraction
+                && (band == null || !band.IsLiveRail))
             {
                 _pendingRetest = null;
                 return null;
             }
             if (!QuoteEligible(market, pending.IsAdd) || AtOrBeyondTarget(market))
                 return null;
+            if (pending.RequiresRailInteraction)
+                return TryCompleteEsRailInteraction(nowUtc, market, position,
+                    evidence, pending);
             long quoteTick = PriceToTick(market.Executable(_directive.Direction));
             if (RangeDistance(quoteTick, band.MinTick, band.MaxTick)
                 > DirectConversionMaxDistanceTicks)
@@ -1374,6 +1476,301 @@ namespace ExecAssistantRuntime
                 : pending.Reason;
             return CreateEntryIntent(nowUtc, market, position, pending.Resolution,
                 pending.IsAdd, reason);
+        }
+
+        private OrderIntent TryEsRailInteractionEntry(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position,
+            ResolutionContext resolution,
+            bool isAdd,
+            string reason,
+            bool allowImmediateFavorable,
+            bool supportRequiresLiveRail = true)
+        {
+            if (resolution == null)
+                return null;
+            long quoteTick = PriceToTick(market.Executable(_directive.Direction));
+            string entryReason = $"es_rail_escape:{reason}";
+            if (allowImmediateFavorable
+                && EsImmediateFavorableEscape(quoteTick,
+                    resolution.SupportMinTick,
+                    resolution.SupportMaxTick))
+            {
+                AddRailInteractionAudit("es_rail_interaction_entry",
+                    nowUtc,
+                    resolution,
+                    $"{reason}:immediate_favorable_escape",
+                    quoteTick,
+                    market);
+                return CreateEntryIntent(nowUtc, market, position, resolution,
+                    isAdd, entryReason);
+            }
+
+            bool contacted = EsRailTouched(quoteTick,
+                resolution.SupportMinTick,
+                resolution.SupportMaxTick);
+            _pendingRetest = new PendingDirectRetest
+            {
+                Resolution = resolution,
+                IsAdd = isAdd,
+                Reason = entryReason,
+                RequiresRailInteraction = true,
+                SupportRequiresLiveRail = supportRequiresLiveRail,
+                ArmedUtc = NormalizeUtc(nowUtc),
+                ContactObserved = contacted,
+                ContactUtc = contacted ? NormalizeUtc(nowUtc) : null,
+            };
+            AddRailInteractionAudit("es_rail_interaction_armed",
+                nowUtc,
+                resolution,
+                reason,
+                quoteTick,
+                market);
+            if (contacted)
+            {
+                AddRailInteractionAudit("es_rail_interaction_contact",
+                    nowUtc,
+                    resolution,
+                    reason,
+                    quoteTick,
+                    market);
+            }
+            return null;
+        }
+
+        private OrderIntent TryCompleteEsRailInteraction(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position,
+            ExecutionEvidenceEngine evidence,
+            PendingDirectRetest pending)
+        {
+            if (pending?.Resolution == null)
+                return null;
+            EvidenceBandView support = evidence?.FindBand(
+                pending.Resolution.SupportObjectId);
+            if (pending.SupportRequiresLiveRail
+                && (support == null || !support.IsLiveRail))
+            {
+                AddRailInteractionAudit("es_rail_interaction_invalidated",
+                    nowUtc,
+                    pending.Resolution,
+                    "support_not_live",
+                    market != null && market.IsValid
+                        ? PriceToTick(market.Executable(_directive.Direction))
+                        : (long?)null,
+                    market);
+                _pendingRetest = null;
+                return null;
+            }
+
+            long quoteTick = PriceToTick(market.Executable(_directive.Direction));
+            if (!pending.ContactObserved
+                && EsRailTouched(quoteTick,
+                    pending.Resolution.SupportMinTick,
+                    pending.Resolution.SupportMaxTick))
+            {
+                pending.ContactObserved = true;
+                pending.ContactUtc = NormalizeUtc(nowUtc);
+                AddRailInteractionAudit("es_rail_interaction_contact",
+                    nowUtc,
+                    pending.Resolution,
+                    pending.Reason,
+                    quoteTick,
+                    market);
+            }
+            if (!pending.ContactObserved
+                || !EsFavorableEscape(quoteTick,
+                    pending.Resolution.SupportMinTick,
+                    pending.Resolution.SupportMaxTick))
+            {
+                return null;
+            }
+
+            _pendingRetest = null;
+            AddRailInteractionAudit("es_rail_interaction_entry",
+                nowUtc,
+                pending.Resolution,
+                pending.Reason,
+                quoteTick,
+                market);
+            return CreateEntryIntent(nowUtc, market, position, pending.Resolution,
+                pending.IsAdd, pending.Reason);
+        }
+
+        private OrderIntent EvaluateEsSemanticStop(
+            DateTime nowUtc,
+            ExecutableMarket market,
+            RuntimePosition position)
+        {
+            if (!_policy.UsesEsRailInteraction
+                || _flattenDisposition != null
+                || position == null
+                || position.IsFlat
+                || _currentSponsor == null
+                || (State != RuntimeExecutionState.BaseOnly
+                    && State != RuntimeExecutionState.Leveraged))
+            {
+                _semanticStop = null;
+                return null;
+            }
+            if (market == null || !market.IsValid)
+                return null;
+
+            SponsorContext sponsor = _currentSponsor;
+            long quoteTick = EsStopReferenceTick(market);
+            if (Inside(quoteTick, sponsor.MinTick, sponsor.MaxTick))
+            {
+                if (_semanticStop != null)
+                {
+                    AddSemanticStopAudit("es_semantic_stop_cleared",
+                        nowUtc,
+                        sponsor,
+                        "reentered_band",
+                        quoteTick,
+                        market,
+                        _semanticStop.BreachUtc);
+                }
+                _semanticStop = null;
+                return null;
+            }
+
+            if (_semanticStop != null
+                && _semanticStop.SponsorId == sponsor.ObjectId)
+            {
+                if ((nowUtc - _semanticStop.BreachUtc).TotalSeconds
+                    < Math.Max(1, _policy.EsSemanticStopHoldSeconds))
+                {
+                    return null;
+                }
+                string reason = $"es_semantic_stop:"
+                    + $"{Math.Max(1, _policy.EsSemanticStopBreachTicks)}t_"
+                    + $"{Math.Max(1, _policy.EsSemanticStopHoldSeconds)}s:"
+                    + $"{sponsor.ObjectId}";
+                AddSemanticStopAudit("es_semantic_stop_fired",
+                    nowUtc,
+                    sponsor,
+                    reason,
+                    quoteTick,
+                    market,
+                    _semanticStop.BreachUtc);
+                bool terminal = _everLeveraged || HasActiveAdverseFailures;
+                _awaitingSponsorAlignedFailure = !terminal;
+                _semanticStop = null;
+                return CreateFlattenIntent(nowUtc, market, reason,
+                    terminal: terminal, rearm: !terminal);
+            }
+
+            if (!EsAdverseBreach(quoteTick, sponsor))
+                return null;
+
+            _semanticStop = new SemanticStopState
+            {
+                SponsorId = sponsor.ObjectId,
+                BreachUtc = NormalizeUtc(nowUtc),
+                BreachTick = quoteTick,
+            };
+            AddSemanticStopAudit("es_semantic_stop_armed",
+                nowUtc,
+                sponsor,
+                "adverse_breach",
+                quoteTick,
+                market,
+                _semanticStop.BreachUtc);
+            return null;
+        }
+
+        private bool EsRailTouched(long quoteTick, long minTick, long maxTick)
+            => _directive.Direction == TradeDirection.Long
+                ? quoteTick <= maxTick
+                : quoteTick >= minTick;
+
+        private bool EsFavorableEscape(long quoteTick, long minTick, long maxTick)
+        {
+            int escapeTicks = Math.Max(0, _policy.EsEntryEscapeTicks);
+            return _directive.Direction == TradeDirection.Long
+                ? quoteTick >= maxTick + escapeTicks
+                : quoteTick <= minTick - escapeTicks;
+        }
+
+        private bool EsImmediateFavorableEscape(long quoteTick, long minTick, long maxTick)
+        {
+            int escapeTicks = Math.Max(1, _policy.EsEntryEscapeTicks);
+            return _directive.Direction == TradeDirection.Long
+                ? quoteTick >= maxTick + escapeTicks
+                : quoteTick <= minTick - escapeTicks;
+        }
+
+        private long EsStopReferenceTick(ExecutableMarket market)
+            => PriceToTick(_directive.Direction == TradeDirection.Long
+                ? market.Bid
+                : market.Ask);
+
+        private bool EsAdverseBreach(long quoteTick, SponsorContext sponsor)
+            => _directive.Direction == TradeDirection.Long
+                ? quoteTick <= sponsor.MinTick
+                    - Math.Max(1, _policy.EsSemanticStopBreachTicks)
+                : quoteTick >= sponsor.MaxTick
+                    + Math.Max(1, _policy.EsSemanticStopBreachTicks);
+
+        private static bool Inside(long tick, long minTick, long maxTick)
+            => tick >= minTick && tick <= maxTick;
+
+        private void AddRailInteractionAudit(
+            string eventType,
+            DateTime timeUtc,
+            ResolutionContext resolution,
+            string reason,
+            long? quoteTick,
+            ExecutableMarket market)
+        {
+            if (resolution == null)
+                return;
+            _auditEvents.Add(new CoordinatorAuditEvent
+            {
+                EventType = eventType,
+                TimeUtc = NormalizeUtc(timeUtc),
+                DirectiveId = _directive?.Id,
+                Reason = reason,
+                ParentObjectId = resolution.SupportObjectId,
+                ParentSide = DesiredEvidenceSide(),
+                ParentMinTick = resolution.SupportMinTick,
+                ParentMaxTick = resolution.SupportMaxTick,
+                ChildObjectId = resolution.RootObjectId,
+                ChildSource = resolution.SupportSource,
+                ChildMinTick = resolution.RootMinTick,
+                ChildMaxTick = resolution.RootMaxTick,
+                MarketTick = quoteTick,
+            });
+        }
+
+        private void AddSemanticStopAudit(
+            string eventType,
+            DateTime timeUtc,
+            SponsorContext sponsor,
+            string reason,
+            long quoteTick,
+            ExecutableMarket market,
+            DateTime breachUtc)
+        {
+            if (sponsor == null)
+                return;
+            _auditEvents.Add(new CoordinatorAuditEvent
+            {
+                EventType = eventType,
+                TimeUtc = NormalizeUtc(timeUtc),
+                DirectiveId = _directive?.Id,
+                Reason = reason,
+                ParentObjectId = sponsor.ObjectId,
+                ParentSide = sponsor.Side,
+                ParentMinTick = sponsor.MinTick,
+                ParentMaxTick = sponsor.MaxTick,
+                MarketTick = quoteTick,
+                BreachTicks = Math.Max(1, _policy.EsSemanticStopBreachTicks),
+                HoldSeconds = Math.Max(1, _policy.EsSemanticStopHoldSeconds),
+                BreachUtc = NormalizeUtc(breachUtc),
+            });
         }
 
         private OrderIntent EvaluateBaseStop(EvidenceTransition transition, ExecutableMarket market)
@@ -1543,6 +1940,7 @@ namespace ExecAssistantRuntime
                 return;
             _lastSponsorClear = null;
             _currentSponsor = sponsor;
+            _semanticStop = null;
             _sponsorVersion++;
         }
 
@@ -1640,6 +2038,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _semanticStop = null;
         }
 
         private void InvalidateWhileFlat()
@@ -1649,6 +2048,7 @@ namespace ExecAssistantRuntime
             _pendingReclaim = null;
             _pendingRetest = null;
             _failureAssistedParent = null;
+            _semanticStop = null;
         }
 
         private bool HasActiveAdverseFailures
@@ -2301,6 +2701,18 @@ namespace ExecAssistantRuntime
             public ResolutionContext Resolution;
             public bool IsAdd;
             public string Reason;
+            public bool RequiresRailInteraction;
+            public bool SupportRequiresLiveRail = true;
+            public DateTime ArmedUtc;
+            public bool ContactObserved;
+            public DateTime? ContactUtc;
+        }
+
+        private sealed class SemanticStopState
+        {
+            public int SponsorId;
+            public DateTime BreachUtc;
+            public long BreachTick;
         }
 
         private sealed class FailureAssistedParent

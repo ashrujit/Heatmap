@@ -25,6 +25,10 @@ namespace ExecAssistantRuntime
         public string MarketDataConnectionId { get; set; }
         public int? InstanceMaxQuantity { get; set; }
         public int? WorkerPollMs { get; set; }
+        public string ExecutionPolicy { get; set; }
+        public int? EsEntryEscapeTicks { get; set; }
+        public int? EsSemanticStopBreachTicks { get; set; }
+        public int? EsSemanticStopHoldSeconds { get; set; }
         public string EvidenceState { get; set; }
         public string EvidenceEpochReason { get; set; }
         public string EvidenceEpochStartedUtc { get; set; }

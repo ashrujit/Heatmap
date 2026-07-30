@@ -459,11 +459,25 @@ is replaced by fresh same-side ownership in the same or overlapping zone after
 contest. The new object must establish and survive; relabeling an old failed
 object is not enough.
 
-For v1, direct conversion is executable only when the original opposing
+For `NQ Classic`, direct conversion is executable only when the original opposing
 candidate completes LevelLedger's normal `CONSUMED` confirmation: eight ticks
 of adverse displacement held for ten seconds. A nearby opposite candidate does
 not accelerate that decision. Once `CONSUMED` is confirmed, route immediately;
 there is no additional execution delay.
+
+`ES Rail Interaction` keeps the same ownership math but changes the execution
+surface. A valid direct conversion, supported reclaim, or LF/HF-assisted child
+rail arms an interaction instead of treating proximity to the rail as the order
+trigger. The armed rail must be contacted or punctured, then price must escape
+out of the rail in the directive direction before EAR routes the market entry or
+add. A fresh direct-conversion rail may enter immediately only when the
+executable quote is already at least one tick beyond the favorable edge; a quote
+at the boundary arms first. This reflects the ES observation that broad rails
+are tested through the area, so "market because close" produces poor prices.
+
+The ES policy deliberately still uses the existing market-entry gateway. Limit
+orders at rail boundaries are a separate order-routing problem because they
+need their own placement, cancellation, timeout, and partial-fill contract.
 
 ### LF/HF-Assisted Ownership
 
@@ -1203,6 +1217,15 @@ show whether the twenty-tick completion rule is too narrow or too permissive.
 The stop is not "a few ticks beyond entry." NQ often invalidates a band by a few
 ticks and then continues. The runtime should flatten on the reverse of the entry
 logic, not on arbitrary proximity to the fill.
+
+`ES Rail Interaction` adds a tighter sponsor-aware semantic stop without
+changing confirmed rail-failure precedence. If the current sponsor is live but
+the executable exit quote moves eight ticks adverse beyond that sponsor and
+does not re-enter the sponsor band for ten seconds, EAR market-flattens with an
+`es_semantic_stop:8t_10s:<sponsor-id>` reason. If the quote re-enters the band
+before the timer completes, the stop arms are cleared. If the evidence engine
+confirms current-sponsor failure first, the normal sponsor-failure market exit
+fires immediately and does not wait for the ES no-reentry timer.
 
 After the first add fills, normal campaign management does not place a
 weighted-breakeven stop. That earlier protection was removed because it can
