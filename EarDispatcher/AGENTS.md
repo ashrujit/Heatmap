@@ -15,6 +15,13 @@ controls, but it deliberately does not become a planning tool.
 - The UI accepts compact price shorthand, but every shorthand price is expanded
   from the editable base field and previewed as a full price before dispatch.
   Hidden price inference is not allowed.
+- Shorthand is limited to sub-1000 offsets from the editable base. ES trades
+  below 10000, so 7xxx prices must remain absolute instead of being treated as
+  base-relative NQ-style shorthand. When `auto ctx` is enabled, dispatch
+  recomputes the outgoing context from Order/Target so a stale textbox cannot
+  carry a prior symbol's envelope into a fresh directive. Dispatch and reissue
+  also block obvious ES/MES-vs-NQ/MNQ price-scale mismatches from the runtime
+  status symbol before shelling out.
 - The app is keyboard-first and visually close to a console because it is an
   execution utility, not an analysis surface.
 - Parsed operator summaries are the default output. Raw JSON remains available

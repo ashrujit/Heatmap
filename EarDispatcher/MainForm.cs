@@ -495,6 +495,13 @@ internal sealed class MainForm : Form
                         ShowOutput("dispatch blocked", WithRaw(blockers, statusDoc.RootElement));
                         return;
                     }
+
+                    string priceScale = FormatPriceScaleGuard(statusDoc.RootElement, command.Prices);
+                    if (!string.IsNullOrWhiteSpace(priceScale))
+                    {
+                        ShowOutput("dispatch blocked", WithRaw(priceScale, statusDoc.RootElement));
+                        return;
+                    }
                 }
             }
             else if (status.ExitCode != 0)
@@ -531,7 +538,43 @@ internal sealed class MainForm : Form
         if (_busy)
             return;
 
-        if (!Confirm($"{(continueLineage ? "CONTINUE" : "REISSUE")} last accepted directive?"))
+        SetBusy(true, "preflight");
+        CommandResult status;
+        try
+        {
+            status = await _earctl.RunAsync(
+                new[] { "--runtime-dir", _settings.RuntimeDir, "status", "--recent-events", "8" });
+        }
+        finally
+        {
+            SetBusy(false, "idle");
+        }
+
+        string confirmText = $"{(continueLineage ? "CONTINUE" : "REISSUE")} last accepted directive?";
+        if (TryParseJson(status.Output, out JsonDocument? statusDoc))
+        {
+            using (statusDoc)
+            {
+                ApplyRuntimeMax(statusDoc.RootElement);
+                string priceScale = FormatLastAcceptedPriceScaleGuard(statusDoc.RootElement);
+                if (!string.IsNullOrWhiteSpace(priceScale))
+                {
+                    ShowOutput("reissue blocked", WithRaw(priceScale, statusDoc.RootElement));
+                    return;
+                }
+
+                string summary = FormatLastAcceptedDirectiveSummary(statusDoc.RootElement);
+                if (!string.IsNullOrWhiteSpace(summary))
+                    confirmText += Environment.NewLine + Environment.NewLine + summary;
+            }
+        }
+        else if (status.ExitCode != 0)
+        {
+            ShowOutput("status failed", status.DisplayText);
+            return;
+        }
+
+        if (!Confirm(confirmText))
             return;
 
         var args = new List<string>
@@ -612,7 +655,6 @@ internal sealed class MainForm : Form
     private DispatchCommand BuildDispatchCommand(bool dryRun)
     {
         double basePrice = ParsePriceBase();
-        ResolvedRange userContext = PriceInput.ParseRange(_contextRange.Text, basePrice, "context");
         ResolvedRange order = PriceInput.ParseRange(_orderRange.Text, basePrice, "order");
         double target = PriceInput.ParsePrice(_targetPrice.Text, basePrice, "target");
 
@@ -624,12 +666,36 @@ internal sealed class MainForm : Form
             throw new InputException("campaign requires base quantity + add quantity <= max position");
 
         string side = _longSide.Checked ? "long" : "short";
-        ResolvedRange context = Envelope(userContext, order);
         ResolvedRange? addRange = null;
         if (campaign)
-        {
             addRange = CampaignRange(order, target, side);
-            context = Envelope(context, addRange.Value);
+
+        ResolvedRange context = order;
+        if (_autoOrder.Checked)
+        {
+            if (addRange.HasValue)
+                context = Envelope(context, addRange.Value);
+        }
+        else
+        {
+            ResolvedRange userContext = PriceInput.ParseRange(_contextRange.Text, basePrice, "context");
+            context = Envelope(userContext, order);
+            if (addRange.HasValue)
+                context = Envelope(context, addRange.Value);
+        }
+
+        var priceScaleValues = new List<double>
+        {
+            order.Lower,
+            order.Upper,
+            context.Lower,
+            context.Upper,
+            target,
+        };
+        if (addRange.HasValue)
+        {
+            priceScaleValues.Add(addRange.Value.Lower);
+            priceScaleValues.Add(addRange.Value.Upper);
         }
 
         var args = new List<string>
@@ -661,6 +727,7 @@ internal sealed class MainForm : Form
         {
             double invalidation = PriceInput.ParsePrice(invalidationText, basePrice, "invalidation");
             args.AddRange(new[] { "--pre-entry-invalidation", FormatArg(invalidation) });
+            priceScaleValues.Add(invalidation);
         }
 
         string targetReference = _targetReference.Text.Trim();
@@ -674,7 +741,7 @@ internal sealed class MainForm : Form
         if (dryRun)
             args.Add("--dry-run");
 
-        return new DispatchCommand(args);
+        return new DispatchCommand(args, priceScaleValues);
     }
 
     private void OnAutoOrderSourceChanged()
@@ -1236,6 +1303,104 @@ internal sealed class MainForm : Form
         return string.Join(Environment.NewLine, lines);
     }
 
+    private static string FormatLastAcceptedPriceScaleGuard(JsonElement root)
+    {
+        if (!root.TryGetProperty("directive", out JsonElement directive)
+            || !directive.TryGetProperty("last_outcome", out JsonElement lastOutcome)
+            || lastOutcome.ValueKind != JsonValueKind.Object)
+        {
+            return "";
+        }
+
+        var prices = new List<double>();
+        AddPrice(lastOutcome, "order_price_lower", prices);
+        AddPrice(lastOutcome, "order_price_upper", prices);
+        AddPrice(lastOutcome, "context_price_lower", prices);
+        AddPrice(lastOutcome, "context_price_upper", prices);
+        AddPrice(lastOutcome, "add_price_lower", prices);
+        AddPrice(lastOutcome, "add_price_upper", prices);
+        AddPrice(lastOutcome, "target_price", prices);
+        return FormatPriceScaleGuard(root, prices);
+    }
+
+    private static string FormatPriceScaleGuard(JsonElement root, IEnumerable<double> prices)
+    {
+        double[] finitePrices = prices
+            .Where(price => double.IsFinite(price) && price > 0)
+            .ToArray();
+        if (finitePrices.Length == 0)
+            return "";
+
+        string symbol = RuntimeMarketDataSymbol(root);
+        if (string.IsNullOrWhiteSpace(symbol))
+            return "";
+
+        double min = finitePrices.Min();
+        double max = finitePrices.Max();
+        string runtime = RuntimeSymbolLabel(root);
+        if (IsEsLike(symbol) && max >= 10000)
+        {
+            return $"Price scale blocked: runtime is {runtime}, but the directive prices span {FormatDisplay(min)}-{FormatDisplay(max)}. "
+                + "ES/MES prices should not be NQ-scale; check the base, sketch import, or reissue source.";
+        }
+
+        if (IsNqLike(symbol) && max < 10000)
+        {
+            return $"Price scale blocked: runtime is {runtime}, but the directive prices span {FormatDisplay(min)}-{FormatDisplay(max)}. "
+                + "NQ/MNQ prices should not be ES-scale; check the base, sketch import, or reissue source.";
+        }
+
+        return "";
+    }
+
+    private static string FormatLastAcceptedDirectiveSummary(JsonElement root)
+    {
+        if (!root.TryGetProperty("directive", out JsonElement directive)
+            || !directive.TryGetProperty("last_accepted_contract", out JsonElement contract)
+            || contract.ValueKind != JsonValueKind.Object)
+        {
+            return "";
+        }
+
+        return RuntimeSymbolLabel(root) + Environment.NewLine
+            + string.Join(Environment.NewLine, FormatDirectiveSummary(contract));
+    }
+
+    private static void AddPrice(JsonElement parent, string propertyName, List<double> prices)
+    {
+        if (TryGetFiniteDouble(parent, propertyName, out double price))
+            prices.Add(price);
+    }
+
+    private static string RuntimeMarketDataSymbol(JsonElement root)
+    {
+        if (!root.TryGetProperty("runtime", out JsonElement runtime))
+            return "";
+        string marketDataSymbol = Str(runtime, "market_data_symbol");
+        return string.IsNullOrWhiteSpace(marketDataSymbol)
+            ? Str(runtime, "execution_symbol")
+            : marketDataSymbol;
+    }
+
+    private static string RuntimeSymbolLabel(JsonElement root)
+    {
+        if (!root.TryGetProperty("runtime", out JsonElement runtime))
+            return "Runtime: unknown symbol";
+        string executionSymbol = Str(runtime, "execution_symbol");
+        string marketDataSymbol = Str(runtime, "market_data_symbol");
+        return string.IsNullOrWhiteSpace(marketDataSymbol)
+            ? $"Runtime: {executionSymbol}"
+            : $"Runtime: {executionSymbol} from {marketDataSymbol}";
+    }
+
+    private static bool IsEsLike(string symbol)
+        => symbol.StartsWith("ES", StringComparison.OrdinalIgnoreCase)
+            || symbol.StartsWith("MES", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNqLike(string symbol)
+        => symbol.StartsWith("NQ", StringComparison.OrdinalIgnoreCase)
+            || symbol.StartsWith("MNQ", StringComparison.OrdinalIgnoreCase);
+
     private static string FormatDispatchResult(JsonElement root, bool dryRun)
     {
         string outcome = Str(root, "outcome");
@@ -1396,7 +1561,7 @@ internal sealed class MainForm : Form
     private static string FormatInputPrice(double price, double basePrice)
     {
         double shorthand = price - basePrice;
-        if (shorthand >= 0 && shorthand < 1000)
+        if (shorthand >= 0 && shorthand < PriceInput.ShorthandLimit)
             return FormatArg(shorthand);
         return FormatArg(price);
     }
@@ -1502,7 +1667,7 @@ internal sealed class MainForm : Form
         return button;
     }
 
-    private sealed record DispatchCommand(IReadOnlyList<string> Arguments);
+    private sealed record DispatchCommand(IReadOnlyList<string> Arguments, IReadOnlyList<double> Prices);
 
     private sealed record SketchImport(
         string Side,
@@ -1514,6 +1679,8 @@ internal sealed class MainForm : Form
 
 internal static class PriceInput
 {
+    internal const double ShorthandLimit = 1000.0;
+
     private static readonly Regex RangeSeparator = new(
         @"\s*(?:-|\.{2}|\bto\b|\s+)\s*",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -1550,7 +1717,7 @@ internal static class PriceInput
             throw new InputException($"{name} price is invalid");
         }
 
-        return raw >= 10000 ? raw : basePrice + raw;
+        return raw < ShorthandLimit ? basePrice + raw : raw;
     }
 }
 
