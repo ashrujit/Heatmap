@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using TradingPlatform.BusinessLayer;
 
 namespace ExecAssistantRuntime
 {
@@ -9,6 +10,7 @@ namespace ExecAssistantRuntime
         public static void RunAll()
         {
             ContractTests();
+            OrderGatewayTests();
             BookContinuityTests();
             EvidenceEngineTests();
             CoordinatorTests();
@@ -217,6 +219,24 @@ namespace ExecAssistantRuntime
                 + "\"issued_at\":\"2026-06-19T10:00:00-04:00\","
                 + "\"action\":\"FLAT\"}");
             Require(flat.Action == ControlAction.Flat, "flat control");
+        }
+
+        private static void OrderGatewayTests()
+        {
+            Require(QuantowerOrderGateway.IsWorkingOrderState(1, OrderStatus.Opened),
+                "opened order with remaining quantity is cancellable");
+            Require(QuantowerOrderGateway.IsWorkingOrderState(1, OrderStatus.PartiallyFilled),
+                "partially filled order with remaining quantity is cancellable");
+            Require(QuantowerOrderGateway.IsWorkingOrderState(1, OrderStatus.Inactive),
+                "inactive order with remaining quantity is cancellable");
+            Require(!QuantowerOrderGateway.IsWorkingOrderState(0, OrderStatus.Opened),
+                "zero-remaining target order is not cancellable");
+            Require(!QuantowerOrderGateway.IsWorkingOrderState(0, OrderStatus.PartiallyFilled),
+                "fully filled partial order is not cancellable");
+            Require(!QuantowerOrderGateway.IsWorkingOrderState(1, OrderStatus.Cancelled),
+                "cancelled order is not cancellable");
+            Require(!QuantowerOrderGateway.IsWorkingOrderState(1, OrderStatus.Refused),
+                "refused order is not cancellable");
         }
 
         private static void CoordinatorTests()
@@ -495,6 +515,7 @@ namespace ExecAssistantRuntime
             ContinuationTests(directive, now, market, evidence);
             StaleDirectRetestTests(directive, now);
             EsRailInteractionPolicyTests(directive, now);
+            PartialHardTargetFillTests(directive, now, market, evidence);
 
             var candidateEntry = new ResolutionContext { SupportObjectId = 77 };
             var consumedOpposite = new EvidenceBandView
@@ -540,6 +561,90 @@ namespace ExecAssistantRuntime
             }
             Require(retryCoordinator.State == RuntimeExecutionState.Completed,
                 "submitted base attempts exhaust retry allowance");
+        }
+
+        private static void PartialHardTargetFillTests(
+            TradeDirective directive,
+            DateTime now,
+            ExecutableMarket market,
+            ExecutionEvidenceEngine evidence)
+        {
+            var coordinator = new ExecutionCoordinator(0.25);
+            coordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            coordinator.InitializeObservedPosition(RuntimePosition.Flat);
+            EvidenceTransition baseTransition = ConsumedDemand(
+                id: 900,
+                formedUtc: now.AddSeconds(1),
+                eventUtc: now.AddSeconds(12),
+                lower: 30500,
+                upper: 30501);
+            OrderIntent baseIntent = coordinator.ProcessEvidence(
+                new[] { baseTransition },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).Single();
+            coordinator.OnOrderAttemptResult(baseIntent, accepted: true);
+            var basePosition = new RuntimePosition
+            {
+                PositionId = "target-partial-position",
+                Direction = TradeDirection.Long,
+                Quantity = 2,
+                AveragePrice = 30504,
+            };
+            coordinator.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+
+            var partialPosition = new RuntimePosition
+            {
+                PositionId = "target-partial-position",
+                Direction = TradeDirection.Long,
+                Quantity = 1,
+                AveragePrice = 30504,
+            };
+            OrderIntent[] partialProtection = coordinator.OnPositionChanged(
+                partialPosition,
+                now.AddSeconds(14),
+                market,
+                hardTargetFillObserved: true).ToArray();
+            Require(coordinator.State == RuntimeExecutionState.BaseOnly,
+                "partial hard-target fill keeps position managed");
+            Require(partialProtection.Any(i => i.Kind == OrderIntentKind.EnsureHardTarget
+                    && i.Reason == "hard_target_partial_fill"
+                    && Math.Abs(i.Quantity - 1) < 1e-9),
+                "partial hard-target fill preserves remaining target protection");
+
+            EvidenceTransition postTargetAdd = ConsumedDemand(
+                id: 901,
+                formedUtc: now.AddSeconds(15),
+                eventUtc: now.AddSeconds(25),
+                lower: 30502,
+                upper: 30503);
+            Require(coordinator.ProcessEvidence(
+                    new[] { postTargetAdd },
+                    now.AddSeconds(25),
+                    market,
+                    partialPosition,
+                    evidence).All(i => i.Kind != OrderIntentKind.Add),
+                "partial hard-target fill suppresses further adds");
+
+            var unknownPartial = new ExecutionCoordinator(0.25);
+            unknownPartial.AcceptDirective(directive, now, Array.Empty<int>());
+            unknownPartial.InitializeObservedPosition(RuntimePosition.Flat);
+            OrderIntent unknownBase = unknownPartial.ProcessEvidence(
+                new[] { baseTransition },
+                now.AddSeconds(12),
+                market,
+                RuntimePosition.Flat,
+                evidence).Single();
+            unknownPartial.OnOrderAttemptResult(unknownBase, accepted: true);
+            unknownPartial.OnPositionChanged(basePosition, now.AddSeconds(13), market);
+            OrderIntent[] unknownPartialExit = unknownPartial.OnPositionChanged(
+                partialPosition,
+                now.AddSeconds(14),
+                market).ToArray();
+            Require(unknownPartialExit.Any(i => i.Kind == OrderIntentKind.Flatten
+                    && i.Reason == "partial_protective_or_external_exit"),
+                "unknown partial position reduction still flattens safely");
         }
 
         private static void StaleDirectRetestTests(

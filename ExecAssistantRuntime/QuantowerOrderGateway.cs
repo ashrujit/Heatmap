@@ -75,11 +75,8 @@ namespace ExecAssistantRuntime
         {
             if (!_tradingEnabled)
                 return;
-            foreach (Order order in RuntimeOrders().Where(o =>
-                (o.Comment?.Contains(":BASE:", StringComparison.Ordinal) ?? false)
-                || (o.Comment?.Contains(":ADD:", StringComparison.Ordinal) ?? false)
-                || (o.GroupId?.Contains(":BASE:", StringComparison.Ordinal) ?? false)
-                || (o.GroupId?.Contains(":ADD:", StringComparison.Ordinal) ?? false)))
+            foreach (Order order in RuntimeOrders()
+                .Where(o => IsEntryOrder(o) && IsWorkingOrder(o)))
             {
                 try { Core.Instance.CancelOrder((IOrder)order, SendingSource); } catch { }
             }
@@ -89,7 +86,8 @@ namespace ExecAssistantRuntime
         {
             if (!_tradingEnabled)
                 return;
-            foreach (Order order in RuntimeOrders().Where(IsProtectionOrder))
+            foreach (Order order in RuntimeOrders()
+                .Where(o => IsProtectionOrder(o) && IsWorkingOrder(o)))
             {
                 try { Core.Instance.CancelOrder((IOrder)order, SendingSource); } catch { }
             }
@@ -100,7 +98,7 @@ namespace ExecAssistantRuntime
             if (!_tradingEnabled)
                 return false;
             Order[] orders = Core.Instance.Orders
-                .Where(o => IsRuntimeOrder(o) && IsEntryOrder(o))
+                .Where(o => IsRuntimeOrder(o) && IsEntryOrder(o) && IsWorkingOrder(o))
                 .Where(o => (!string.IsNullOrWhiteSpace(orderId) && o.Id == orderId)
                     || HasIntentTag(o, intentId))
                 .ToArray();
@@ -439,7 +437,7 @@ namespace ExecAssistantRuntime
 
             try
             {
-                foreach (Order order in RuntimeOrders())
+                foreach (Order order in RuntimeOrders().Where(IsWorkingOrder))
                 {
                     try { Core.Instance.CancelOrder((IOrder)order, SendingSource); } catch { }
                 }
@@ -503,8 +501,9 @@ namespace ExecAssistantRuntime
         private GatewayResult CancelOrders(OrderIntent intent)
         {
             IEnumerable<Order> orders = intent.Reason == "FLAT"
-                ? Core.Instance.Orders.Where(o => SameBoundPair(o.Symbol, o.Account))
-                : Core.Instance.Orders.Where(o => IsRuntimeOrder(o));
+                ? Core.Instance.Orders.Where(o =>
+                    SameBoundPair(o.Symbol, o.Account) && IsWorkingOrder(o))
+                : Core.Instance.Orders.Where(o => IsRuntimeOrder(o) && IsWorkingOrder(o));
             bool allAccepted = true;
             int count = 0;
             try
@@ -574,10 +573,14 @@ namespace ExecAssistantRuntime
 
         private static bool IsWorkingOrder(Order order)
             => order != null
-                && order.RemainingQuantity > 0
-                && (order.Status == OrderStatus.Opened
-                    || order.Status == OrderStatus.PartiallyFilled
-                    || order.Status == OrderStatus.Inactive);
+                && IsWorkingOrderState(order.RemainingQuantity, order.Status);
+
+        internal static bool IsWorkingOrderState(double remainingQuantity,
+            OrderStatus status)
+            => remainingQuantity > 0
+                && (status == OrderStatus.Opened
+                    || status == OrderStatus.PartiallyFilled
+                    || status == OrderStatus.Inactive);
 
         private static bool IsEntryOrder(Order order)
             => order != null

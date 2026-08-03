@@ -19,6 +19,7 @@ namespace ExecAssistantRuntime
         private const int SponsorFailureRebuildMaxDistanceTicks = 120;
         private const int SponsorContextRailLimit = 5;
         private const int TradingPermissionLogIntervalSeconds = 30;
+        private const int HardTargetFillReconcileWindowSeconds = 30;
         private const int ExecutionPolicyNqClassic = 0;
         private const int ExecutionPolicyEsRailInteraction = 1;
 
@@ -178,6 +179,9 @@ namespace ExecAssistantRuntime
         private string _acceptedDirectiveRaw;
         private string _lastPositionSignature;
         private string _lastShadowLivePositionSignature;
+        private double _lastReconciledPositionQuantity;
+        private double _pendingHardTargetFillQuantity;
+        private DateTime _lastHardTargetFillEventUtc = DateTime.MinValue;
         private RuntimePosition _shadowPosition = RuntimePosition.Flat;
         private double? _shadowBreakeven;
         private double? _shadowHardTarget;
@@ -1088,6 +1092,11 @@ namespace ExecAssistantRuntime
                 : $"{position.PositionId}|{position.Direction}|{position.Quantity:R}|{position.AveragePrice:R}";
             if (string.Equals(signature, _lastPositionSignature, StringComparison.Ordinal))
                 return;
+            double previousReconciledQuantity = _lastReconciledPositionQuantity;
+            double quantityReduction = Math.Max(0, previousReconciledQuantity - position.Quantity);
+            bool hardTargetPartialFillObserved = !position.IsFlat
+                && quantityReduction > 1e-9
+                && PendingHardTargetFillRecent(nowUtc);
             bool becameFlat = position.IsFlat
                 && !string.IsNullOrWhiteSpace(_lastPositionSignature)
                 && !string.Equals(_lastPositionSignature, "flat", StringComparison.Ordinal);
@@ -1103,12 +1112,20 @@ namespace ExecAssistantRuntime
                     + $"avg={position.AveragePrice:R}, directive="
                     + $"{_coordinator.Directive?.Id ?? "none"}.");
             IReadOnlyList<OrderIntent> protection = _coordinator.OnPositionChanged(
-                position, nowUtc, market);
+                position, nowUtc, market, hardTargetPartialFillObserved);
             LogCoordinatorAudit();
             LogSponsorIfChanged();
             ExecuteIntents(protection, position, market);
+            _lastReconciledPositionQuantity = position.Quantity;
             if (becameFlat)
+            {
+                ClearPendingHardTargetFill();
                 _gateway.CancelProtectionWhenFlat();
+            }
+            else if (hardTargetPartialFillObserved)
+            {
+                ConsumePendingHardTargetFill(quantityReduction);
+            }
         }
 
         private void HandleForwardDataLoss(DateTime nowUtc, ExecutableMarket market,
@@ -1360,6 +1377,7 @@ namespace ExecAssistantRuntime
                     LogFillQuality(ev);
                     if (HasOrderRole(ev, "TP"))
                     {
+                        RegisterHardTargetFill(ev, DateTime.UtcNow);
                         _events.Write("hard_target_fill",
                             ("order_id", ev.OrderId),
                             ("position_id", ev.PositionId),
@@ -1384,6 +1402,50 @@ namespace ExecAssistantRuntime
                     _submissions.Remove(submissionKey);
                 }
             }
+        }
+
+        private void RegisterHardTargetFill(BrokerEvent fill, DateTime nowUtc)
+        {
+            if (fill == null || fill.Quantity <= 0)
+                return;
+            _pendingHardTargetFillQuantity += fill.Quantity;
+            _lastHardTargetFillEventUtc = nowUtc;
+        }
+
+        private bool PendingHardTargetFillRecent(DateTime nowUtc)
+        {
+            if (_pendingHardTargetFillQuantity <= 0)
+                return false;
+            if ((nowUtc - _lastHardTargetFillEventUtc).TotalSeconds
+                <= HardTargetFillReconcileWindowSeconds)
+            {
+                return true;
+            }
+            _events.Write("hard_target_fill_unmatched",
+                ("pending_quantity", _pendingHardTargetFillQuantity),
+                ("last_fill_utc", _lastHardTargetFillEventUtc.ToString(
+                    "O",
+                    CultureInfo.InvariantCulture)));
+            ClearPendingHardTargetFill();
+            return false;
+        }
+
+        private void ConsumePendingHardTargetFill(double quantity)
+        {
+            double consumed = Math.Max(0, quantity);
+            _pendingHardTargetFillQuantity = Math.Max(0,
+                _pendingHardTargetFillQuantity - consumed);
+            _events.Write("hard_target_partial_fill_reconciled",
+                ("quantity_reduction", consumed),
+                ("pending_quantity", _pendingHardTargetFillQuantity));
+            if (_pendingHardTargetFillQuantity <= 1e-9)
+                ClearPendingHardTargetFill();
+        }
+
+        private void ClearPendingHardTargetFill()
+        {
+            _pendingHardTargetFillQuantity = 0;
+            _lastHardTargetFillEventUtc = DateTime.MinValue;
         }
 
         private void LogFillQuality(BrokerEvent fill)
@@ -2560,6 +2622,8 @@ namespace ExecAssistantRuntime
             _acceptedDirectiveRaw = null;
             _lastPositionSignature = null;
             _lastShadowLivePositionSignature = null;
+            _lastReconciledPositionQuantity = 0;
+            ClearPendingHardTargetFill();
             _shadowPosition = RuntimePosition.Flat;
             _shadowBreakeven = null;
             _shadowHardTarget = null;

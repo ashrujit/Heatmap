@@ -233,6 +233,7 @@ namespace ExecAssistantRuntime
         private ContinuationContext _continuation;
         private SemanticStopState _semanticStop;
         private bool _continuationLineageBroken;
+        private bool _hardTargetPartiallyFilled;
         private int _sponsorVersion;
 
         public ExecutionCoordinator(double tickSize)
@@ -318,6 +319,7 @@ namespace ExecAssistantRuntime
             _continuation = continuation;
             _semanticStop = null;
             _continuationLineageBroken = false;
+            _hardTargetPartiallyFilled = false;
             _sponsorVersion = 0;
             _usedRootObjectIds.Clear();
             _baselineFailureIds.Clear();
@@ -676,6 +678,7 @@ namespace ExecAssistantRuntime
                 bool mayAdd = !position.IsFlat
                     && (State == RuntimeExecutionState.BaseOnly || State == RuntimeExecutionState.Leveraged)
                     && _directive.AddsAllowed
+                    && !_hardTargetPartiallyFilled
                     // The directive window gates base admission/retries only.
                     // Once a base fill starts the campaign, fresh add evidence may continue.
                     && position.Quantity + _directive.AddQuantity <= _directive.MaxPositionQuantity;
@@ -730,7 +733,8 @@ namespace ExecAssistantRuntime
         public IReadOnlyList<OrderIntent> OnPositionChanged(
             RuntimePosition position,
             DateTime nowUtc,
-            ExecutableMarket market)
+            ExecutableMarket market,
+            bool hardTargetFillObserved = false)
         {
             var intents = new List<OrderIntent>();
             position ??= RuntimePosition.Flat;
@@ -775,6 +779,38 @@ namespace ExecAssistantRuntime
 
             if (!position.IsFlat && position.Quantity < previousQuantity)
             {
+                if (hardTargetFillObserved
+                    && _directive?.TargetMode == TargetMode.HardTp
+                    && (State == RuntimeExecutionState.BaseOnly
+                        || State == RuntimeExecutionState.Leveraged
+                        || State == RuntimeExecutionState.RecoveryProtected))
+                {
+                    _hardTargetPartiallyFilled = true;
+                    _pendingEntryIntent = null;
+                    _pendingReclaim = null;
+                    _pendingRetest = null;
+                    _failureAssistedParent = null;
+                    if (_directive.TargetMode == TargetMode.HardTp)
+                    {
+                        intents.Add(CreateProtectionIntent(
+                            OrderIntentKind.EnsureHardTarget,
+                            nowUtc,
+                            market,
+                            position,
+                            "hard_target_partial_fill"));
+                    }
+                    if (State == RuntimeExecutionState.RecoveryProtected)
+                    {
+                        intents.Add(CreateProtectionIntent(
+                            OrderIntentKind.EnsureBreakeven,
+                            nowUtc,
+                            market,
+                            position,
+                            "hard_target_partial_fill"));
+                    }
+                    return intents;
+                }
+
                 FlattenDisposition prior = _flattenDisposition;
                 OrderIntent remainder = CreateFlattenIntent(nowUtc, market,
                     prior?.Reason ?? "partial_protective_or_external_exit",
@@ -824,6 +860,7 @@ namespace ExecAssistantRuntime
                 _failureAssistedParent = null;
                 _referenceBreakContext = null;
                 _semanticStop = null;
+                _hardTargetPartiallyFilled = false;
                 if (_currentSponsor != null)
                 {
                     _lastSponsorClear = new SponsorClearContext
@@ -2483,6 +2520,11 @@ namespace ExecAssistantRuntime
         private OrderIntent CreateFlattenIntent(DateTime nowUtc, ExecutableMarket market,
             string reason, bool terminal, bool rearm)
         {
+            if (_hardTargetPartiallyFilled)
+            {
+                terminal = true;
+                rearm = false;
+            }
             _flattenDisposition = new FlattenDisposition
             {
                 TerminalAfterFlat = terminal,
