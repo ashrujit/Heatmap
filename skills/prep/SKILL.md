@@ -9,6 +9,8 @@ Prep's primary job is to smell, rank, and refine tradeable auction opportunities
 
 Prep's secondary job is branch reduction: maintain a small conditional map, challenge live story substitution and chase anxiety, and show how evidence, price quality, time of day, and remaining auction path change the opportunity.
 
+During the open, Prep should heighten awareness more than it instructs. Prefer branch, tempo, expected repair behavior, hesitation trap, and cancel/flip cues over exact price-band coaching unless the user explicitly asks for price nuance. EAR can proof-gate microstructure once the correct directive posture is armed; Prep's job is to help the user recognize whether the auction requires early engagement, patience, or refusal.
+
 Prep supersedes Dost for normal auction conversations. Keep Dost only as a legacy adapter/debug reference if Prep's local instructions or tools are unavailable.
 
 Prep may draft named EA directive candidates only when the user explicitly asks for executable framing or directive wording. It must not dispatch them. Dispatch requires an explicit user command such as `$EA: dispatch candidate A`, which hands the chosen draft to the exec-asst workflow.
@@ -60,6 +62,8 @@ Reduce to 1-3 active branches. Each branch must state:
 
 Load `references/branch-grammar.md` for actual premarket plans, balance-day maps, IB evidence, live refinement, and opportunity lifecycle language.
 
+After the user accepts or aligns with the first branch map, do not keep expanding the thesis. The next pass should reduce branches from likely/actual open location and state A/B-period expectations: what can be believed early, what should remain doubtful, whether repair should be shallow or deeper, and what would make arming a directive timely versus premature.
+
 ### 2. Map IB Evidence Before It Happens
 
 For each branch, state what A period, B period, and full IB would have to show. Define:
@@ -81,15 +85,16 @@ When a TPO period completes or the user asks a live question, answer the auction
 1. State the best current or developing opportunity, even when it is only conditional.
 2. Label its lifecycle: `smelled`, `forming`, `active`, `falsified`, `completed`, or `absent`.
 3. Explain why the structure creates that opportunity and why the competing side is unattractive now.
-4. Run the chase/bias check before demanding new participation:
+4. Give the awareness cue: engagement tempo, expected repair depth, and the main hesitation trap. Examples: real open drives should not offer comfortable re-entry; repair above the open can be normal after open-auction lower-price advertisement; ETH re-entry is not long permission until builds stop failing above it.
+5. Run the chase/bias check before demanding new participation:
    - Is a missed or underprepared expectation causing easier evidence to replace the prepared burden of proof?
    - Is the move truly escaping, or can the trader wait for information without redefining the setup?
    - Is a local positive such as open/VWAP reclaim being mistaken for acceptance at the reference that matters?
-5. Name the earliest sufficient evidence. Do not require complete directional control if that arrives after most of the path is gone.
-6. State the confirmation cost: how much price, target path, or quality may be consumed by waiting for stronger proof.
-7. Apply the session clock: time remaining, energy already spent, remaining range/objectives, and whether developing HVN/VPOC churn is likely to dominate.
-8. Say `I am wrong if:` and name an observable auction development.
-9. If falsified, say the prior view was wrong, remove it immediately, and state the next question. Do not reinterpret the failed view after the fact.
+6. Name the earliest sufficient evidence. Do not require complete directional control if that arrives after most of the path is gone.
+7. State the confirmation cost: how much price, target path, or quality may be consumed by waiting for stronger proof.
+8. Apply the session clock: time remaining, energy already spent, remaining range/objectives, and whether developing HVN/VPOC churn is likely to dominate.
+9. Say `I am wrong if:` and name an observable auction development.
+10. If falsified, say the prior view was wrong, remove it immediately, and state the next question. Do not reinterpret the failed view after the fact.
 
 Separate current action from prospective opportunity. `No trade is ready now; the best developing opportunity is an upper-edge failure short` is different from `there is no identifiable opportunity`.
 
@@ -158,6 +163,7 @@ Opinion:
 Opportunity lifecycle:
 Why I smell it:
 Why the other side is unattractive now:
+Awareness cue:
 Branch reduction:
 Chase/bias check:
 Earliest sufficient evidence:
