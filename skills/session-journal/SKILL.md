@@ -18,6 +18,7 @@ The user trades and thinks in New York time.
 - Include Dost's reasoning alongside the user's reasoning at key moments.
 - Preserve uncertainty. Do not rewrite ambiguity as hindsight certainty.
 - Review expectation-building quality explicitly: what open/day branches were prepared, what proof would have reduced them, and whether missing or wrong prep pulled the user into fast moves, repair assumptions, or insufficiently proven reversals.
+- Maintain a lightweight ETH/open review index when the session includes enough open-auction context. The index is for weekly pattern review, not for writing a rulebook or replacing the daily journal.
 - Skip screenshots, playbook updates, antipattern updates, scratchpad systems, Decision Trace creation/maintenance, and Git lifecycle.
 
 ## Output Paths
@@ -32,6 +33,12 @@ Then export, with approval if required by the environment:
 
 ```text
 W:\Skurry-Vault\Journals\YYYY\MM\YYYY-MM-DD-{Weekday}.md
+```
+
+Also maintain the cross-session ETH/open review index when applicable:
+
+```text
+W:\Skurry-Vault\Research\ETH-Open-Day-Type-Index.md
 ```
 
 After a successful export, verify the vault copy exists and then remove the staged local copy. The local staging file is a temporary export artifact, not a second archive. If `W:` is unavailable or approval is denied, leave the staged file in `C:\Heatmap\journal-out` and report that export is pending.
@@ -196,6 +203,48 @@ One to three durable operating lessons from the session.
 
 What to watch, review, or practice next session.
 ```
+
+### 4. Update The ETH/Open Review Index
+
+If the session included meaningful ETH/open discussion or Skurry data is available, build one proposed row for `W:\Skurry-Vault\Research\ETH-Open-Day-Type-Index.md`. Keep this row compact and link it to the finished daily journal. Do not duplicate the daily journal; the index captures repeatable context variables and the user's response to them for weekly review.
+
+If the index file does not exist, create it with this table header:
+
+```markdown
+# ETH / Open / Day-Type Index
+
+| Date | Product | Journal | ETH Topology | ETH vs PD Value | Open Location | First 5m / A | IB / 11:30 Response | Final RTH Shape | Day Mechanics | My Bias | Participation | Mistake / Friction | Read Quality | Trade Quality | Day Difficulty | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+```
+
+Use these column meanings:
+
+- `Date`: `YYYY-MM-DD`.
+- `Product`: `ES`, `NQ`, or both only if the row genuinely combines them.
+- `Journal`: Obsidian link to the daily journal, e.g. `[[2026-08-07-Friday]]`.
+- `ETH Topology`: overnight profile structure, such as `normal/fat`, `b`, `p`, `elongated`, `DD/two-node`, `dominant VPOC + satellites`, or `fat node + separate sharp node`.
+- `ETH vs PD Value`: `inside`, `overlap`, `above/outside`, `below/outside`, `edge overlap`, or a short custom phrase.
+- `Open Location`: open relative to ETH/PD, such as `inside ETH lower edge`, `between ETH nodes`, `above ETH VA`, `below ETH VA`, `inside prior value`, or `outside both`.
+- `First 5m / A`: first probe and whether A accepted, rejected, reclaimed, or failed to escape.
+- `IB / 11:30 Response`: whether IB/B-period/later responsive auction was `one-sided`, `two-way`, `failed drive`, `opposite-node repair`, `VWAP-only repair`, `deep repair`, or `unresolved`.
+- `Final RTH Shape`: profile shape from Skurry or the journal, such as `normal`, `DD`, `p`, `b`, `elongated`, `neutral`, or `unknown`.
+- `Day Mechanics`: user's working Dalton/auction label, such as `normal`, `normal variation`, `trend`, `neutral`, `neutral extreme`, `open-drive`, `open-test-drive`, `open-reject-reverse`, `DD repair`, or `balance`.
+- `My Bias`: what the user believed early, not hindsight.
+- `Participation`: `yes`, `no`, `late`, `missed`, `valid caution`, `chased`, `stood aside`, or short custom phrase.
+- `Mistake / Friction`: `none`, `over-believed drive`, `under-believed drive`, `faded too early`, `waited for perfection`, `traded middle`, `missed first repair`, `wrong branch`, `unclear`, or short custom phrase.
+- `Read Quality`: quality of auction read and belief updates, independent of trade execution. Use `1-10`, `null`, or a short phrase if the user declines a number.
+- `Trade Quality`: quality of entries/exits/risk/no-trade behavior, independent of read quality. Use `1-10`, `null`, or a short phrase if the user declines a number.
+- `Day Difficulty`: how hard the auction was to interpret and act on, independent of user performance. Use `1-10`, `null`, or a short phrase if the user declines a number.
+- `Notes`: one short falsifier or lesson, especially what made the early read believable or suspect.
+
+Workflow for the index row:
+
+- Fill objective fields from Skurry and the completed journal when possible: `ETH Topology`, `ETH vs PD Value`, `Open Location`, `First 5m / A`, `IB / 11:30 Response`, `Final RTH Shape`, and `Day Mechanics`.
+- Discuss subjective fields with the user before finalizing when they are unclear: `My Bias`, `Participation`, `Mistake / Friction`, `Read Quality`, `Trade Quality`, and `Day Difficulty`.
+- Ask concise questions instead of a survey. Prefer proposing a draft row first, then ask only what is missing or disputed.
+- Keep `Day Difficulty`, `Read Quality`, and `Trade Quality` separate. A hard day can be well read; an easy day can be poorly traded; a good trade can still come from a weak read.
+- If an existing row for the same date/product exists, update that row rather than appending a duplicate.
+- If `W:` is unavailable, include the finalized index row in the final response and report that the index update is pending; do not block the journal export.
 
 ## Writing Rules
 
