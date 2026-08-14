@@ -30,6 +30,27 @@ Prefer Skurry MCP tools:
 - `market_key_levels`, `market_single_prints`, `market_vwap`, `market_auction_quality`, `market_candles`, and `market_aggregate_footprint` as supporting context.
 - If Skurry tools are not loaded, discover Skurry analyst tools before falling back to local files.
 
+For ES premarket prep, generate the SPX-options GEX map on demand when
+`C:\Heatmap\OptionsGex\input\spx_quotedata.csv` exists. This CSV is manually
+downloaded by the user after the prior close; do not automate Cboe extraction.
+
+Use Skurry to get the prior RTH ES close first, preferably from a synchronized
+late-close window such as `market_aggregate_footprint` for the prior session's
+`15:59-16:00` ET minute. Then run from `C:\Heatmap`:
+
+```powershell
+uv run python OptionsGex\scripts\spx_es_gex_map.py --es-reference <ES_RTH_CLOSE> --basis-source "SPX close from Cboe CSV; ES RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET"
+```
+
+After the script runs, read `C:\Heatmap\OptionsGex\out\latest.md` and verify the
+Cboe quote timestamp, primary expiry window, and SPX-to-ES basis before using
+the rows. If the CSV is absent, stale, malformed, or the Skurry close cannot be
+verified, say so briefly and continue with normal Skurry-only prep.
+
+Treat GEX rows as option-location context: possible pin, magnet, shelf, wall, or
+acceleration references. Do not let GEX replace Skurry profile structure,
+auction acceptance/rejection, branch falsifiers, or price-quality judgment.
+
 Do not query LevelLedger automatically for live opportunity questions, branch reduction, probe/campaign classification, or confirmation. LevelLedger's microstructure ownership can make Prep delay an opinion until the auction path is consumed.
 
 LevelLedger access requires the user's explicit permission in the current conversation. A direct request for a LevelLedger/ownership audit, an older non-visible band, or an exact current-owner check counts as permission. If LevelLedger might help but the user has not opted in, ask whether they want it checked and continue the Skurry-only auction analysis without waiting for access.
