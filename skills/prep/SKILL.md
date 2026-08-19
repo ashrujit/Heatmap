@@ -30,22 +30,28 @@ Prefer Skurry MCP tools:
 - `market_key_levels`, `market_single_prints`, `market_vwap`, `market_auction_quality`, `market_candles`, and `market_aggregate_footprint` as supporting context.
 - If Skurry tools are not loaded, discover Skurry analyst tools before falling back to local files.
 
-For ES premarket prep, generate the SPX-options GEX map on demand when
-`C:\Heatmap\OptionsGex\input\spx_quotedata.csv` exists. This CSV is manually
+For ES/NQ premarket prep, generate options GEX maps on demand when
+`C:\Heatmap\OptionsGex\input\spx_quotedata.csv` and/or
+`C:\Heatmap\OptionsGex\input\ndx_quotedata.csv` exists. These CSVs are manually
 downloaded by the user after the prior close; do not automate Cboe extraction.
 
-Use Skurry to get the prior RTH ES close first, preferably from a synchronized
-late-close window such as `market_aggregate_footprint` for the prior session's
-`15:59-16:00` ET minute. Then run from `C:\Heatmap`:
+Use Skurry to get the prior RTH ES and/or NQ close first, preferably from a
+synchronized late-close window such as `market_aggregate_footprint` for the
+prior session's `15:59-16:00` ET minute. Then run from `C:\Heatmap`:
 
 ```powershell
-uv run python OptionsGex\scripts\spx_es_gex_map.py --es-reference <ES_RTH_CLOSE> --basis-source "SPX close from Cboe CSV; ES RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET"
+uv run python OptionsGex\scripts\spx_es_gex_map.py --product available --es-reference <ES_RTH_CLOSE> --nq-reference <NQ_RTH_CLOSE> --spx-basis-source "SPX close from Cboe CSV; ES RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET" --ndx-basis-source "NDX close from Cboe CSV; NQ RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET"
 ```
 
-After the script runs, read `C:\Heatmap\OptionsGex\out\latest.md` and verify the
-Cboe quote timestamp, primary expiry window, and SPX-to-ES basis before using
-the rows. If the CSV is absent, stale, malformed, or the Skurry close cannot be
-verified, say so briefly and continue with normal Skurry-only prep.
+If only one CSV/reference pair can be verified, run the product explicitly with
+`--product spx` or `--product ndx`. After the script runs, read the applicable
+handoff: `C:\Heatmap\OptionsGex\out\latest-spx-es.md`,
+`C:\Heatmap\OptionsGex\out\latest-ndx-nq.md`, or combined
+`C:\Heatmap\OptionsGex\out\latest.md`. Verify the Cboe quote timestamp, primary
+expiry window, and futures-index basis for each map before using the rows. If a
+CSV is absent, stale, malformed, or the matching Skurry close cannot be
+verified, say so briefly and continue with normal Skurry-only prep for that
+product.
 
 Treat GEX rows as option-location context: possible pin, magnet, shelf, wall, or
 acceleration references. Do not let GEX replace Skurry profile structure,
