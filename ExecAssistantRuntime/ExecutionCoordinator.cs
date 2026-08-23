@@ -38,26 +38,39 @@ namespace ExecAssistantRuntime
         CancelRuntimeOrders,
     }
 
-    internal enum ExecutionPolicyMode
+    internal enum RailEntryInteractionMode
     {
-        NqClassic,
-        EsRailInteraction,
+        ClassicProximity,
+        RailContactEscape,
+    }
+
+    internal enum SemanticStopPolicyMode
+    {
+        Off,
+        EsNoReentry,
     }
 
     internal sealed class ExecutionPolicySettings
     {
         public static readonly ExecutionPolicySettings NqClassic = new()
         {
-            Mode = ExecutionPolicyMode.NqClassic,
+            EntryInteraction = RailEntryInteractionMode.ClassicProximity,
+            SemanticStop = SemanticStopPolicyMode.Off,
         };
 
-        public ExecutionPolicyMode Mode { get; init; } = ExecutionPolicyMode.NqClassic;
+        public RailEntryInteractionMode EntryInteraction { get; init; }
+            = RailEntryInteractionMode.ClassicProximity;
+        public SemanticStopPolicyMode SemanticStop { get; init; }
+            = SemanticStopPolicyMode.Off;
         public int EsEntryEscapeTicks { get; init; } = 0;
         public int EsSemanticStopBreachTicks { get; init; } = 8;
         public int EsSemanticStopHoldSeconds { get; init; } = 10;
 
-        public bool UsesEsRailInteraction
-            => Mode == ExecutionPolicyMode.EsRailInteraction;
+        public bool UsesRailInteraction
+            => EntryInteraction == RailEntryInteractionMode.RailContactEscape;
+
+        public bool UsesEsSemanticStop
+            => SemanticStop == SemanticStopPolicyMode.EsNoReentry;
     }
 
     internal sealed class ExecutableMarket
@@ -1223,7 +1236,7 @@ namespace ExecAssistantRuntime
 
             if (!QuoteEligible(market, isAdd) || AtOrBeyondTarget(market))
                 return null;
-            if (_policy.UsesEsRailInteraction)
+            if (_policy.UsesRailInteraction)
             {
                 return TryEsRailInteractionEntry(
                     transition.TimeUtc,
@@ -1300,7 +1313,7 @@ namespace ExecAssistantRuntime
                 FailureParentHeldUtc = parent.HeldUtc,
             };
 
-            if (_policy.UsesEsRailInteraction)
+            if (_policy.UsesRailInteraction)
             {
                 return TryEsRailInteractionEntry(
                     transition.TimeUtc,
@@ -1357,7 +1370,7 @@ namespace ExecAssistantRuntime
             {
                 ResolutionContext resolution = SupportedContext(failed, confirmedSupport,
                     transition.TimeUtc);
-                if (_policy.UsesEsRailInteraction)
+                if (_policy.UsesRailInteraction)
                 {
                     return TryEsRailInteractionEntry(
                         transition.TimeUtc,
@@ -1444,7 +1457,7 @@ namespace ExecAssistantRuntime
             };
             ResolutionContext resolution = SupportedContext(failed, support, nowUtc);
             _pendingReclaim = null;
-            if (_policy.UsesEsRailInteraction)
+            if (_policy.UsesRailInteraction)
             {
                 return TryEsRailInteractionEntry(
                     nowUtc,
@@ -1641,7 +1654,7 @@ namespace ExecAssistantRuntime
             ExecutableMarket market,
             RuntimePosition position)
         {
-            if (!_policy.UsesEsRailInteraction
+            if (!_policy.UsesEsSemanticStop
                 || _flattenDisposition != null
                 || position == null
                 || position.IsFlat

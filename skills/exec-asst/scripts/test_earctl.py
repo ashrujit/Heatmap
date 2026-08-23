@@ -62,6 +62,8 @@ class EarctlTests(unittest.TestCase):
             "instance_max_quantity": 5,
             "worker_poll_ms": 250,
             "execution_policy": "NQ_CLASSIC",
+            "entry_interaction_mode": "CLASSIC_PROXIMITY",
+            "semantic_stop_mode": "OFF",
             "es_entry_escape_ticks": 0,
             "es_semantic_stop_breach_ticks": 8,
             "es_semantic_stop_hold_seconds": 10,
@@ -273,6 +275,8 @@ class EarctlTests(unittest.TestCase):
             self.assertEqual("MNQU6", status["runtime"]["execution_symbol"])
             self.assertEqual("NQU6", status["runtime"]["market_data_symbol"])
             self.assertEqual("NQ_CLASSIC", status["runtime"]["execution_policy"])
+            self.assertEqual("CLASSIC_PROXIMITY", status["runtime"]["entry_interaction_mode"])
+            self.assertEqual("OFF", status["runtime"]["semantic_stop_mode"])
             self.assertEqual("Ready", status["evidence"]["state"])
             self.assertEqual(31, status["evidence"]["sample_count"])
             self.assertEqual("entry_order_unresolved",

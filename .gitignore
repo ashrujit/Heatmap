@@ -23,6 +23,7 @@ skills/dost/uv.lock
 # Generated CSVs from research/liq_events.py and similar — large,
 # regenerable from captures, no value in version-controlling.
 research/out/
+research/direct_conversion_execution/out/
 journal-out/
 
 # Captures ────────────────────────────────────────────────────────────

@@ -26,6 +26,8 @@ namespace ExecAssistantRuntime
         public int? InstanceMaxQuantity { get; set; }
         public int? WorkerPollMs { get; set; }
         public string ExecutionPolicy { get; set; }
+        public string EntryInteractionMode { get; set; }
+        public string SemanticStopMode { get; set; }
         public int? EsEntryEscapeTicks { get; set; }
         public int? EsSemanticStopBreachTicks { get; set; }
         public int? EsSemanticStopHoldSeconds { get; set; }

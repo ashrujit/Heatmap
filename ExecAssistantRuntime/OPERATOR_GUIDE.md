@@ -3,7 +3,7 @@
 ## Current Live Scope
 
 The deployed strategy supports the settled NQ execution path by default, plus
-an opt-in ES rail-interaction policy:
+independent opt-ins for rail-contact entry and ES no-reentry sponsor protection:
 
 - strict immutable v1 directive and control JSON;
 - copied LevelLedger ownership rails, conversion, failure, and LF/HF math;
@@ -26,19 +26,27 @@ an opt-in ES rail-interaction policy:
 - append-only evidence/order/fill telemetry plus sparse `[EAR]` Strategy Manager
   lifecycle messages.
 
-With `Execution Policy=ES Rail Interaction`, entry and stop mechanics diverge
-from NQ while the directive schema and LevelLedger evidence math stay the same:
+`Entry Interaction Mode` and `Semantic Stop Mode` are independent. The directive
+schema and LevelLedger evidence math stay the same:
 
-- direct conversion, supported reclaim, and LF/HF-assisted child rails arm a
-  rail interaction instead of entering merely because price is near the rail;
+- `Classic Proximity` is the default entry mode and preserves NQ market-on-
+  proximity retest behavior;
+- `Rail Contact/Escape` arms direct conversion, supported reclaim, and LF/HF-
+  assisted child rails instead of entering merely because price is near the
+  rail;
 - the armed rail must be contacted or punctured, then price must escape in the
   directive direction before the runtime routes the market entry/add;
 - fresh direct-conversion rails may enter immediately only when the executable
   quote is already at least one tick beyond the favorable edge;
-- positioned sponsor protection adds an ES semantic stop: `8` ticks adverse
+- `Semantic Stop Mode=Off` is the default stop mode;
+- `ES No-Reentry` adds a positioned sponsor semantic stop: `8` ticks adverse
   beyond the current sponsor plus `10` seconds without re-entry into that rail;
 - confirmed current-sponsor/rail failure still flattens immediately and does
   not wait for the no-reentry timer.
+
+The old `ES Rail Interaction` composite behavior is reproduced by setting
+`Entry Interaction Mode=Rail Contact/Escape` and `Semantic Stop Mode=ES
+No-Reentry` together.
 
 `HARD_TP` is the sole accepted target mode in both shadow and live operation.
 The parser rejects any other value before directive activation.
@@ -88,11 +96,13 @@ Safety:
 - `LF/HF Assisted Entries Enabled=true` is the default. A favorable LF/HF can
   arm the next same-side ownership rail as an entry/add anchor; it does not
   make the LF/HF itself directly tradeable;
-- `Execution Policy=NQ Classic` is the default and preserves NQ market-on-
-  proximity retest behavior;
-- `Execution Policy=ES Rail Interaction` is the ES policy. Start with
-  `ES Entry Escape (ticks)=0`, `ES Stop Breach (ticks)=8`, and
-  `ES Stop No-Reentry (sec)=10`;
+- `Entry Interaction Mode=Classic Proximity` is the default and preserves NQ
+  market-on-proximity retest behavior;
+- `Entry Interaction Mode=Rail Contact/Escape` enables contact/puncture plus
+  favorable-escape entry timing. Start with `ES Entry Escape (ticks)=0`;
+- `Semantic Stop Mode=Off` is the default;
+- `Semantic Stop Mode=ES No-Reentry` enables sponsor no-reentry protection.
+  Start with `ES Stop Breach (ticks)=8` and `ES Stop No-Reentry (sec)=10`;
 - startup self-tests should remain enabled.
 
 Market-data continuity:
@@ -114,8 +124,8 @@ gateway cannot disagree about mode. Stop and restart the strategy after changing
 it; changing the setting on a running instance has no effect until restart.
 `Market Data Symbol` is also captured at strategy start; stop and restart after
 changing it.
-`Execution Policy` and the ES policy settings are also captured at strategy
-start; stop and restart after changing them.
+`Entry Interaction Mode`, `Semantic Stop Mode`, and the ES tick/second settings
+are also captured at strategy start; stop and restart after changing them.
 
 The LL-prefixed settings intentionally mirror LevelLedger's current ownership
 defaults. Do not tune them casually. Runtime and visual behavior may diverge if
@@ -144,8 +154,14 @@ The status snapshot also reports evidence state, epoch reason/start, accumulated
 samples, and warm-up remaining. `AwaitingBook` means no usable sample has
 started the epoch; `Warming` is non-actionable; `Ready` permits evidence action;
 `BookUnusable` pauses it.
-It also reports `execution_policy` and the active ES rail/stop parameters, so
-verify those before judging a shadow replay.
+It also reports the legacy/composite `execution_policy`, `entry_interaction_mode`,
+`semantic_stop_mode`, and the active ES rail/stop parameters, so verify those
+before judging a shadow replay.
+
+A positioned adverse consumed rail prints a CAPS Strategy Manager warning:
+`CONSUMED ADVERSE CLAIM WHILE LONG/SHORT`. If that same rail fails favorably,
+EAR prints `CONSUMED ADVERSE CLAIM INVALIDATED`. These are log-only alerts; they
+never flatten, cancel, pause, or reissue by themselves.
 
 ## First Shadow Run
 

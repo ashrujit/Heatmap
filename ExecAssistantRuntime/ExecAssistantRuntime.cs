@@ -20,8 +20,10 @@ namespace ExecAssistantRuntime
         private const int SponsorContextRailLimit = 5;
         private const int TradingPermissionLogIntervalSeconds = 30;
         private const int HardTargetFillReconcileWindowSeconds = 30;
-        private const int ExecutionPolicyNqClassic = 0;
-        private const int ExecutionPolicyEsRailInteraction = 1;
+        private const int EntryInteractionClassic = 0;
+        private const int EntryInteractionRailContactEscape = 1;
+        private const int SemanticStopOff = 0;
+        private const int SemanticStopEsNoReentry = 1;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -77,62 +79,69 @@ namespace ExecAssistantRuntime
         [InputParameter("LF/HF Assisted Entries Enabled", sortIndex: 15)]
         public bool FailureAssistedEntriesEnabled = true;
 
-        [InputParameter("Execution Policy", sortIndex: 16, variants: new object[]
+        [InputParameter("Entry Interaction Mode", sortIndex: 16, variants: new object[]
         {
-            "NQ Classic", ExecutionPolicyNqClassic,
-            "ES Rail Interaction", ExecutionPolicyEsRailInteraction,
+            "Classic Proximity", EntryInteractionClassic,
+            "Rail Contact/Escape", EntryInteractionRailContactEscape,
         })]
-        public int ExecutionPolicy = ExecutionPolicyNqClassic;
+        public int EntryInteractionMode = EntryInteractionClassic;
 
-        [InputParameter("ES Entry Escape (ticks)", sortIndex: 17,
+        [InputParameter("Semantic Stop Mode", sortIndex: 17, variants: new object[]
+        {
+            "Off", SemanticStopOff,
+            "ES No-Reentry", SemanticStopEsNoReentry,
+        })]
+        public int SemanticStopMode = SemanticStopOff;
+
+        [InputParameter("ES Entry Escape (ticks)", sortIndex: 18,
             minimum: 0, maximum: 16, increment: 1, decimalPlaces: 0)]
         public int EsEntryEscapeTicks = 0;
 
-        [InputParameter("ES Stop Breach (ticks)", sortIndex: 18,
+        [InputParameter("ES Stop Breach (ticks)", sortIndex: 19,
             minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int EsSemanticStopBreachTicks = 8;
 
-        [InputParameter("ES Stop No-Reentry (sec)", sortIndex: 19,
+        [InputParameter("ES Stop No-Reentry (sec)", sortIndex: 20,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int EsSemanticStopHoldSeconds = 10;
 
-        [InputParameter("LL Book Lookback (sec)", sortIndex: 20,
+        [InputParameter("LL Book Lookback (sec)", sortIndex: 21,
             minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
         public int BookLookbackSeconds = 30;
 
-        [InputParameter("LL Event |z|", sortIndex: 21,
+        [InputParameter("LL Event |z|", sortIndex: 22,
             minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
         public double EventZThreshold = 2.5;
 
-        [InputParameter("LL Cluster Min Events", sortIndex: 22,
+        [InputParameter("LL Cluster Min Events", sortIndex: 23,
             minimum: 2, maximum: 10, increment: 1, decimalPlaces: 0)]
         public int ClusterMinEvents = 3;
 
-        [InputParameter("LL Cluster Ticks", sortIndex: 23,
+        [InputParameter("LL Cluster Ticks", sortIndex: 24,
             minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int ClusterTicks = 10;
 
-        [InputParameter("LL Cluster Seconds", sortIndex: 24,
+        [InputParameter("LL Cluster Seconds", sortIndex: 25,
             minimum: 15, maximum: 600, increment: 15, decimalPlaces: 0)]
         public int ClusterSeconds = 90;
 
-        [InputParameter("LL Confirm Move (ticks)", sortIndex: 25,
+        [InputParameter("LL Confirm Move (ticks)", sortIndex: 26,
             minimum: 2, maximum: 80, increment: 1, decimalPlaces: 0)]
         public int ConfirmMoveTicks = 8;
 
-        [InputParameter("LL Confirm Seconds", sortIndex: 26,
+        [InputParameter("LL Confirm Seconds", sortIndex: 27,
             minimum: 0, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int ConfirmSeconds = 10;
 
-        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 27,
+        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 28,
             minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int FailureBufferTicks = 2;
 
-        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 28,
+        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 29,
             minimum: 2, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureConfirmTicks = 24;
 
-        [InputParameter("LL Failure Seconds", sortIndex: 29,
+        [InputParameter("LL Failure Seconds", sortIndex: 30,
             minimum: 0, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureSeconds = 20;
 
@@ -144,6 +153,8 @@ namespace ExecAssistantRuntime
         private readonly Dictionary<string, string> _processedControlDigests = new(StringComparer.Ordinal);
         private readonly Queue<string> _processedControlOrder = new();
         private readonly HashSet<string> _blockedDirectiveIds = new(StringComparer.Ordinal);
+        private readonly HashSet<int> _loggedConsumedAdverseBandIds = new();
+        private readonly HashSet<int> _invalidatedConsumedAdverseBandIds = new();
         private readonly List<PendingSponsorFailureAudit> _pendingSponsorFailureAudits = new();
         private readonly BookContinuityTracker _bookContinuity = new();
 
@@ -325,6 +336,8 @@ namespace ExecAssistantRuntime
                 ("failure_assisted_entries_enabled",
                     FailureAssistedEntriesEnabled),
                 ("execution_policy", ExecutionPolicyName()),
+                ("entry_interaction_mode", EntryInteractionModeName()),
+                ("semantic_stop_mode", SemanticStopModeName()),
                 ("es_entry_escape_ticks", Math.Max(0, EsEntryEscapeTicks)),
                 ("es_semantic_stop_breach_ticks",
                     Math.Max(1, EsSemanticStopBreachTicks)),
@@ -502,14 +515,18 @@ namespace ExecAssistantRuntime
             CompleteEvidenceWarmupIfReady(nowUtc);
             _evidenceActionsPaused = !_evidenceWarmupComplete;
             _evidenceState = _evidenceWarmupComplete ? "Ready" : "Warming";
+            RuntimePosition alertPosition = _evidenceWarmupComplete && !_evidenceActionsPaused
+                ? CurrentPosition()
+                : null;
             foreach (EvidenceTransition transition in transitions)
             {
                 LogEvidence(transition, market);
+                LogConsumedAdverseClaim(transition, market, alertPosition);
                 ObserveSponsorFailureRebuild(transition);
             }
             if (!_evidenceWarmupComplete)
                 return;
-            RuntimePosition current = CurrentPosition();
+            RuntimePosition current = alertPosition ?? CurrentPosition();
             IReadOnlyList<OrderIntent> intents = _coordinator.ProcessEvidence(
                 transitions, nowUtc, market, current, _evidence);
             LogCoordinatorAudit();
@@ -788,6 +805,8 @@ namespace ExecAssistantRuntime
                 _evidence.HeldFailureObjects().Select(b => b.Id),
                 continuation);
             _lastLoggedSponsorVersion = 0;
+            _loggedConsumedAdverseBandIds.Clear();
+            _invalidatedConsumedAdverseBandIds.Clear();
             _coordinator.InitializeObservedPosition(position);
             _acceptedDirectiveRaw = json;
             _blockedDirectiveIds.Add(directive.Id);
@@ -815,6 +834,8 @@ namespace ExecAssistantRuntime
                 ("failure_assisted_entries_enabled",
                     FailureAssistedEntriesEnabled),
                 ("execution_policy", ExecutionPolicyName()),
+                ("entry_interaction_mode", EntryInteractionModeName()),
+                ("semantic_stop_mode", SemanticStopModeName()),
                 ("mode", _runTradingEnabled ? "LIVE" : "SHADOW"));
             LogOperator($"Directive {directive.Id} accepted: {directive.Direction}, "
                 + $"base={directive.BaseQuantity}, max={directive.MaxPositionQuantity}, "
@@ -1683,6 +1704,8 @@ namespace ExecAssistantRuntime
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
                 WorkerPollMs = Math.Max(100, WorkerPollMs),
                 ExecutionPolicy = ExecutionPolicyName(),
+                EntryInteractionMode = EntryInteractionModeName(),
+                SemanticStopMode = SemanticStopModeName(),
                 EsEntryEscapeTicks = Math.Max(0, EsEntryEscapeTicks),
                 EsSemanticStopBreachTicks = Math.Max(1, EsSemanticStopBreachTicks),
                 EsSemanticStopHoldSeconds = Math.Max(1, EsSemanticStopHoldSeconds),
@@ -1906,6 +1929,100 @@ namespace ExecAssistantRuntime
                 ("band_min_tick", transition.Band?.MinTick),
                 ("band_max_tick", transition.Band?.MaxTick));
         }
+
+        private void LogConsumedAdverseClaim(EvidenceTransition transition,
+            ExecutableMarket market,
+            RuntimePosition position)
+        {
+            if (_events == null
+                || transition?.Band == null
+                || position == null
+                || position.IsFlat
+                || _coordinator?.Directive == null)
+            {
+                return;
+            }
+
+            EvidenceBandView band = transition.Band;
+            TradeDirection direction = _coordinator.Directive.Direction;
+            if (!IsAdverseConsumedRail(direction, band))
+                return;
+
+            if (transition.Kind == EvidenceTransitionKind.RailOwned)
+            {
+                if (!_loggedConsumedAdverseBandIds.Add(band.Id))
+                    return;
+                WriteConsumedAdverseClaim("consumed_adverse_claim",
+                    transition, market, position, invalidated: false);
+                return;
+            }
+
+            if (transition.Kind != EvidenceTransitionKind.RailFailed
+                || !_loggedConsumedAdverseBandIds.Contains(band.Id)
+                || !_invalidatedConsumedAdverseBandIds.Add(band.Id))
+            {
+                return;
+            }
+            WriteConsumedAdverseClaim("consumed_adverse_claim_invalidated",
+                transition, market, position, invalidated: true);
+        }
+
+        private void WriteConsumedAdverseClaim(string eventType,
+            EvidenceTransition transition,
+            ExecutableMarket market,
+            RuntimePosition position,
+            bool invalidated)
+        {
+            EvidenceBandView band = transition.Band;
+            SponsorContext sponsor = _coordinator.CurrentSponsor;
+            double lower = band.MinTick * _tickSize;
+            double upper = band.MaxTick * _tickSize;
+            double? sponsorLower = sponsor == null ? null : sponsor.MinTick * _tickSize;
+            double? sponsorUpper = sponsor == null ? null : sponsor.MaxTick * _tickSize;
+            _events.Write(eventType,
+                ("directive_id", _coordinator.Directive?.Id),
+                ("direction", _coordinator.Directive?.Direction.ToString()),
+                ("event_utc", transition.TimeUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("band_id", band.Id),
+                ("band_side", band.Side.ToString()),
+                ("band_source", band.Source.ToString()),
+                ("band_lower", lower),
+                ("band_upper", upper),
+                ("position_quantity", position.Quantity),
+                ("position_average", position.AveragePrice),
+                ("sponsor_id", sponsor?.ObjectId),
+                ("sponsor_side", sponsor?.Side.ToString()),
+                ("sponsor_source", sponsor?.Source.ToString()),
+                ("sponsor_lower", sponsorLower),
+                ("sponsor_upper", sponsorUpper),
+                ("bid", market?.Bid),
+                ("ask", market?.Ask));
+
+            string sponsorText = sponsor == null
+                ? "none"
+                : $"{sponsor.ObjectId}:{sponsorLower:R}-{sponsorUpper:R}";
+            string marketText = market != null && market.IsValid
+                ? $"{market.Bid:R}/{market.Ask:R}"
+                : "n/a";
+            string direction = _coordinator.Directive.Direction.ToString().ToUpperInvariant();
+            string side = band.Side.ToString().ToUpperInvariant();
+            string label = invalidated
+                ? "CONSUMED ADVERSE CLAIM INVALIDATED"
+                : $"CONSUMED ADVERSE CLAIM WHILE {direction}";
+            LogOperator($"{label}: {side} {lower:R}-{upper:R} "
+                + $"pos={position.Quantity:R} avg={position.AveragePrice:R} "
+                + $"sponsor={sponsorText} mkt={marketText}",
+                error: !invalidated);
+        }
+
+        private static bool IsAdverseConsumedRail(TradeDirection direction,
+            EvidenceBandView band)
+            => band != null
+                && band.Role == EvidenceRole.Rail
+                && band.Source == EvidenceSource.Consumed
+                && (direction == TradeDirection.Long
+                    ? band.Side == EvidenceSide.Supply
+                    : band.Side == EvidenceSide.Demand);
 
         private void LogStateIfChanged()
         {
@@ -2634,6 +2751,8 @@ namespace ExecAssistantRuntime
             _processedControlOrder.Clear();
             _blockedDirectiveIds.Clear();
             _pendingSponsorFailureAudits.Clear();
+            _loggedConsumedAdverseBandIds.Clear();
+            _invalidatedConsumedAdverseBandIds.Clear();
             while (_brokerEvents.TryDequeue(out _)) { }
             lock (_orderSubscriptionGate)
                 _subscribedOrders.Clear();
@@ -2842,18 +2961,39 @@ namespace ExecAssistantRuntime
         private ExecutionPolicySettings NewExecutionPolicySettings()
             => new()
             {
-                Mode = ExecutionPolicy == ExecutionPolicyEsRailInteraction
-                    ? ExecutionPolicyMode.EsRailInteraction
-                    : ExecutionPolicyMode.NqClassic,
+                EntryInteraction = EntryInteractionMode == EntryInteractionRailContactEscape
+                    ? RailEntryInteractionMode.RailContactEscape
+                    : RailEntryInteractionMode.ClassicProximity,
+                SemanticStop = SemanticStopMode == SemanticStopEsNoReentry
+                    ? SemanticStopPolicyMode.EsNoReentry
+                    : SemanticStopPolicyMode.Off,
                 EsEntryEscapeTicks = Math.Max(0, EsEntryEscapeTicks),
                 EsSemanticStopBreachTicks = Math.Max(1, EsSemanticStopBreachTicks),
                 EsSemanticStopHoldSeconds = Math.Max(1, EsSemanticStopHoldSeconds),
             };
 
         private string ExecutionPolicyName()
-            => ExecutionPolicy == ExecutionPolicyEsRailInteraction
-                ? "ES_RAIL_INTERACTION"
-                : "NQ_CLASSIC";
+        {
+            bool railEntry = EntryInteractionMode == EntryInteractionRailContactEscape;
+            bool semanticStop = SemanticStopMode == SemanticStopEsNoReentry;
+            if (railEntry && semanticStop)
+                return "ES_RAIL_INTERACTION";
+            if (railEntry)
+                return "RAIL_CONTACT_ESCAPE";
+            if (semanticStop)
+                return "CLASSIC_PROXIMITY_ES_SEMANTIC_STOP";
+            return "NQ_CLASSIC";
+        }
+
+        private string EntryInteractionModeName()
+            => EntryInteractionMode == EntryInteractionRailContactEscape
+                ? "RAIL_CONTACT_ESCAPE"
+                : "CLASSIC_PROXIMITY";
+
+        private string SemanticStopModeName()
+            => SemanticStopMode == SemanticStopEsNoReentry
+                ? "ES_NO_REENTRY"
+                : "OFF";
 
         private bool IsCoordinatorTerminal()
             => _coordinator.State == RuntimeExecutionState.Completed

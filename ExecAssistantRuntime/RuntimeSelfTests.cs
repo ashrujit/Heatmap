@@ -724,9 +724,10 @@ namespace ExecAssistantRuntime
                 evidence, now.AddMinutes(6), 30500);
             double lower = rail.Band.MinTick * 0.25;
             double upper = rail.Band.MaxTick * 0.25;
-            var policy = new ExecutionPolicySettings
+            var railOnlyPolicy = new ExecutionPolicySettings
             {
-                Mode = ExecutionPolicyMode.EsRailInteraction,
+                EntryInteraction = RailEntryInteractionMode.RailContactEscape,
+                SemanticStop = SemanticStopPolicyMode.Off,
                 EsEntryEscapeTicks = 0,
                 EsSemanticStopBreachTicks = 8,
                 EsSemanticStopHoldSeconds = 10,
@@ -734,7 +735,7 @@ namespace ExecAssistantRuntime
             var coordinator = new ExecutionCoordinator(
                 0.25,
                 failureAssistedEntriesEnabled: true,
-                policy);
+                railOnlyPolicy);
             coordinator.AcceptDirective(directive, now, Array.Empty<int>());
             coordinator.InitializeObservedPosition(RuntimePosition.Flat);
 
@@ -780,29 +781,68 @@ namespace ExecAssistantRuntime
                     Market(breachUtc, lower - 2.00, lower - 1.75),
                     basePosition,
                     evidence).Count == 0,
+                "rail interaction alone does not arm ES semantic stop");
+            Require(!coordinator.DrainAuditEvents()
+                    .Any(e => e.EventType.StartsWith(
+                        "es_semantic_stop", StringComparison.Ordinal)),
+                "semantic stop audits stay quiet when semantic stop mode is off");
+
+            var semanticPolicy = new ExecutionPolicySettings
+            {
+                EntryInteraction = RailEntryInteractionMode.ClassicProximity,
+                SemanticStop = SemanticStopPolicyMode.EsNoReentry,
+                EsEntryEscapeTicks = 0,
+                EsSemanticStopBreachTicks = 8,
+                EsSemanticStopHoldSeconds = 10,
+            };
+            var semanticCoordinator = new ExecutionCoordinator(
+                0.25,
+                failureAssistedEntriesEnabled: true,
+                semanticPolicy);
+            semanticCoordinator.AcceptDirective(directive, now, Array.Empty<int>());
+            semanticCoordinator.InitializeObservedPosition(RuntimePosition.Flat);
+            OrderIntent classicEntry = semanticCoordinator.ProcessEvidence(
+                new[] { rail },
+                rail.TimeUtc,
+                Market(rail.TimeUtc, upper, upper + 0.25),
+                RuntimePosition.Flat,
+                evidence).Single();
+            Require(classicEntry.Kind == OrderIntentKind.EnterBase,
+                "classic proximity entry remains independent of ES semantic stop");
+            semanticCoordinator.OnOrderAttemptResult(classicEntry, accepted: true);
+            semanticCoordinator.OnPositionChanged(basePosition,
+                rail.TimeUtc.AddSeconds(1),
+                Market(rail.TimeUtc.AddSeconds(1), upper, upper + 0.25));
+
+            DateTime semanticBreachUtc = rail.TimeUtc.AddSeconds(10);
+            Require(semanticCoordinator.Tick(
+                    semanticBreachUtc,
+                    Market(semanticBreachUtc, lower - 2.00, lower - 1.75),
+                    basePosition,
+                    evidence).Count == 0,
                 "ES semantic stop arms without immediate flatten");
-            Require(coordinator.DrainAuditEvents()
+            Require(semanticCoordinator.DrainAuditEvents()
                     .Any(e => e.EventType == "es_semantic_stop_armed"),
                 "ES semantic stop arm is audited");
 
-            DateTime reentryUtc = breachUtc.AddSeconds(5);
-            Require(coordinator.Tick(
+            DateTime reentryUtc = semanticBreachUtc.AddSeconds(5);
+            Require(semanticCoordinator.Tick(
                     reentryUtc,
                     Market(reentryUtc, lower, lower + 0.25),
                     basePosition,
                     evidence).Count == 0,
                 "ES semantic stop waits through re-entry");
-            Require(coordinator.DrainAuditEvents()
+            Require(semanticCoordinator.DrainAuditEvents()
                     .Any(e => e.EventType == "es_semantic_stop_cleared"),
                 "ES semantic stop clears on re-entry into band");
 
-            DateTime secondBreachUtc = breachUtc.AddSeconds(20);
-            coordinator.Tick(
+            DateTime secondBreachUtc = semanticBreachUtc.AddSeconds(20);
+            semanticCoordinator.Tick(
                 secondBreachUtc,
                 Market(secondBreachUtc, lower - 2.00, lower - 1.75),
                 basePosition,
                 evidence);
-            OrderIntent semanticStop = coordinator.Tick(
+            OrderIntent semanticStop = semanticCoordinator.Tick(
                 secondBreachUtc.AddSeconds(11),
                 Market(secondBreachUtc.AddSeconds(11), lower - 2.25, lower - 2.00),
                 basePosition,
@@ -817,7 +857,7 @@ namespace ExecAssistantRuntime
             var failureFirst = new ExecutionCoordinator(
                 0.25,
                 failureAssistedEntriesEnabled: true,
-                policy);
+                semanticPolicy);
             failureFirst.AcceptDirective(directive, now, Array.Empty<int>());
             OrderIntent immediate = failureFirst.ProcessEvidence(
                 new[] { rail },

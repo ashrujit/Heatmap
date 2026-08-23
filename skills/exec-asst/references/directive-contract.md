@@ -32,11 +32,12 @@ justifies entry after re-arm. Tight human-perfect wick ranges can hide relevant
 contest context and make a correct pause look like a missed isolated trade.
 
 Instrument-specific execution mechanics are not encoded in directive JSON. The
-running Quantower strategy instance owns `execution_policy`. `NQ_CLASSIC`
-preserves the original market-on-proximity direct-retest behavior.
-`ES_RAIL_INTERACTION` uses the same resolution fields but waits for rail
-contact/puncture and favorable escape before routing an entry/add; it also adds
-the current-sponsor `8t/10s` adverse no-reentry stop.
+running Quantower strategy instance owns `entry_interaction_mode`,
+`semantic_stop_mode`, and a legacy/composite `execution_policy` status label.
+`CLASSIC_PROXIMITY` preserves the original market-on-proximity direct-retest
+behavior. `RAIL_CONTACT_ESCAPE` uses the same resolution fields but waits for
+rail contact/puncture and favorable escape before routing an entry/add.
+`ES_NO_REENTRY` adds the current-sponsor `8t/10s` adverse no-reentry stop.
 
 ## Directive Lineage
 

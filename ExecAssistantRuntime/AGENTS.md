@@ -90,15 +90,19 @@ spike JSON shape as an alternate parser.
   exits should be classified from adverse ownership, surviving same-side
   protection, and quick rebuild evidence before sponsor promotion or flatten
   rules are changed.
-- Instrument execution differences live behind the Strategy's `Execution Policy`
-  setting, not inside directive JSON. `NQ Classic` preserves the original
-  market-on-proximity entry behavior. `ES Rail Interaction` is opt-in and changes
-  execution mechanics only: rail entries arm, wait for contact/puncture, then
-  route on favorable escape; positioned sponsor protection adds an `8t/10s`
-  adverse no-reentry semantic stop. Confirmed rail/sponsor failure still
-  market-flattens immediately. This keeps LevelLedger band math and the v1
-  directive schema stable while ES evidence is gathered.
-- ES rail-interaction entries still route through the existing market-entry
+- Positioned adverse `Consumed` rail ownership is operator-visible warning only:
+  EAR writes `consumed_adverse_claim` and a CAPS Strategy Manager line; if that
+  same claim fails favorably it writes `consumed_adverse_claim_invalidated`.
+  Neither event flattens, cancels, or pauses on its own.
+- Instrument execution differences live behind two Strategy settings, not inside
+  directive JSON. `Entry Interaction Mode=Classic Proximity` preserves the
+  original market-on-proximity behavior; `Rail Contact/Escape` arms eligible
+  rails and routes only after contact/puncture plus favorable escape. `Semantic
+  Stop Mode=Off` is default; `ES No-Reentry` adds the `8t/10s` adverse current-
+  sponsor no-reentry stop. The old ES composite behavior is reproduced by
+  enabling both rail contact/escape and ES no-reentry. Confirmed rail/sponsor
+  failure still market-flattens immediately.
+- Rail-contact entries still route through the existing market-entry
   gateway. Boundary limit-entry routing is intentionally deferred because it
   needs a separate order/cancel/partial-fill lifecycle rather than a small
   coordinator policy branch.

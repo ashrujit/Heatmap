@@ -4,8 +4,9 @@
 
 Replace the passive-order spike with a Quantower Strategy that executes one
 immutable, human-dispatched directive using copied LevelLedger evidence math.
-`NQ Classic` remains the default execution policy; `ES Rail Interaction` is an
-opt-in policy for ES rail-test mechanics.
+Classic proximity remains the default entry interaction, with optional rail
+contact/escape entry and optional ES no-reentry semantic stop split into separate
+Strategy settings.
 The strategy owns execution only. It does not discover opportunities, interpret
 notes, change direction, or formulate replacement directives.
 Explicit `CONTINUE` lineage is still human-dispatched: it may carry only the
@@ -143,10 +144,10 @@ as soon as the full transition is valid. Direct conversion submits only within
 twenty ticks of the converted wall; otherwise it remains armed for a live
 retest while the wall survives.
 
-With `Execution Policy=ES Rail Interaction`, valid direct conversion,
+With `Entry Interaction Mode=Rail Contact/Escape`, valid direct conversion,
 supported reclaim, and LF/HF-assisted child resolutions arm a rail interaction
 instead. The rail must be contacted or punctured and then escape favorably
-before a market entry/add is routed. This removes market-on-proximity for ES
+before a market entry/add is routed. This removes market-on-proximity entry
 without introducing limit-entry lifecycle risk.
 
 ### Event Log And Checkpoint
@@ -197,9 +198,10 @@ be used to resume old evidence.
 ### Base Stop And Retry
 
 - stop on the reverse of the entry resolution, never on arbitrary tick distance;
-- in `ES Rail Interaction`, also stop on the current sponsor leaving eight ticks
-  adverse and failing to re-enter the sponsor band for ten seconds; confirmed
-  sponsor/rail failure still exits immediately if it arrives first;
+- with `Semantic Stop Mode=ES No-Reentry`, also stop on the current sponsor
+  leaving eight ticks adverse and failing to re-enter the sponsor band for ten
+  seconds; confirmed sponsor/rail failure still exits immediately if it arrives
+  first;
 - flatten the complete base quantity at market;
 - re-arm only after flat/order reconciliation and only from a fresh opposing
   candidate formed after that boundary;

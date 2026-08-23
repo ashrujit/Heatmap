@@ -531,12 +531,29 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
     execution_symbol = checkpoint.get("execution_symbol") if checkpoint else None
     market_data_symbol = checkpoint.get("market_data_symbol") if checkpoint else None
     execution_policy = checkpoint.get("execution_policy") if checkpoint else None
+    entry_interaction_mode = checkpoint.get("entry_interaction_mode") if checkpoint else None
+    semantic_stop_mode = checkpoint.get("semantic_stop_mode") if checkpoint else None
     if runtime_event is not None:
         execution_symbol = execution_symbol or runtime_event.get("execution_symbol") \
             or runtime_event.get("symbol")
         market_data_symbol = market_data_symbol or runtime_event.get("market_data_symbol")
         execution_policy = execution_policy or runtime_event.get("execution_policy")
+        entry_interaction_mode = entry_interaction_mode or runtime_event.get("entry_interaction_mode")
+        semantic_stop_mode = semantic_stop_mode or runtime_event.get("semantic_stop_mode")
 
+    if not entry_interaction_mode or not semantic_stop_mode:
+        if execution_policy == "ES_RAIL_INTERACTION":
+            entry_interaction_mode = entry_interaction_mode or "RAIL_CONTACT_ESCAPE"
+            semantic_stop_mode = semantic_stop_mode or "ES_NO_REENTRY"
+        elif execution_policy == "RAIL_CONTACT_ESCAPE":
+            entry_interaction_mode = entry_interaction_mode or "RAIL_CONTACT_ESCAPE"
+            semantic_stop_mode = semantic_stop_mode or "OFF"
+        elif execution_policy == "CLASSIC_PROXIMITY_ES_SEMANTIC_STOP":
+            entry_interaction_mode = entry_interaction_mode or "CLASSIC_PROXIMITY"
+            semantic_stop_mode = semantic_stop_mode or "ES_NO_REENTRY"
+        elif execution_policy == "NQ_CLASSIC":
+            entry_interaction_mode = entry_interaction_mode or "CLASSIC_PROXIMITY"
+            semantic_stop_mode = semantic_stop_mode or "OFF"
     position_quantity = checkpoint.get("position_quantity", 0) if checkpoint else 0
     working_count = checkpoint.get("bound_working_order_count", 0) if checkpoint else 0
     unresolved_count = checkpoint.get("unresolved_entry_count", 0) if checkpoint else 0
@@ -584,6 +601,8 @@ def status_snapshot(runtime_dir: Path, recent_count: int = 12,
             "market_data_symbol": market_data_symbol,
             "instance_max_quantity": checkpoint.get("instance_max_quantity") if checkpoint else None,
             "execution_policy": execution_policy,
+            "entry_interaction_mode": entry_interaction_mode,
+            "semantic_stop_mode": semantic_stop_mode,
             "es_entry_escape_ticks": checkpoint.get("es_entry_escape_ticks") if checkpoint else None,
             "es_semantic_stop_breach_ticks": checkpoint.get("es_semantic_stop_breach_ticks")
             if checkpoint else None,
