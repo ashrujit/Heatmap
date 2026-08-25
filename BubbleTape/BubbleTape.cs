@@ -20,13 +20,17 @@ namespace BubbleTape
             minimum: 1, maximum: 80, increment: 1, decimalPlaces: 0)]
         public int PriceBandTicks = 8;
 
-        [InputParameter("Detail (0 Low / 1 Normal / 2 High)", sortIndex: 1302,
+        [InputParameter("Strength Filter (0 Low / 1 Normal / 2 High)", sortIndex: 1302,
             minimum: 0, maximum: 2, increment: 1, decimalPlaces: 0)]
-        public int Detail = 1;
+        public int StrengthFilter = 1;
 
         [InputParameter("Lookback Days", sortIndex: 1303,
             minimum: 1, maximum: 7, increment: 1, decimalPlaces: 0)]
         public int LookbackDays = 3;
+
+        [InputParameter("Bubble Source (0 Trades / 1 Delta / 2 Both)", sortIndex: 1304,
+            minimum: 0, maximum: 2, increment: 1, decimalPlaces: 0)]
+        public int BubbleSource = 0;
 
         [InputParameter("Min Cell Volume", sortIndex: 1310,
             minimum: 0, maximum: 1000, increment: 1, decimalPlaces: 0)]
@@ -36,7 +40,7 @@ namespace BubbleTape
             minimum: 0.05, maximum: 0.95, increment: 0.05, decimalPlaces: 2)]
         public double MinDeltaShare = 0.25;
 
-        [InputParameter("Min Cluster Delta", sortIndex: 1312,
+        [InputParameter("Min Bubble Strength", sortIndex: 1312,
             minimum: 0, maximum: 5000, increment: 5, decimalPlaces: 0)]
         public double MinClusterDelta = 30.0;
 
@@ -44,7 +48,15 @@ namespace BubbleTape
             minimum: 1, maximum: 12, increment: 1, decimalPlaces: 0)]
         public int MaxClustersPerBarSide = 4;
 
-        [InputParameter("Show Developing Bubble", sortIndex: 1314)]
+        [InputParameter("Min Trade Group Volume", sortIndex: 1314,
+            minimum: 1, maximum: 10000, increment: 1, decimalPlaces: 0)]
+        public double MinTradeGroupVolume = 50.0;
+
+        [InputParameter("Fallback Group Window (ms)", sortIndex: 1315,
+            minimum: 25, maximum: 2000, increment: 25, decimalPlaces: 0)]
+        public int FallbackGroupWindowMs = 250;
+
+        [InputParameter("Show Developing Bubble", sortIndex: 1316)]
         public bool ShowDevelopingBubble = true;
 
         [InputParameter("Min Bubble Diameter (px)", sortIndex: 1320,
@@ -206,7 +218,14 @@ namespace BubbleTape
                     if (item is not HistoryItemLast last) continue;
                     if (!double.IsFinite(last.Price) || last.Price <= 0) continue;
                     if (!double.IsFinite(last.Volume) || last.Volume <= 0) continue;
-                    result.Trades.Add(new TradePrint(last.TimeLeft, last.Price, last.Volume, AggressorSign(last.AggressorFlag)));
+                    result.Trades.Add(new TradePrint(
+                        last.TimeLeft,
+                        last.Price,
+                        last.Volume,
+                        AggressorSign(last.AggressorFlag),
+                        null,
+                        last.Buyer,
+                        last.Seller));
                 }
                 result.Trades.Sort((a, b) => a.TimeUtc.CompareTo(b.TimeUtc));
                 result.Success = true;
@@ -236,7 +255,14 @@ namespace BubbleTape
             }
 
             DateTime utc = last.Time == default ? DateTime.UtcNow : NormalizeUtc(last.Time);
-            _tradeQueue.Enqueue(new TradePrint(utc, last.Price, last.Size, AggressorSign(last.AggressorFlag)));
+            _tradeQueue.Enqueue(new TradePrint(
+                utc,
+                last.Price,
+                last.Size,
+                AggressorSign(last.AggressorFlag),
+                last.TradeId,
+                last.Buyer,
+                last.Seller));
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -364,12 +390,15 @@ namespace BubbleTape
                 {
                     BarMinutes = BarMinutes,
                     PriceBandTicks = PriceBandTicks,
-                    Detail = Detail,
+                    StrengthFilter = StrengthFilter,
                     LookbackDays = LookbackDays,
+                    BubbleSource = BubbleSource,
                     MinCellVolume = MinCellVolume,
                     MinDeltaShare = MinDeltaShare,
                     MinClusterDelta = MinClusterDelta,
                     MaxClustersPerBarSide = MaxClustersPerBarSide,
+                    MinTradeGroupVolume = MinTradeGroupVolume,
+                    FallbackGroupWindowMs = FallbackGroupWindowMs,
                     ShowDeveloping = ShowDevelopingBubble,
                 });
             }
@@ -427,12 +456,15 @@ namespace BubbleTape
             return string.Join("|",
                 BarMinutes,
                 PriceBandTicks,
-                Detail,
+                StrengthFilter,
                 LookbackDays,
+                BubbleSource,
                 MinCellVolume.ToString("0.####"),
                 MinDeltaShare.ToString("0.####"),
                 MinClusterDelta.ToString("0.####"),
-                MaxClustersPerBarSide);
+                MaxClustersPerBarSide,
+                MinTradeGroupVolume.ToString("0.####"),
+                FallbackGroupWindowMs);
         }
 
         private void ClearTradeQueue()

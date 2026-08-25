@@ -10,13 +10,24 @@ namespace BubbleTape
         public readonly double Price;
         public readonly double Size;
         public readonly int AggressorSign;
+        public readonly string TradeId;
+        public readonly string Buyer;
+        public readonly string Seller;
 
-        public TradePrint(DateTime timeUtc, double price, double size, int aggressorSign)
+        public TradePrint(DateTime timeUtc, double price, double size, int aggressorSign, string tradeId = null, string buyer = null, string seller = null)
         {
             TimeUtc = NormalizeUtc(timeUtc);
             Price = price;
             Size = size;
             AggressorSign = aggressorSign > 0 ? 1 : (aggressorSign < 0 ? -1 : 0);
+            TradeId = NormalizeText(tradeId);
+            Buyer = NormalizeText(buyer);
+            Seller = NormalizeText(seller);
+        }
+
+        private static string NormalizeText(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
         }
 
         private static DateTime NormalizeUtc(DateTime time)
@@ -32,12 +43,15 @@ namespace BubbleTape
     {
         public int BarMinutes = 5;
         public int PriceBandTicks = 8;
-        public int Detail = 1;
+        public int StrengthFilter = 1;
         public int LookbackDays = 3;
+        public int BubbleSource = 0;
         public double MinCellVolume = 12.0;
         public double MinDeltaShare = 0.25;
         public double MinClusterDelta = 30.0;
         public int MaxClustersPerBarSide = 4;
+        public double MinTradeGroupVolume = 50.0;
+        public int FallbackGroupWindowMs = 250;
         public bool ShowDeveloping = true;
 
         public BubbleTapeSettings Clone()
@@ -53,6 +67,9 @@ namespace BubbleTape
         public long MinTick;
         public long MaxTick;
         public int Side;
+        public int Source;
+        public bool IdentityBacked;
+        public int Prints;
         public double BuyVolume;
         public double SellVolume;
         public double Volume;
@@ -78,6 +95,12 @@ namespace BubbleTape
 
     internal sealed class BubbleTapeEngine
     {
+        private const int BubbleSourceTrades = 0;
+        private const int BubbleSourceDelta = 1;
+        private const int BubbleSourceBoth = 2;
+        private const int ClusterSourceDelta = 0;
+        private const int ClusterSourceTrade = 1;
+
         private readonly double _tickSize;
         private readonly TimeZoneInfo _nyZone;
         private readonly List<CandidateBar> _candidateBars = new();
@@ -161,6 +184,17 @@ namespace BubbleTape
             }
             cell.Add(tick, trade.Size, trade.AggressorSign);
 
+            if (trade.AggressorSign != 0)
+            {
+                string groupKey = TradeGroupKey(trade, tick, utc);
+                if (!_bar.TradeGroups.TryGetValue(groupKey, out var group))
+                {
+                    group = new TradeGroupState(groupKey, trade.AggressorSign, HasExecutionIdentity(trade));
+                    _bar.TradeGroups[groupKey] = group;
+                }
+                group.Add(tick, trade.Size, utc);
+            }
+
             _lastTradeUtc = utc;
             _lastTradeTick = tick;
         }
@@ -191,7 +225,7 @@ namespace BubbleTape
                 Threshold = _lastThreshold,
                 Cap = _lastCap,
                 CandidateBars = _candidateBars.Count,
-                CandidateClusters = _candidateBars.Sum(b => b.Clusters.Count),
+                CandidateClusters = _candidateBars.Sum(b => ActiveClusters(b.Clusters).Count()),
                 Status = _status,
             };
         }
@@ -203,7 +237,7 @@ namespace BubbleTape
 
         private void FinalizeBar(BarState bar, DateTime nowUtc)
         {
-            var clusters = BuildClusters(bar).ToList();
+            var clusters = BuildAllClusters(bar).ToList();
             var candidate = new CandidateBar
             {
                 StartUtc = bar.StartUtc,
@@ -216,7 +250,31 @@ namespace BubbleTape
                 AddFrozenBubblesForBar(candidate);
         }
 
-        private IEnumerable<Cluster> BuildClusters(BarState bar)
+        private List<Cluster> BuildAllClusters(BarState bar)
+        {
+            var clusters = new List<Cluster>();
+            clusters.AddRange(BuildDeltaClusters(bar));
+            clusters.AddRange(BuildTradeGroupClusters(bar));
+            return clusters;
+        }
+
+        private IEnumerable<Cluster> ActiveClusters(IEnumerable<Cluster> clusters)
+        {
+            if (clusters == null)
+                yield break;
+
+            int source = _settings.BubbleSource;
+            foreach (var cluster in clusters)
+            {
+                if (source == BubbleSourceTrades && cluster.Source != ClusterSourceTrade)
+                    continue;
+                if (source == BubbleSourceDelta && cluster.Source != ClusterSourceDelta)
+                    continue;
+                yield return cluster;
+            }
+        }
+
+        private IEnumerable<Cluster> BuildDeltaClusters(BarState bar)
         {
             var cells = bar.Cells.Values
                 .Select(ToCellCandidate)
@@ -250,6 +308,16 @@ namespace BubbleTape
                 yield return current;
         }
 
+        private IEnumerable<Cluster> BuildTradeGroupClusters(BarState bar)
+        {
+            foreach (var group in bar.TradeGroups.Values)
+            {
+                if (group.Volume < _settings.MinTradeGroupVolume)
+                    continue;
+                yield return new Cluster(group);
+            }
+        }
+
         private CellCandidate ToCellCandidate(CellState cell)
         {
             if (cell.Volume < _settings.MinCellVolume) return null;
@@ -273,6 +341,7 @@ namespace BubbleTape
                 WeightedCenter = ((cell.MinTick + cell.MaxTick) / 2.0) * absDelta,
                 WeightedAbs = absDelta,
                 Bins = 1,
+                Trades = cell.Trades,
             };
         }
 
@@ -281,7 +350,8 @@ namespace BubbleTape
             var calibration = BuildCalibration();
             _lastThreshold = calibration.Threshold;
             _lastCap = calibration.Cap;
-            foreach (var bubble in SelectClusters(bar.Clusters, calibration, includeBelowThreshold: false))
+            var clusters = ActiveClusters(bar.Clusters).ToList();
+            foreach (var bubble in SelectClusters(clusters, calibration, includeBelowThreshold: false))
             {
                 bubble.TimeUtc = bar.DisplayUtc;
                 bubble.Developing = false;
@@ -291,7 +361,7 @@ namespace BubbleTape
 
         private IReadOnlyList<BubbleView> BuildDevelopingBubbles()
         {
-            var clusters = BuildClusters(_bar).ToList();
+            var clusters = ActiveClusters(BuildAllClusters(_bar)).ToList();
             var calibration = BuildCalibration(clusters);
             _lastThreshold = calibration.Threshold;
             _lastCap = calibration.Cap;
@@ -329,6 +399,9 @@ namespace BubbleTape
                     MinTick = c.MinTick,
                     MaxTick = c.MaxTick,
                     Side = c.Side,
+                    Source = c.Source,
+                    IdentityBacked = c.IdentityBacked,
+                    Prints = c.Prints,
                     BuyVolume = c.BuyVolume,
                     SellVolume = c.SellVolume,
                     Volume = c.Volume,
@@ -350,7 +423,8 @@ namespace BubbleTape
             _lastCap = calibration.Cap;
             foreach (var bar in _candidateBars)
             {
-                foreach (var bubble in SelectClusters(bar.Clusters, calibration, includeBelowThreshold: false))
+                var clusters = ActiveClusters(bar.Clusters).ToList();
+                foreach (var bubble in SelectClusters(clusters, calibration, includeBelowThreshold: false))
                 {
                     bubble.TimeUtc = bar.DisplayUtc;
                     bubble.Developing = false;
@@ -364,7 +438,7 @@ namespace BubbleTape
             var values = new List<double>();
             foreach (var bar in _candidateBars)
             {
-                foreach (var cluster in bar.Clusters)
+                foreach (var cluster in ActiveClusters(bar.Clusters))
                     values.Add(cluster.AbsDelta);
             }
             if (extraClusters != null)
@@ -373,15 +447,15 @@ namespace BubbleTape
                     values.Add(cluster.AbsDelta);
             }
 
-            double threshold = Math.Max(_settings.MinClusterDelta, Percentile(values, DetailPercentile()));
+            double threshold = Math.Max(_settings.MinClusterDelta, Percentile(values, StrengthPercentile()));
             double cap = Math.Max(threshold + 1.0, Percentile(values, 99.0));
             return new CalibrationState(threshold, cap);
         }
 
-        private double DetailPercentile()
+        private double StrengthPercentile()
         {
-            if (_settings.Detail <= 0) return 96.0;
-            if (_settings.Detail >= 2) return 92.0;
+            if (_settings.StrengthFilter <= 0) return 92.0;
+            if (_settings.StrengthFilter >= 2) return 96.0;
             return 94.0;
         }
 
@@ -421,6 +495,21 @@ namespace BubbleTape
             return (long)Math.Floor((double)tick / width) * width;
         }
 
+        private string TradeGroupKey(TradePrint trade, long tick, DateTime utc)
+        {
+            if (HasExecutionIdentity(trade))
+                return "id:" + trade.AggressorSign + ":" + trade.TradeId;
+
+            long bucketTicks = TimeSpan.FromMilliseconds(Math.Max(25, _settings.FallbackGroupWindowMs)).Ticks;
+            long bucket = NormalizeUtc(utc).Ticks / Math.Max(1L, bucketTicks);
+            return "fb:" + trade.AggressorSign + ":" + BinTick(tick) + ":" + bucket;
+        }
+
+        private static bool HasExecutionIdentity(TradePrint trade)
+        {
+            return !string.IsNullOrWhiteSpace(trade.TradeId);
+        }
+
         private static DateTime NormalizeUtc(DateTime time)
         {
             if (time == default) return DateTime.UtcNow;
@@ -435,12 +524,15 @@ namespace BubbleTape
             {
                 BarMinutes = Clamp(settings.BarMinutes, 1, 60),
                 PriceBandTicks = Clamp(settings.PriceBandTicks, 1, 400),
-                Detail = Clamp(settings.Detail, 0, 2),
+                StrengthFilter = Clamp(settings.StrengthFilter, 0, 2),
                 LookbackDays = Clamp(settings.LookbackDays, 1, 7),
+                BubbleSource = Clamp(settings.BubbleSource, BubbleSourceTrades, BubbleSourceBoth),
                 MinCellVolume = Math.Max(0.0, settings.MinCellVolume),
                 MinDeltaShare = Math.Max(0.01, Math.Min(0.99, settings.MinDeltaShare)),
                 MinClusterDelta = Math.Max(0.0, settings.MinClusterDelta),
                 MaxClustersPerBarSide = Clamp(settings.MaxClustersPerBarSide, 1, 20),
+                MinTradeGroupVolume = Math.Max(1.0, settings.MinTradeGroupVolume),
+                FallbackGroupWindowMs = Clamp(settings.FallbackGroupWindowMs, 25, 2000),
                 ShowDeveloping = settings.ShowDeveloping,
             };
         }
@@ -450,12 +542,15 @@ namespace BubbleTape
             if (a == null || b == null) return true;
             return a.BarMinutes != b.BarMinutes
                 || a.PriceBandTicks != b.PriceBandTicks
-                || a.Detail != b.Detail
+                || a.StrengthFilter != b.StrengthFilter
                 || a.LookbackDays != b.LookbackDays
+                || a.BubbleSource != b.BubbleSource
                 || Math.Abs(a.MinCellVolume - b.MinCellVolume) > 0.0001
                 || Math.Abs(a.MinDeltaShare - b.MinDeltaShare) > 0.0001
                 || Math.Abs(a.MinClusterDelta - b.MinClusterDelta) > 0.0001
-                || a.MaxClustersPerBarSide != b.MaxClustersPerBarSide;
+                || a.MaxClustersPerBarSide != b.MaxClustersPerBarSide
+                || Math.Abs(a.MinTradeGroupVolume - b.MinTradeGroupVolume) > 0.0001
+                || a.FallbackGroupWindowMs != b.FallbackGroupWindowMs;
         }
 
         private static int Clamp(int value, int min, int max)
@@ -497,6 +592,7 @@ namespace BubbleTape
             public double Delta;
             public int Trades;
             public readonly Dictionary<long, CellState> Cells = new();
+            public readonly Dictionary<string, TradeGroupState> TradeGroups = new();
 
             public BarState(DateTime startUtc, long openTick)
             {
@@ -556,6 +652,41 @@ namespace BubbleTape
             public double WeightedCenter;
             public double WeightedAbs;
             public int Bins;
+            public int Trades;
+        }
+
+        private sealed class TradeGroupState
+        {
+            public readonly string Key;
+            public readonly int Side;
+            public readonly bool IdentityBacked;
+            public long MinTick = long.MaxValue;
+            public long MaxTick = long.MinValue;
+            public DateTime FirstUtc = DateTime.MaxValue;
+            public DateTime LastUtc = DateTime.MinValue;
+            public double Volume;
+            public double WeightedCenter;
+            public int Prints;
+
+            public TradeGroupState(string key, int side, bool identityBacked)
+            {
+                Key = key ?? string.Empty;
+                Side = side > 0 ? 1 : -1;
+                IdentityBacked = identityBacked;
+            }
+
+            public void Add(long tick, double size, DateTime utc)
+            {
+                MinTick = Math.Min(MinTick, tick);
+                MaxTick = Math.Max(MaxTick, tick);
+                FirstUtc = utc < FirstUtc ? utc : FirstUtc;
+                LastUtc = utc > LastUtc ? utc : LastUtc;
+                Volume += size;
+                WeightedCenter += tick * size;
+                Prints++;
+            }
+
+            public double CenterTick => Volume > 0 ? WeightedCenter / Volume : (MinTick + MaxTick) / 2.0;
         }
 
         private sealed class Cluster
@@ -572,6 +703,9 @@ namespace BubbleTape
             public double WeightedCenter;
             public double WeightedAbs;
             public int Bins;
+            public int Source;
+            public bool IdentityBacked;
+            public int Prints;
 
             public Cluster(CellCandidate cell)
             {
@@ -587,8 +721,30 @@ namespace BubbleTape
                 WeightedCenter = cell.WeightedCenter;
                 WeightedAbs = cell.WeightedAbs;
                 Bins = cell.Bins;
+                Source = ClusterSourceDelta;
+                IdentityBacked = false;
+                Prints = cell.Trades;
             }
 
+
+            public Cluster(TradeGroupState group)
+            {
+                MinTick = group.MinTick;
+                MaxTick = group.MaxTick;
+                CenterTick = group.CenterTick;
+                Side = group.Side;
+                BuyVolume = group.Side > 0 ? group.Volume : 0.0;
+                SellVolume = group.Side < 0 ? group.Volume : 0.0;
+                Volume = group.Volume;
+                Delta = group.Side * group.Volume;
+                AbsDelta = group.Volume;
+                WeightedCenter = group.CenterTick * group.Volume;
+                WeightedAbs = group.Volume;
+                Bins = (int)Math.Max(1L, group.MaxTick - group.MinTick + 1);
+                Source = ClusterSourceTrade;
+                IdentityBacked = group.IdentityBacked;
+                Prints = group.Prints;
+            }
             public void Add(CellCandidate cell)
             {
                 MinTick = Math.Min(MinTick, cell.MinTick);
@@ -601,6 +757,7 @@ namespace BubbleTape
                 WeightedCenter += cell.WeightedCenter;
                 WeightedAbs += cell.WeightedAbs;
                 Bins += cell.Bins;
+                Prints += cell.Trades;
                 CenterTick = WeightedAbs > 0
                     ? WeightedCenter / WeightedAbs
                     : (MinTick + MaxTick) / 2.0;

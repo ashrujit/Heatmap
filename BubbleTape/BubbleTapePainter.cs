@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.Linq;
 using TradingPlatform.BusinessLayer;
 using TradingPlatform.BusinessLayer.Chart;
@@ -20,6 +21,8 @@ namespace BubbleTape
         public int PanelTopOffsetPx = 90;
         public int PanelWidthPx = 310;
         public float FontSize = 9.0f;
+
+        private const int SourceTradeGroup = 1;
 
         private static readonly Color BuyColor = Color.FromArgb(21, 148, 71);
         private static readonly Color SellColor = Color.FromArgb(214, 74, 58);
@@ -92,18 +95,56 @@ namespace BubbleTape
                     continue;
 
                 Color color = bubble.Side > 0 ? BuyColor : SellColor;
-                int alpha = Clamp((int)(BubbleAlpha * (bubble.Developing ? 0.72 : 1.0)), 8, 230);
+                bool tradeGroup = bubble.Source == SourceTradeGroup;
+                int alphaBoost = tradeGroup ? 22 : 0;
+                int alpha = Clamp((int)((BubbleAlpha + alphaBoost) * (bubble.Developing ? 0.72 : 1.0)), 8, 230);
                 int edgeAlpha = Clamp((int)(BubbleEdgeAlpha * (bubble.Developing ? 0.82 : 1.0)), 30, 255);
+                float edgeWidth = tradeGroup
+                    ? (bubble.IdentityBacked ? 2.05f : 1.65f)
+                    : (bubble.Developing ? 1.25f : 1.55f);
                 using var fill = new SolidBrush(Color.FromArgb(alpha, color));
-                using var pen = new Pen(Color.FromArgb(edgeAlpha, color), bubble.Developing ? 1.25f : 1.55f);
+                using var pen = new Pen(Color.FromArgb(edgeAlpha, color), edgeWidth);
                 if (bubble.Developing)
                     pen.DashStyle = DashStyle.Dash;
+                else if (tradeGroup && !bubble.IdentityBacked)
+                    pen.DashStyle = DashStyle.Dot;
 
                 float left = x - d / 2.0f;
                 float top = y - d / 2.0f;
                 g.FillEllipse(fill, left, top, d, d);
                 g.DrawEllipse(pen, left, top, d, d);
+                DrawSizeLabel(g, bubble, left, top, d);
             }
+        }
+
+        private static void DrawSizeLabel(Graphics g, BubbleView bubble, float left, float top, float diameter)
+        {
+            string label = SizeLabel(bubble.AbsDelta);
+            if (string.IsNullOrEmpty(label)) return;
+
+            float fontPx = Math.Min(7.0f, Math.Max(5.0f, diameter * 0.22f));
+            using var font = new Font("Segoe UI", fontPx, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var brush = new SolidBrush(Color.FromArgb(bubble.Developing ? 180 : 238, Color.White));
+            using var format = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.None,
+                FormatFlags = StringFormatFlags.NoWrap,
+            };
+
+            var box = new RectangleF(left, top + 0.5f, diameter, diameter);
+            g.DrawString(label, font, brush, box, format);
+        }
+
+        private static string SizeLabel(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value <= 0.0) return string.Empty;
+            if (value < 1000.0) return value.ToString("0", CultureInfo.InvariantCulture);
+            double thousands = value / 1000.0;
+            return thousands < 10.0
+                ? thousands.ToString("0.#", CultureInfo.InvariantCulture) + "k"
+                : thousands.ToString("0", CultureInfo.InvariantCulture) + "k";
         }
 
         private double BubbleDiameter(BubbleView bubble)

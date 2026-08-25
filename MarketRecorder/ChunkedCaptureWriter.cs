@@ -16,7 +16,7 @@ namespace MarketRecorder
 {
     internal sealed class ChunkedCaptureWriter : IDisposable
     {
-        private const string Version = "0.2.1";
+        private const string Version = "0.2.2";
         private const int BookEventRowGroupSize = 50000;
 
         private readonly string _root;
@@ -151,7 +151,14 @@ namespace MarketRecorder
             WriteStatusFile();
         }
 
-        public void EnqueueTick(DateTime timeUtc, double price, double size, AggressorFlag flag)
+        public void EnqueueTick(
+            DateTime timeUtc,
+            double price,
+            double size,
+            AggressorFlag flag,
+            string tradeId = null,
+            string buyer = null,
+            string seller = null)
         {
             if (!_writeTicks || _disposed) return;
             if (!double.IsFinite(price) || price <= 0) return;
@@ -171,6 +178,9 @@ namespace MarketRecorder
                 Price = price,
                 Size = size,
                 AggressorSign = sign,
+                TradeId = NormalizeText(tradeId),
+                Buyer = NormalizeText(buyer),
+                Seller = NormalizeText(seller),
             });
             Interlocked.Increment(ref _ticksEnqueued);
             Interlocked.Exchange(ref _lastTickUs, tsUs);
@@ -704,17 +714,26 @@ namespace MarketRecorder
             var px = new double[n];
             var sz = new double[n];
             var ag = new int[n];
+            var tradeIds = new string[n];
+            var buyers = new string[n];
+            var sellers = new string[n];
             for (int i = 0; i < n; i++)
             {
                 ts[i] = rows[i].TimestampUs;
                 px[i] = rows[i].Price;
                 sz[i] = rows[i].Size;
                 ag[i] = rows[i].AggressorSign;
+                tradeIds[i] = rows[i].TradeId ?? "";
+                buyers[i] = rows[i].Buyer ?? "";
+                sellers[i] = rows[i].Seller ?? "";
             }
             await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[0], ts));
             await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[1], px));
             await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[2], sz));
             await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[3], ag));
+            await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[4], tradeIds));
+            await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[5], buyers));
+            await rg.WriteColumnAsync(new DataColumn(_tickSchema.DataFields[6], sellers));
         }
 
         private async Task<bool> TryWriteBookEventChunk(
@@ -1088,7 +1107,10 @@ namespace MarketRecorder
                 new DataField<long>("timestamp_us"),
                 new DataField<double>("price"),
                 new DataField<double>("size"),
-                new DataField<int>("aggressor_sign"));
+                new DataField<int>("aggressor_sign"),
+                new DataField<string>("trade_id"),
+                new DataField<string>("buyer"),
+                new DataField<string>("seller"));
 
         private static ParquetSchema BuildSnapshotSchema(int levelsPerSide)
         {
@@ -1170,6 +1192,9 @@ namespace MarketRecorder
         private static string IsoOrEmpty(long us)
             => us <= 0 ? "" : UtcFromMicros(us).ToString("O");
 
+        private static string NormalizeText(string value)
+            => string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
+
         private static string SanitizeForPath(string s)
         {
             foreach (char ch in Path.GetInvalidFileNameChars())
@@ -1210,6 +1235,9 @@ namespace MarketRecorder
             public double Price;
             public double Size;
             public int AggressorSign;
+            public string TradeId;
+            public string Buyer;
+            public string Seller;
         }
 
         private sealed class SnapshotRow
@@ -1323,7 +1351,7 @@ namespace MarketRecorder
             {
                 return new ManifestRecord
                 {
-                    SchemaVersion = 1,
+                    SchemaVersion = stream == "ticks" ? 2 : 1,
                     Stream = stream,
                     File = file,
                     Day = key.Day,

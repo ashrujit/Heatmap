@@ -206,7 +206,14 @@ namespace MarketRecorder
         private void Symbol_NewLast(Symbol symbol, Last last)
         {
             if (last == null || _writer == null) return;
-            _writer.EnqueueTick(last.Time == default ? DateTime.UtcNow : last.Time, last.Price, last.Size, last.AggressorFlag);
+            _writer.EnqueueTick(
+                last.Time == default ? DateTime.UtcNow : last.Time,
+                last.Price,
+                last.Size,
+                last.AggressorFlag,
+                last.TradeId,
+                last.Buyer,
+                last.Seller);
         }
 
         protected override void OnUpdate(UpdateArgs args)
@@ -393,7 +400,7 @@ namespace MarketRecorder
         {
             return new RecorderStatusSnapshot
             {
-                Version = "0.2.1",
+                Version = "0.2.2",
                 NowUtc = DateTime.UtcNow.ToString("O"),
                 Symbol = Symbol?.Name ?? "UNKNOWN",
                 TicksEnabled = WriteTicks,

@@ -40,6 +40,10 @@ offline research while making capture health visible during the session.
   high-cardinality strings would make callback capture materially more
   expensive. Hash collisions are theoretically possible and must be considered
   if reconstruction disagrees with canonical snapshots.
+- Tick parquet schema version 2 appends `trade_id`, `buyer`, and `seller`
+  from `Last` callbacks. BubbleTape replay needs the trade id when the live feed
+  provides it; older four-column tick chunks remain valid but can only support
+  fallback grouping.
 
 ## Output Shape
 
