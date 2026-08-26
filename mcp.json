@@ -3,6 +3,9 @@
     "dost-levelledger": {
       "url": "http://127.0.0.1:8788/mcp"
     },
+    "gexbot-context": {
+      "url": "http://127.0.0.1:8789/mcp"
+    },
     "skurry-analyst": {
       "url": "http://127.0.0.1:8787/mcp"
     }
