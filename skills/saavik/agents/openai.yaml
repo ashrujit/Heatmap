@@ -1,0 +1,4 @@
+interface:
+  display_name: "Saavik"
+  short_description: "Human-woken Kahn campaign evaluator"
+  default_prompt: "Use $saavik to audit this Kahn campaign checkpoint and translate the read into evidence-backed policy posture."

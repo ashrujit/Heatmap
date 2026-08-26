@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-25-short-mean-revert-1255",
+  "status": "active",
+  "created_at": "2026-08-25T16:55:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-25T16:55:00Z",
+    "expires_at": "2026-08-25T17:12:00Z"
+  },
+  "arena": {
+    "lower": 7678.0,
+    "upper": 7694.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 2
+  },
+  "risk": {
+    "root_stop_ticks": 12,
+    "sponsor_failure_buffer_ticks": 3,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7680.0,
+      "upper": 7684.0
+    },
+    "target_proximity_ticks": 4,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "edge-probe-7690-7692",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7690.0,
+        "upper": 7692.5
+      },
+      "require_price_inside": true,
+      "label": "edge-only short probe on failed breakout above 7690"
+    },
+    {
+      "id": "edge-press-7690-7692",
+      "role": "press",
+      "range": {
+        "lower": 7690.0,
+        "upper": 7692.5
+      },
+      "require_price_inside": true,
+      "label": "adds are allowed only on edge retests, never in the body"
+    },
+    {
+      "id": "build-7689-7692",
+      "role": "build_trial",
+      "range": {
+        "lower": 7689.0,
+        "upper": 7692.0
+      },
+      "label": "edge sponsor can support hold but not body leverage"
+    },
+    {
+      "id": "body-no-add-7684-7689",
+      "role": "no_add",
+      "range": {
+        "lower": 7684.0,
+        "upper": 7689.5
+      },
+      "label": "body field; manage demand failure/reload, do not worsen average"
+    },
+    {
+      "id": "field-evaluate-7684-7689",
+      "role": "evaluate",
+      "range": {
+        "lower": 7684.0,
+        "upper": 7689.5
+      },
+      "label": "demand reload means scratch/reduce/rearm"
+    },
+    {
+      "id": "target-7680-7684",
+      "role": "target",
+      "range": {
+        "lower": 7680.0,
+        "upper": 7684.0
+      },
+      "label": "first target is pay; hold for 7680 only if demand keeps failing"
+    }
+  ],
+  "notes": "Capture-backed ES 2026-08-25 lunch/late-morning mean-revert short. This fixture tests edge-only execution gating after the true morning DD sell campaign."
+}

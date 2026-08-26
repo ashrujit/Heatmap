@@ -5,9 +5,10 @@
 BubbleTape compresses aggressor tape into sparse price-time bubbles on a
 naked chart. It is an auction-memory overlay, not a signal. Its job is to make
 review fast: where did buyers press, where did sellers press, and what did the
-next rotation do around that same price area? The default source is now large
-execution groups: live `Last.TradeId` when Quantower exposes it, with a short
-same-side price/time fallback when it does not.
+next rotation do around that same price area? Trades mode may use live
+`Last.TradeId` only when the feed proves non-zero, meaningful identity. On the
+current connection this is often `0`, so treat the practical default as
+same-side price/time footprint compression.
 
 The indicator deliberately does not use wick/extreme logic. A meaningful bubble
 can appear in a candle body, a breakout, a pullback, or a rotation. The unit of
@@ -39,8 +40,9 @@ default read.
   - High uses the stricter percentile and shows only stronger groups.
 - Raw trade size is not winsorized. Large 700-1500 lot executions can be the
   point of the read. Only rendered diameter is capped. When `TradeId` is
-  populated, prints with the same id are grouped before the visual threshold is
-  applied; fallback grouping uses a short same-side price/time bucket.
+  populated with real identity, prints with the same id are grouped before the
+  visual threshold is applied; otherwise grouping uses a short same-side
+  price/time bucket and should be read like compressed footprint/delta.
 - Bubble size stores a frozen 0-1 strength when finalized. User pixel-bound
   settings can change the drawn size, but new market data does not rescale old
   bubble meaning.

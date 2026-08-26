@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-25-short-open-reject-lower-target-stress",
+  "status": "active",
+  "created_at": "2026-08-25T13:40:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-25T13:40:00Z",
+    "expires_at": "2026-08-25T14:45:00Z"
+  },
+  "arena": {
+    "lower": 7650.0,
+    "upper": 7705.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 5
+  },
+  "risk": {
+    "root_stop_ticks": 40,
+    "sponsor_failure_buffer_ticks": 4,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7656.0,
+      "upper": 7660.0
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-7690-7700",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7690.0,
+        "upper": 7700.0
+      },
+      "label": "initial probe inside 7690-7700 on high/edge failure"
+    },
+    {
+      "id": "press-below-7690",
+      "role": "press",
+      "range": {
+        "lower": 7688.0,
+        "upper": 7690.0
+      },
+      "label": "scale after trade accepts below 7690 and 7695/open area is seller-owned"
+    },
+    {
+      "id": "press-7682-7686",
+      "role": "press",
+      "range": {
+        "lower": 7682.0,
+        "upper": 7686.0
+      },
+      "label": "synthetic extra leverage to stress full-inventory behavior before B-low"
+    },
+    {
+      "id": "path-stress-7664-7680",
+      "role": "path_stress",
+      "range": {
+        "lower": 7664.0,
+        "upper": 7680.0
+      },
+      "max_position_quantity": 1,
+      "label": "B-low and lower-liquidity watch zone: no fresh lows with full inventory"
+    },
+    {
+      "id": "target-below-7660",
+      "role": "target",
+      "range": {
+        "lower": 7656.0,
+        "upper": 7660.0
+      },
+      "label": "hypothetical lower objective"
+    }
+  ],
+  "notes": "Stress fixture: same ES open-reject thesis, but with a farther target below 7660. The path_stress waypoint models B-low/full-inventory harvest risk, not a repair re-entry."
+}

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-24-long-1125",
+  "status": "active",
+  "created_at": "2026-08-24T15:25:00Z",
+  "side": "long",
+  "window": {
+    "not_before": "2026-08-24T15:25:00Z",
+    "expires_at": "2026-08-24T16:35:00Z"
+  },
+  "arena": {
+    "lower": 7650.0,
+    "upper": 7688.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "risk": {
+    "root_stop_ticks": 18,
+    "sponsor_failure_buffer_ticks": 2,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7680.0,
+      "upper": 7685.0
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "probe-7650-7660",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7650.0,
+        "upper": 7660.0
+      },
+      "label": "probe only below 7660 after failed sell build"
+    },
+    {
+      "id": "no-add-7660-7667",
+      "role": "no_add",
+      "range": {
+        "lower": 7660.0,
+        "upper": 7667.0
+      },
+      "label": "hold/survival corridor; no leverage despite same-side LL evidence"
+    },
+    {
+      "id": "press-7667-7677",
+      "role": "press",
+      "range": {
+        "lower": 7667.0,
+        "upper": 7677.0
+      },
+      "label": "new demand evidence can add after price leaves the no-add corridor"
+    },
+    {
+      "id": "target-7680-7685",
+      "role": "target",
+      "range": {
+        "lower": 7680.0,
+        "upper": 7685.0
+      },
+      "label": "objective zone; demand here supports harvest, not new leverage"
+    }
+  ],
+  "notes": "Shadow contract for the 11:25 long campaign: probe below 7660, no adds from 7660-7667, add only on fresh evidence from 7667-7677, harvest/manage into 7680-7685."
+}

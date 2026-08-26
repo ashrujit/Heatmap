@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "nq-2026-08-25-short-open-reject",
+  "status": "active",
+  "created_at": "2026-08-25T13:40:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-25T13:40:00Z",
+    "expires_at": "2026-08-25T14:45:00Z"
+  },
+  "arena": {
+    "lower": 29070.0,
+    "upper": 29430.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "risk": {
+    "root_stop_ticks": 120,
+    "sponsor_failure_buffer_ticks": 12,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 29080.0,
+      "upper": 29166.0
+    },
+    "target_proximity_ticks": 40,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-29315-29420",
+      "role": "trap_probe",
+      "range": {
+        "lower": 29315.0,
+        "upper": 29420.0
+      },
+      "label": "initial probe inside 29315-29420 on high/edge failure"
+    },
+    {
+      "id": "press-below-29315",
+      "role": "press",
+      "range": {
+        "lower": 29300.0,
+        "upper": 29315.0
+      },
+      "label": "scale only after trade accepts below 29315 and upper open area is seller-owned"
+    },
+    {
+      "id": "build-29130-29166",
+      "role": "build_trial",
+      "range": {
+        "lower": 29130.0,
+        "upper": 29166.0
+      },
+      "label": "first target trial; require reward before holding for 29130/29080"
+    },
+    {
+      "id": "no-add-29166-29080",
+      "role": "no_add",
+      "range": {
+        "lower": 29080.0,
+        "upper": 29166.0
+      },
+      "label": "target ladder is harvest/evaluate only"
+    },
+    {
+      "id": "target-29080-29166",
+      "role": "target",
+      "range": {
+        "lower": 29080.0,
+        "upper": 29166.0
+      },
+      "label": "target ladder 29166/29130/29080"
+    }
+  ],
+  "notes": "Capture-backed 2026-08-25 NQ short open-reject replay. BubbleTape events are fallback grouped or delta-mode evidence because MarketRecorder identity fields were empty."
+}

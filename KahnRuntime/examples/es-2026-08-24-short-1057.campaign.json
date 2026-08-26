@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-24-short-1057",
+  "status": "active",
+  "created_at": "2026-08-24T14:57:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-24T14:57:00Z",
+    "expires_at": "2026-08-24T15:25:00Z"
+  },
+  "arena": {
+    "lower": 7656.0,
+    "upper": 7674.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "risk": {
+    "root_stop_ticks": 18,
+    "sponsor_failure_buffer_ticks": 2,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7658.0,
+      "upper": 7660.25
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-7666",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7665.75,
+        "upper": 7672.5
+      },
+      "label": "opportunistic scalp entry zone after the prior scratch"
+    },
+    {
+      "id": "press-7663",
+      "role": "press",
+      "range": {
+        "lower": 7662.5,
+        "upper": 7666.25
+      },
+      "label": "controlled participation only; not a fresh campaign"
+    },
+    {
+      "id": "build-7660",
+      "role": "build_trial",
+      "range": {
+        "lower": 7658.0,
+        "upper": 7660.5
+      },
+      "label": "morning boundary that has not accepted below; effort/no-reward is terminal"
+    },
+    {
+      "id": "target-7660",
+      "role": "target",
+      "range": {
+        "lower": 7658.0,
+        "upper": 7660.25
+      }
+    }
+  ],
+  "notes": "Shadow contract for the 10:57-11:25 short scalp. The purpose is to hold while a below-7660 build trial is alive, suppress late adds near the target, and flatten on sell effort with no reward."
+}

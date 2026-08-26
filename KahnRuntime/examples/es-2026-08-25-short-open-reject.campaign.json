@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-25-short-open-reject",
+  "status": "active",
+  "created_at": "2026-08-25T13:40:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-25T13:40:00Z",
+    "expires_at": "2026-08-25T14:45:00Z"
+  },
+  "arena": {
+    "lower": 7660.0,
+    "upper": 7705.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "risk": {
+    "root_stop_ticks": 40,
+    "sponsor_failure_buffer_ticks": 4,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7666.0,
+      "upper": 7668.0
+    },
+    "target_proximity_ticks": 12,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-7690-7700",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7690.0,
+        "upper": 7700.0
+      },
+      "label": "initial probe inside 7690-7700 on high/edge failure"
+    },
+    {
+      "id": "press-below-7690",
+      "role": "press",
+      "range": {
+        "lower": 7688.0,
+        "upper": 7690.0
+      },
+      "label": "scale only after trade accepts below 7690 and 7695/open area is seller-owned"
+    },
+    {
+      "id": "build-7682-7689",
+      "role": "build_trial",
+      "range": {
+        "lower": 7682.0,
+        "upper": 7689.0
+      },
+      "label": "late downside build before target; tighten campaign risk"
+    },
+    {
+      "id": "target-7668",
+      "role": "target",
+      "range": {
+        "lower": 7666.0,
+        "upper": 7668.0
+      },
+      "label": "lower-distribution objective"
+    }
+  ],
+  "notes": "Capture-backed 2026-08-25 ES short open-reject replay. BubbleTape events are fallback grouped tape because MarketRecorder identity fields were empty."
+}
