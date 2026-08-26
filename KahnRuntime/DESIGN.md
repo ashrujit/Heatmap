@@ -32,6 +32,14 @@ policy rehearsal and dry runs.
 `ClosePosition` for reduce, flatten, and retire decisions. Runtime orders are
 tagged `KH:`. On stop, Kahn cancels only its own tagged working orders.
 
+Operator controls are not campaign evidence and do not depend on the campaign
+active window. A changed `Control Path` file with `kind=KAHN_CONTROL` and
+`action=FLAT` cancels Kahn-owned working orders, closes all bound live
+positions, and retires campaign state once close submission is accepted.
+`action=CANCEL` retires only when flat; with exposure still open it rejects and
+asks for `FLAT`. Existing control contents are marked seen at startup so stale
+controls are not replayed into a new run.
+
 The adapter deliberately does not manage brackets, TP limits, BE migration, or
 protection stops yet. Those require a separate protection-order design because
 Kahn's risk can move by policy, waypoint, path stress, and sponsor lineage.

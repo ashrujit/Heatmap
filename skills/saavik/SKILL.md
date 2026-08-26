@@ -16,8 +16,11 @@ The user trades and thinks in New York time.
 
 - Do not discover new opportunities from scratch. Use Prep for auction branch
   creation and opportunity ranking.
-- Do not dispatch orders, issue EAR controls, or pretend to monitor continuously.
-  Use Exec Assistant only when the user explicitly asks to operate EAR.
+- Do not dispatch orders, issue EAR controls, issue Kahn controls, or pretend to
+  monitor continuously. Use Exec Assistant only when the user explicitly asks
+  to operate EAR. Use `scripts/kahnctl.py` only when the user explicitly asks
+  to operate Kahn `FLAT`/`CANCEL`; the script writes control JSON and the
+  running KahnRuntime enforces it.
 - Do not replace Kahn policy with discretionary narrative. Translate the read
   into inspectable campaign semantics, policy posture, waypoint changes, or a
   proposed fresh campaign.

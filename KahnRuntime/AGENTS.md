@@ -43,8 +43,17 @@ governor into a form-filled EAR directive dispatcher.
   limit orders, bracket orders, BE stop migration, or EAR-style protection order
   lifecycle.
 - Live orders are tagged with `KH:` in `GroupId`/`Comment`. Kahn only cancels its
-  own tagged working orders on stop; it does not cancel unrelated account
-  orders.
+  own tagged working orders on stop or explicit operator `FLAT`/`CANCEL`
+  control; it does not cancel unrelated account orders.
+- Operator controls are separate from campaign evidence. `Control Path` reads
+  `KAHN_CONTROL` JSON (`FLAT` or `CANCEL`) before active-window/evidence gates,
+  so `FLAT` can close bound exposure after campaign expiry. Existing
+  `control.json` contents are marked seen at startup to avoid replaying stale
+  controls.
+- `FLAT` cancels Kahn-owned working orders, submits Quantower close-position
+  requests for all bound live positions, and retires campaign state after
+  accepted submission. `CANCEL` retires only when the bound position is flat; if
+  exposure remains, it rejects loudly and tells the operator to use `FLAT`.
 - Strategy log lines use operator buckets: `INFO:`, `ERR:`, `ENTRY:`, `ADD:`,
   `EXIT:`, `RISK:`, and `FILL:`. The JSONL decision log remains the detailed
   audit source.

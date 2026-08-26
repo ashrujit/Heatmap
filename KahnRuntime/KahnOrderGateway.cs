@@ -103,9 +103,15 @@ namespace KahnRuntime
                 .ToArray();
 
         public void CancelRuntimeOrdersOnStop()
+            => CancelRuntimeOrders("order_cancel_on_stop");
+
+        public void CancelRuntimeOrders(string eventType)
         {
             if (!_tradingEnabled)
                 return;
+            string cancelEvent = string.IsNullOrWhiteSpace(eventType)
+                ? "order_cancel"
+                : eventType;
             foreach (Order order in RuntimeOrders().Where(IsWorkingOrder))
             {
                 try
@@ -113,14 +119,14 @@ namespace KahnRuntime
                     TradingOperationResult result = Core.Instance.CancelOrder(
                         (IOrder)order,
                         SendingSource);
-                    _events.Write("order_cancel_on_stop",
+                    _events.Write(cancelEvent,
                         ("order_id", order.Id),
                         ("accepted", IsSuccess(result)),
                         ("message", result.Message));
                 }
                 catch (Exception ex)
                 {
-                    _events.Write("order_cancel_on_stop_error",
+                    _events.Write(cancelEvent + "_error",
                         ("order_id", order.Id),
                         ("message", ex.Message));
                 }

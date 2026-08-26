@@ -32,81 +32,84 @@ namespace KahnRuntime
         [InputParameter("Campaign Path", sortIndex: 3)]
         public string CampaignPath = @"%USERPROFILE%\Documents\KahnRuntime\campaign.json";
 
-        [InputParameter("Evidence Path", sortIndex: 4)]
+        [InputParameter("Control Path", sortIndex: 4)]
+        public string ControlPath = @"%USERPROFILE%\Documents\KahnRuntime\control.json";
+
+        [InputParameter("Evidence Path", sortIndex: 5)]
         public string EvidencePath = @"%USERPROFILE%\Documents\KahnRuntime\evidence.jsonl";
 
-        [InputParameter("Decision Log Path", sortIndex: 5)]
+        [InputParameter("Decision Log Path", sortIndex: 6)]
         public string DecisionLogPath = @"%USERPROFILE%\Documents\KahnRuntime\decisions.jsonl";
 
-        [InputParameter("Checkpoint Path", sortIndex: 6)]
+        [InputParameter("Checkpoint Path", sortIndex: 7)]
         public string CheckpointPath = @"%USERPROFILE%\Documents\KahnRuntime\checkpoint.json";
 
-        [InputParameter("Trading Enabled", sortIndex: 7)]
+        [InputParameter("Trading Enabled", sortIndex: 8)]
         public bool TradingEnabled = false;
 
-        [InputParameter("Shadow Fill Simulation", sortIndex: 8)]
+        [InputParameter("Shadow Fill Simulation", sortIndex: 9)]
         public bool ShadowFillSimulation = true;
 
-        [InputParameter("Instance Max Quantity", sortIndex: 9,
+        [InputParameter("Instance Max Quantity", sortIndex: 10,
             minimum: 1, maximum: 100, increment: 1, decimalPlaces: 0)]
         public int InstanceMaxQuantity = 5;
 
-        [InputParameter("Run Startup Self Tests", sortIndex: 10)]
+        [InputParameter("Run Startup Self Tests", sortIndex: 11)]
         public bool RunStartupSelfTests = true;
 
-        [InputParameter("Worker Poll (ms)", sortIndex: 11,
+        [InputParameter("Worker Poll (ms)", sortIndex: 12,
             minimum: 100, maximum: 5000, increment: 100, decimalPlaces: 0)]
         public int WorkerPollMs = 250;
 
-        [InputParameter("Book Sample (ms)", sortIndex: 12,
+        [InputParameter("Book Sample (ms)", sortIndex: 13,
             minimum: 250, maximum: 5000, increment: 250, decimalPlaces: 0)]
         public int BookSampleMs = 1000;
 
-        [InputParameter("L2 Freshness (sec)", sortIndex: 13,
+        [InputParameter("L2 Freshness (sec)", sortIndex: 14,
             minimum: 1, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int BookFreshnessSec = 5;
 
-        [InputParameter("Quote Freshness (ms)", sortIndex: 14,
+        [InputParameter("Quote Freshness (ms)", sortIndex: 15,
             minimum: 250, maximum: 10000, increment: 250, decimalPlaces: 0)]
         public int QuoteFreshnessMs = 2000;
 
-        [InputParameter("LL Book Lookback (sec)", sortIndex: 15,
+        [InputParameter("LL Book Lookback (sec)", sortIndex: 16,
             minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
         public int BookLookbackSeconds = 30;
 
-        [InputParameter("LL Event |z|", sortIndex: 16,
+        [InputParameter("LL Event |z|", sortIndex: 17,
             minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
         public double EventZThreshold = 2.5;
 
-        [InputParameter("LL Cluster Min Events", sortIndex: 17,
+        [InputParameter("LL Cluster Min Events", sortIndex: 18,
             minimum: 2, maximum: 10, increment: 1, decimalPlaces: 0)]
         public int ClusterMinEvents = 3;
 
-        [InputParameter("LL Cluster Ticks", sortIndex: 18,
+        [InputParameter("LL Cluster Ticks", sortIndex: 19,
             minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int ClusterTicks = 10;
 
-        [InputParameter("LL Cluster Seconds", sortIndex: 19,
+        [InputParameter("LL Cluster Seconds", sortIndex: 20,
             minimum: 15, maximum: 600, increment: 15, decimalPlaces: 0)]
         public int ClusterSeconds = 90;
 
-        [InputParameter("LL Confirm Move (ticks)", sortIndex: 20,
+        [InputParameter("LL Confirm Move (ticks)", sortIndex: 21,
             minimum: 2, maximum: 80, increment: 1, decimalPlaces: 0)]
         public int ConfirmMoveTicks = 8;
 
-        [InputParameter("LL Confirm Seconds", sortIndex: 21,
+        [InputParameter("LL Confirm Seconds", sortIndex: 22,
             minimum: 0, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int ConfirmSeconds = 10;
 
-        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 22,
+        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 23,
             minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int FailureBufferTicks = 2;
 
-        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 23,
+        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 24,
             minimum: 2, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureConfirmTicks = 24;
 
-        [InputParameter("LL Failure Seconds", sortIndex: 24,
+        [InputParameter("LL Failure Seconds", sortIndex: 25,
             minimum: 0, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureSeconds = 20;
 
@@ -115,6 +118,7 @@ namespace KahnRuntime
         private readonly ConcurrentQueue<CampaignEvidence> _marketEvents = new();
         private readonly ConcurrentQueue<BrokerEvent> _brokerEvents = new();
         private readonly Dictionary<string, Order> _subscribedOrders = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _processedControlIds = new(StringComparer.Ordinal);
 
         private Timer _workerTimer;
         private int _shutdownStarted;
@@ -124,6 +128,7 @@ namespace KahnRuntime
         private ShadowDecisionLog _decisions;
         private RuntimeCheckpointStore _checkpointStore;
         private CampaignPlanStore _planStore;
+        private RuntimeControlStore _controlStore;
         private EvidenceInbox _evidenceInbox;
         private CampaignPolicyEngine _policyEngine;
         private LlEvidenceEngine _liveEvidence;
@@ -149,6 +154,10 @@ namespace KahnRuntime
         private string _lastPositionSignature;
         private string _lastRecoverySignature;
         private string _lastPlanError;
+        private string _lastControlError;
+        private string _lastControlId;
+        private string _lastControlAction;
+        private string _lastControlStatus;
 
         public KahnRuntime()
         {
@@ -193,6 +202,7 @@ namespace KahnRuntime
                 _tickSize = EffectiveTickSize(_marketDataSymbol);
                 _policyEngine = CampaignPolicyEngine.CreateDefault();
                 _planStore = new CampaignPlanStore(CampaignPath);
+                _controlStore = new RuntimeControlStore(ControlPath);
                 _evidenceInbox = new EvidenceInbox(EvidencePath);
                 _liveEvidence = NewEvidenceEngine();
                 _gateway = new KahnOrderGateway(
@@ -234,6 +244,7 @@ namespace KahnRuntime
                     ("trading_enabled", _runTradingEnabled),
                     ("shadow_fill_simulation", ShadowFillSimulation),
                     ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
+                    ("control_path", Environment.ExpandEnvironmentVariables(ControlPath)),
                     ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
                     ("book_sample_ms", Math.Max(250, BookSampleMs)),
                     ("quote_freshness_ms", Math.Max(250, QuoteFreshnessMs)),
@@ -274,6 +285,12 @@ namespace KahnRuntime
                 DateTimeOffset now = DateTimeOffset.UtcNow;
                 DrainBrokerEvents();
                 LoadPlan();
+                if (ProcessControl(now))
+                {
+                    ReconcileLivePosition(DateTime.UtcNow);
+                    SaveCheckpoint(force: true, runtimeState: _running ? "Running" : "Stopped");
+                    return;
+                }
 
                 if (!ReconcileLivePosition(now.UtcDateTime))
                 {
@@ -323,6 +340,11 @@ namespace KahnRuntime
                 return;
 
             _lastPlanError = null;
+            _lastControlError = null;
+            _lastControlId = null;
+            _lastControlAction = null;
+            _lastControlStatus = null;
+            _processedControlIds.Clear();
             if (!PlanAdmissible(result.Plan))
                 return;
 
@@ -341,6 +363,228 @@ namespace KahnRuntime
                 ("notes", _plan.Notes));
             LogOperator("INFO", $"Loaded campaign {_plan.Id} ({_plan.Side}).");
             SaveCheckpoint(force: true, runtimeState: "Running");
+        }
+
+
+        private bool ProcessControl(DateTimeOffset now)
+        {
+            RuntimeControlLoadResult result = _controlStore?.LoadIfChanged();
+            if (result == null)
+                return false;
+            if (!string.IsNullOrWhiteSpace(result.Error))
+            {
+                if (!string.Equals(result.Error, _lastControlError, StringComparison.Ordinal))
+                {
+                    _lastControlError = result.Error;
+                    _decisions.Write("control_parse_error", ("message", result.Error));
+                    LogOperator("ERR", $"Control parse failed: {result.Error}", error: true);
+                }
+                return false;
+            }
+            if (!result.Changed || result.Command == null)
+                return false;
+
+            _lastControlError = null;
+            RuntimeControlCommand command = result.Command;
+            _lastControlId = command.Id;
+            _lastControlAction = command.Action.ToString();
+            _lastControlStatus = "received";
+
+            if (!_processedControlIds.Add(command.Id))
+            {
+                _lastControlStatus = "duplicate_ignored";
+                _decisions.Write("control_duplicate_ignored",
+                    ("control_id", command.Id),
+                    ("action", command.Action.ToString()),
+                    ("reason", command.Reason));
+                return true;
+            }
+
+            _decisions.Write("control_received",
+                ("control_id", command.Id),
+                ("action", command.Action.ToString()),
+                ("raw_action", command.RawAction),
+                ("reason", command.Reason),
+                ("created_at", command.CreatedAt.ToString("O", CultureInfo.InvariantCulture)),
+                ("campaign_id", _plan?.Id),
+                ("campaign_active", _plan?.IsActiveAt(now) ?? false),
+                ("phase", _state?.Phase.ToString()),
+                ("position_quantity", CurrentPosition().Quantity));
+            LogOperator("INFO", $"Control {command.Action} received ({command.Id}).");
+
+            return command.Action switch
+            {
+                RuntimeControlAction.Flat => HandleFlatControl(command, now),
+                RuntimeControlAction.Cancel => HandleCancelControl(command, now),
+                _ => false,
+            };
+        }
+
+        private bool HandleCancelControl(RuntimeControlCommand command, DateTimeOffset now)
+        {
+            bool ambiguous = false;
+            RuntimePosition position = _runTradingEnabled
+                ? LivePosition(out ambiguous)
+                : CurrentPosition();
+            bool hasAmbiguousLivePosition = _runTradingEnabled && ambiguous;
+            if (hasAmbiguousLivePosition || !position.IsFlat)
+            {
+                _lastControlStatus = "rejected_position_exists";
+                _decisions.Write("control_cancel_rejected",
+                    ("control_id", command.Id),
+                    ("reason", hasAmbiguousLivePosition
+                        ? "ambiguous_bound_positions_use_flat"
+                        : "position_exists_use_flat"),
+                    ("campaign_id", _plan?.Id),
+                    ("position_id", position.PositionId),
+                    ("position_quantity", position.Quantity));
+                LogOperator("ERR", "CANCEL rejected: bound position exists; use FLAT to close exposure.", error: true);
+                return true;
+            }
+
+            _gateway?.CancelRuntimeOrders("order_cancel_control");
+            RetireCurrentCampaign(command, now, "operator_cancel");
+            _lastControlStatus = "accepted";
+            _decisions.Write("control_cancel_completed",
+                ("control_id", command.Id),
+                ("campaign_id", _plan?.Id),
+                ("phase", _state?.Phase.ToString()),
+                ("reason", command.Reason),
+                ("working_order_count", BoundWorkingOrders().Count));
+            LogOperator("INFO", $"CANCEL retired campaign {_plan?.Id ?? "-"}.");
+            return true;
+        }
+
+        private bool HandleFlatControl(RuntimeControlCommand command, DateTimeOffset now)
+        {
+            _gateway?.CancelRuntimeOrders("order_cancel_control");
+            RuntimePosition[] positions = _runTradingEnabled
+                ? BoundLivePositions()
+                : ShadowPositions();
+
+            if (positions.Length == 0)
+            {
+                RetireCurrentCampaign(command, now, "operator_flat_already_flat");
+                _lastControlStatus = "accepted_already_flat";
+                _decisions.Write("control_flat_completed",
+                    ("control_id", command.Id),
+                    ("campaign_id", _plan?.Id),
+                    ("reason", command.Reason),
+                    ("result", "already_flat"),
+                    ("working_order_count", BoundWorkingOrders().Count));
+                LogOperator("INFO", $"FLAT accepted for {_plan?.Id ?? "-"}: already flat.");
+                return true;
+            }
+
+            foreach (RuntimePosition position in positions)
+            {
+                PolicyDecision decision = ControlDecision(
+                    command,
+                    PolicyAction.Flatten,
+                    "operator_flatten",
+                    Math.Max(1, (int)Math.Ceiling(position.Quantity)));
+                CampaignPlan effectivePlan = PlanForControl(command, position);
+                GatewayResult result = _gateway.Execute(
+                    decision,
+                    effectivePlan,
+                    position,
+                    SnapshotMarket(now.UtcDateTime));
+                if (!result.Accepted)
+                {
+                    _lastControlStatus = "rejected_execution";
+                    _decisions.Write("control_flat_rejected",
+                        ("control_id", command.Id),
+                        ("campaign_id", _plan?.Id),
+                        ("position_id", position.PositionId),
+                        ("position_quantity", position.Quantity),
+                        ("message", result.Message),
+                        ("requires_operator_action", result.RequiresOperatorAction));
+                    LogOperator("ERR", $"FLAT rejected: {result.Message}", error: true);
+                    return true;
+                }
+            }
+
+            if (_runTradingEnabled)
+                _liveSettleUntilUtc = DateTime.UtcNow.AddSeconds(5);
+            RetireCurrentCampaign(command, now, "operator_flatten");
+            _lastControlStatus = "accepted";
+            _decisions.Write("control_flat_completed",
+                ("control_id", command.Id),
+                ("campaign_id", _plan?.Id),
+                ("reason", command.Reason),
+                ("result", "close_submitted"),
+                ("position_count", positions.Length),
+                ("working_order_count", BoundWorkingOrders().Count));
+            LogOperator("RISK", $"FLAT accepted for {_plan?.Id ?? "-"}; close submitted for {positions.Length} position(s).");
+            return true;
+        }
+
+        private RuntimePosition[] ShadowPositions()
+        {
+            RuntimePosition position = CurrentPosition();
+            return position.IsFlat ? Array.Empty<RuntimePosition>() : new[] { position };
+        }
+
+        private void RetireCurrentCampaign(RuntimeControlCommand command,
+            DateTimeOffset now,
+            string reasonCode)
+        {
+            if (_state == null || _plan == null)
+                return;
+            _state.ApplyDecision(ControlDecision(
+                    command,
+                    PolicyAction.Retire,
+                    reasonCode,
+                    Math.Max(0, _state.SimulatedPositionQuantity)),
+                _plan,
+                simulateAcceptedDecisions: true,
+                appliedAt: now);
+            _decisions.Write("control_retired_campaign",
+                ("control_id", command.Id),
+                ("campaign_id", _plan.Id),
+                ("reason_code", reasonCode),
+                ("phase", _state.Phase.ToString()));
+        }
+
+        private static PolicyDecision ControlDecision(RuntimeControlCommand command,
+            PolicyAction action,
+            string reasonCode,
+            int quantity)
+            => new()
+            {
+                Action = action,
+                Policy = "control",
+                ReasonCode = reasonCode,
+                Detail = command?.Reason,
+                Quantity = quantity,
+                EvidenceId = command?.Id,
+                Priority = DecisionResolver.PriorityFor(action),
+            };
+
+        private CampaignPlan PlanForControl(RuntimeControlCommand command,
+            RuntimePosition position)
+        {
+            if (_plan != null
+                && (position == null || position.IsFlat || _plan.Side == position.Direction))
+            {
+                return _plan;
+            }
+
+            CampaignSide side = position == null || position.IsFlat
+                ? _plan?.Side ?? CampaignSide.Long
+                : position.Direction;
+            int quantity = Math.Max(1, (int)Math.Ceiling(position?.Quantity ?? 1));
+            return new CampaignPlan
+            {
+                Id = _plan?.Id ?? $"control-{command?.Id ?? Guid.NewGuid().ToString("N")}",
+                Side = side,
+                Sizing = new CampaignSizing
+                {
+                    ProbeQuantity = 1,
+                    AddQuantity = 1,
+                    MaxPositionQuantity = Math.Max(quantity, Math.Max(1, InstanceMaxQuantity)),
+                },
+            };
         }
 
         private bool PlanAdmissible(CampaignPlan plan)
@@ -407,7 +651,7 @@ namespace KahnRuntime
 
         private void ProcessEvidence(CampaignEvidence evidence, DateTimeOffset now)
         {
-            if (_plan == null || _state == null || !_plan.IsActiveAt(now))
+            if (_plan == null || _state == null || _state.IsRetired || !_plan.IsActiveAt(now))
                 return;
 
             CampaignContext context = new(_plan, _state, _tickSize, now);
@@ -916,6 +1160,10 @@ namespace KahnRuntime
                 CampaignId = _plan?.Id,
                 CampaignDigest = _plan?.Digest,
                 CampaignStatus = _plan?.Status,
+                ControlPath = Environment.ExpandEnvironmentVariables(ControlPath),
+                LastControlId = _lastControlId,
+                LastControlAction = _lastControlAction,
+                LastControlStatus = _lastControlStatus,
                 Symbol = RuntimeSymbol?.Name,
                 SymbolId = RuntimeSymbol?.Id,
                 ConnectionId = RuntimeSymbol?.ConnectionId,
@@ -1020,6 +1268,9 @@ namespace KahnRuntime
                 return true;
 
             RuntimePosition live = LivePosition(out bool ambiguous);
+            if (nowUtc < _liveSettleUntilUtc)
+                return true;
+
             if (ambiguous)
             {
                 LogRecoveryOnce(live, "ambiguous_bound_positions");
@@ -1030,9 +1281,6 @@ namespace KahnRuntime
                 LogRecoveryOnce(live, "opposite_bound_position");
                 return false;
             }
-            if (live.IsFlat && _state.HasPosition && nowUtc < _liveSettleUntilUtc)
-                return true;
-
             if (!_state.HasPosition && !live.IsFlat)
             {
                 LogRecoveryOnce(live, "orphan_bound_position");
@@ -1105,14 +1353,25 @@ namespace KahnRuntime
             ambiguous = false;
             if (RuntimeSymbol == null || RuntimeAccount == null)
                 return RuntimePosition.Flat;
-            Position[] positions = Core.Instance.Positions
-                .Where(p => SameBoundPair(p.Symbol, p.Account))
-                .ToArray();
+            RuntimePosition[] positions = BoundLivePositions();
             ambiguous = positions.Length > 1;
             if (positions.Length == 0)
                 return RuntimePosition.Flat;
-            Position position = positions[0];
-            return new RuntimePosition
+            return positions[0];
+        }
+
+        private RuntimePosition[] BoundLivePositions()
+        {
+            if (RuntimeSymbol == null || RuntimeAccount == null)
+                return Array.Empty<RuntimePosition>();
+            return Core.Instance.Positions
+                .Where(p => SameBoundPair(p.Symbol, p.Account))
+                .Select(ToRuntimePosition)
+                .ToArray();
+        }
+
+        private static RuntimePosition ToRuntimePosition(Position position)
+            => new()
             {
                 PositionId = position.Id,
                 Direction = position.Side == Side.Buy
@@ -1122,7 +1381,6 @@ namespace KahnRuntime
                 AveragePrice = position.OpenPrice,
                 LivePosition = position,
             };
-        }
 
         private IReadOnlyList<Order> BoundWorkingOrders()
         {
@@ -1279,10 +1537,16 @@ namespace KahnRuntime
             _runTradingEnabled = false;
             _marketDataSymbol = null;
             _gateway = null;
+            _controlStore = null;
             _liveEvidence = null;
             _plan = null;
             _state = null;
             _lastPlanError = null;
+            _lastControlError = null;
+            _lastControlId = null;
+            _lastControlAction = null;
+            _lastControlStatus = null;
+            _processedControlIds.Clear();
             _lastBookHealthSignature = null;
             _lastPositionSignature = null;
             _lastRecoverySignature = null;
@@ -1328,6 +1592,9 @@ namespace KahnRuntime
 
             AddMetric(metrics, "Mode", _runTradingEnabled ? "LIVE" : "SHADOW");
             AddMetric(metrics, "Campaign", _plan?.Id ?? "-");
+            AddMetric(metrics, "Control", string.IsNullOrWhiteSpace(_lastControlStatus)
+                ? "-"
+                : $"{_lastControlAction}:{_lastControlStatus}");
             AddMetric(metrics, "Phase", _state?.Phase.ToString() ?? "-");
             AddMetric(metrics, "Exec/Data", $"{RuntimeSymbol?.Name ?? "-"}/{_marketDataSymbol?.Name ?? MarketDataSymbol?.Name ?? "-"}");
             AddMetric(metrics, "Evidence", _evidenceState);

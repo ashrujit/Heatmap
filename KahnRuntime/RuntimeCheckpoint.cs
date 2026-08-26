@@ -12,6 +12,10 @@ namespace KahnRuntime
         public string CampaignId { get; set; }
         public string CampaignDigest { get; set; }
         public string CampaignStatus { get; set; }
+        public string ControlPath { get; set; }
+        public string LastControlId { get; set; }
+        public string LastControlAction { get; set; }
+        public string LastControlStatus { get; set; }
         public string Symbol { get; set; }
         public string SymbolId { get; set; }
         public string ConnectionId { get; set; }
