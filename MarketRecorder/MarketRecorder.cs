@@ -93,6 +93,7 @@ namespace MarketRecorder
         private DateTime _lastSnapshotAttemptUtc = DateTime.MinValue;
         private DateTime _lastBookSeedAttemptUtc = DateTime.MinValue;
         private string _lastBookState = "starting";
+        private string _initError = "";
 
         public MarketRecorder() : base()
         {
@@ -130,6 +131,7 @@ namespace MarketRecorder
         {
             try
             {
+                _initError = "";
                 _painter = new RecorderPainter();
                 ApplyPainterSettings();
 
@@ -184,6 +186,11 @@ namespace MarketRecorder
             }
             catch (Exception ex)
             {
+                _initError = ex.Message;
+                _lastBookState = "init failed";
+                try { _writer?.Dispose(); } catch { }
+                _writer = null;
+                _domParams = null;
                 Core.Instance.Loggers.Log($"[{nameof(MarketRecorder)}] OnInit failed: {ex.Message}", LoggingLevel.Error);
             }
         }
@@ -400,15 +407,20 @@ namespace MarketRecorder
         {
             return new RecorderStatusSnapshot
             {
-                Version = "0.2.2",
+                Version = "0.2.3",
                 NowUtc = DateTime.UtcNow.ToString("O"),
                 Symbol = Symbol?.Name ?? "UNKNOWN",
+                Root = CaptureRootPath,
                 TicksEnabled = WriteTicks,
                 SnapshotsEnabled = WriteSnapshots,
                 BookEventsEnabled = WriteBookEvents,
                 BookEventChunkSeconds = Math.Max(10, BookEventChunkSeconds),
-                BookState = RecorderEnabled ? _lastBookState : "disabled",
-                LastError = RecorderEnabled ? "" : "recorder disabled",
+                BookState = RecorderEnabled && !string.IsNullOrWhiteSpace(_initError)
+                    ? "init failed"
+                    : (RecorderEnabled ? _lastBookState : "disabled"),
+                LastError = RecorderEnabled
+                    ? _initError
+                    : "recorder disabled",
                 QueueCapRows = Math.Max(1000, MaxQueuedRowsPerStream),
                 BookEventQueueCapRows = Math.Max(10000, MaxQueuedBookEventRows),
             };

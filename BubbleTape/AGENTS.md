@@ -25,6 +25,7 @@ default read.
   bubbles are the contested-auction story.
 - The currently developing bar may resize until the bar finalizes.
 - No CVD is painted; Quantower's native CVD panel already covers that job.
+- The optional status panel includes a `basis` row so visible trade bubbles show how many are exchange `TradeId` backed versus fallback price/time groups.
 
 ## Design Decisions
 
@@ -46,6 +47,7 @@ default read.
 - Historical warmup uses `Symbol.GetTickHistory(HistoryType.Last, from, to)` on
   a background task. Live ticks are subscribed first and queued until warmup is
   applied so the handoff does not leave a gap.
+- MarketRecorder `book_events.quote_id_hash` identifies resting-book quotes and can validate nearby passive close/reload context in replay, but it is not an execution identity key. Do not regroup BubbleTape bubbles by quote hash without a proven print-to-order mapping.
 - Lookback is calendar-day based, not trading-session based. This keeps weekend
   handling predictable without adding exchange-calendar assumptions; the default
   is three days so Sunday/Monday startup can still see Friday context.
@@ -66,4 +68,8 @@ default read.
   enabled. Live-only charts can only rebuild from already retained candidate
   clusters, so lowered thresholds do not resurrect groups that were never kept.
 
-- `research/replay_bubbletape.py` mirrors the engine against MarketRecorder tick parquet for replay/research, but the capture does not store MBO `TradeId`. Treat its Trades output as the fallback grouping path, not an exact reproduction of a live identity-backed BubbleTape chart.
+- `research/replay_bubbletape.py` mirrors the engine against MarketRecorder tick
+  parquet for replay/research. Schema v2 can store `trade_id`, `buyer`, and
+  `seller`, but the feed may leave them empty; treat Trades output as
+  identity-backed only when the run summary and CSV `identity_backed` field show
+  populated identity groups.

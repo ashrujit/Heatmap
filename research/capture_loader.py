@@ -11,6 +11,10 @@ import polars as pl
 
 
 NY = ZoneInfo("America/New_York")
+PARQUET_SCHEMA_DRIFT_OPTIONS = {
+    "missing_columns": "insert",
+    "extra_columns": "ignore",
+}
 LEGACY_CAPTURE_ROOT = os.environ.get(
     "LEGACY_CAPTURE_ROOT",
     r"C:\Quantower\Settings\Scripts\Indicators\L2_Heatmap\captures",
@@ -34,6 +38,28 @@ def snapshot_columns(levels: int = 30) -> list[str]:
 
 def tick_columns() -> list[str]:
     return ["timestamp_us", "price", "size", "aggressor_sign"]
+
+
+def book_event_columns() -> list[str]:
+    return [
+        "receipt_timestamp_us",
+        "exchange_timestamp_us",
+        "sequence",
+        "subsequence",
+        "reset_epoch",
+        "event_kind",
+        "side",
+        "price_tick",
+        "size",
+        "closed",
+        "quote_id_hash",
+        "implied_size",
+        "priority",
+        "number_orders",
+        "reset_item_count",
+        "gap_start_sequence",
+        "gap_end_sequence",
+    ]
 
 
 def us(ts: dt.datetime) -> int:
@@ -67,6 +93,62 @@ def market_recorder_files(symbol_dir: str, kind: str, day: dt.date, root: str = 
     return sorted(glob.glob(pattern))
 
 
+def market_recorder_window_files(
+    symbol_dir: str,
+    kind: str,
+    day: dt.date,
+    start: dt.datetime,
+    end: dt.datetime,
+    root: str = MARKET_RECORDER_ROOT,
+    *,
+    inclusive_end: bool = False,
+) -> list[str]:
+    return [
+        path
+        for path in market_recorder_files(symbol_dir, kind, day, root)
+        if chunk_file_overlaps(path, day, start, end, inclusive_end=inclusive_end)
+    ]
+
+
+def chunk_file_overlaps(
+    path: str,
+    day: dt.date,
+    start: dt.datetime,
+    end: dt.datetime,
+    *,
+    inclusive_end: bool = False,
+) -> bool:
+    name = os.path.splitext(os.path.basename(path))[0]
+    parts = name.rsplit(chr(45), 2)
+    if len(parts) != 3 or len(parts[1]) != 6 or len(parts[2]) != 6:
+        return True
+    if not parts[1].isdigit() or not parts[2].isdigit():
+        return True
+
+    chunk_start = parse_chunk_time(day, parts[1])
+    chunk_end = parse_chunk_time(day, parts[2])
+    if chunk_end < chunk_start:
+        chunk_end += dt.timedelta(days=1)
+
+    start_ny = start.astimezone(NY) if start.tzinfo else start.replace(tzinfo=NY)
+    end_ny = end.astimezone(NY) if end.tzinfo else end.replace(tzinfo=NY)
+    if inclusive_end:
+        return chunk_start <= end_ny and chunk_end >= start_ny
+    return chunk_start < end_ny and chunk_end >= start_ny
+
+
+def parse_chunk_time(day: dt.date, value: str) -> dt.datetime:
+    return dt.datetime(
+        day.year,
+        day.month,
+        day.day,
+        int(value[0:2]),
+        int(value[2:4]),
+        int(value[4:6]),
+        tzinfo=NY,
+    )
+
+
 def legacy_file(symbol_dir: str, kind: str, day: dt.date, root: str = LEGACY_CAPTURE_ROOT) -> str:
     return os.path.join(root, symbol_dir, f"{kind}-{day.isoformat()}.parquet")
 
@@ -94,40 +176,55 @@ def load_capture_window(
     final fallback for older scripts that copied locked files during live use.
     """
 
-    if kind not in ("snapshots", "ticks"):
-        raise ValueError("kind must be 'snapshots' or 'ticks'")
-    cols = columns or (snapshot_columns() if kind == "snapshots" else tick_columns())
+    if kind not in ("snapshots", "ticks", "book_events"):
+        raise ValueError("kind must be 'snapshots', 'ticks', or 'book_events'")
+    if columns is not None:
+        cols = columns
+    elif kind == "snapshots":
+        cols = snapshot_columns()
+    elif kind == "book_events":
+        cols = book_event_columns()
+    else:
+        cols = tick_columns()
     lo = us(start)
     hi = us(end)
-    hi_filter = pl.col("timestamp_us") <= hi if inclusive_end else pl.col("timestamp_us") < hi
+    time_col = "receipt_timestamp_us" if kind == "book_events" else "timestamp_us"
+    hi_filter = pl.col(time_col) <= hi if inclusive_end else pl.col(time_col) < hi
     scans: list[pl.LazyFrame] = []
     missing: list[str] = []
 
     for day in ny_day_range(start, end, inclusive_end=inclusive_end):
-        chunk_files = market_recorder_files(symbol_dir, kind, day)
+        chunk_files = market_recorder_window_files(
+            symbol_dir,
+            kind,
+            day,
+            start,
+            end,
+            inclusive_end=inclusive_end,
+        )
         if chunk_files:
             scans.append(
-                pl.scan_parquet(chunk_files)
+                pl.scan_parquet(chunk_files, **PARQUET_SCHEMA_DRIFT_OPTIONS)
                 .select(cols)
-                .filter((pl.col("timestamp_us") >= lo) & hi_filter)
+                .filter(pl.all_horizontal(pl.col(time_col) >= lo, hi_filter))
             )
             continue
 
         path = legacy_file(symbol_dir, kind, day)
         if os.path.exists(path):
             scans.append(
-                pl.scan_parquet(path)
+                pl.scan_parquet(path, **PARQUET_SCHEMA_DRIFT_OPTIONS)
                 .select(cols)
-                .filter((pl.col("timestamp_us") >= lo) & hi_filter)
+                .filter(pl.all_horizontal(pl.col(time_col) >= lo, hi_filter))
             )
             continue
 
         copied = copy_file(symbol_dir, kind, day)
         if os.path.exists(copied):
             scans.append(
-                pl.scan_parquet(copied)
+                pl.scan_parquet(copied, **PARQUET_SCHEMA_DRIFT_OPTIONS)
                 .select(cols)
-                .filter((pl.col("timestamp_us") >= lo) & hi_filter)
+                .filter(pl.all_horizontal(pl.col(time_col) >= lo, hi_filter))
             )
             continue
 
@@ -135,7 +232,7 @@ def load_capture_window(
 
     if not scans:
         raise FileNotFoundError(f"no {kind} captures for {symbol_dir} days={','.join(missing)}")
-    return pl.concat(scans, how="diagonal").collect().sort("timestamp_us")
+    return pl.concat(scans, how="diagonal").collect().sort(time_col)
 
 
 def load_capture_day(

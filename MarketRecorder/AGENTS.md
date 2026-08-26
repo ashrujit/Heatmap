@@ -15,6 +15,9 @@ offline research while making capture health visible during the session.
   into place. A chunk is not listed in the manifest until that validation passes.
 - A `status.json` file is updated continuously so research tools and manual
   inspection can tell whether ticks, snapshots, and book heartbeat are alive.
+- A symbol folder has exactly one writer. `capture.lock` is held for the life of
+  the recorder so duplicate indicators for the same contract fail fast instead
+  of racing on `status.json`, `manifest.jsonl`, or deterministic chunk names.
 - A small chart panel is intentional. A recorder that fails silently is worse
   than no recorder because it creates false confidence in the next-day replay.
 - Default snapshot depth is 30 levels per side. Current research scripts use

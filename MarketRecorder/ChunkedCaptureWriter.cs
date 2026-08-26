@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,11 +17,14 @@ namespace MarketRecorder
 {
     internal sealed class ChunkedCaptureWriter : IDisposable
     {
-        private const string Version = "0.2.2";
+        private const string Version = "0.2.3";
         private const int BookEventRowGroupSize = 50000;
+        private const int FileRetryCount = 5;
+        private const int FileRetryBaseDelayMs = 50;
 
         private readonly string _root;
         private readonly string _symbolKey;
+        private readonly string _instanceId = Guid.NewGuid().ToString("N");
         private readonly int _levelsPerSide;
         private readonly int _chunkSeconds;
         private readonly int _flushSeconds;
@@ -48,6 +52,7 @@ namespace MarketRecorder
 
         private CancellationTokenSource _cts;
         private Task _writerTask;
+        private FileStream _captureLockStream;
         private bool _disposed;
 
         private long _ticksEnqueued;
@@ -144,6 +149,7 @@ namespace MarketRecorder
         public void Start()
         {
             Directory.CreateDirectory(SymbolRoot);
+            AcquireCaptureLock();
             try { CleanupOldDayDirs(); } catch (Exception ex) { RecordError("cleanup", ex); }
             _cts = new CancellationTokenSource();
             _telemetryLastUtc = DateTime.UtcNow;
@@ -535,8 +541,10 @@ namespace MarketRecorder
             try { _cts?.Cancel(); } catch { }
             try { _writerTask?.Wait(TimeSpan.FromSeconds(30)); } catch { }
             try { _cts?.Dispose(); } catch { }
+            try { _captureLockStream?.Dispose(); } catch { }
             _cts = null;
             _writerTask = null;
+            _captureLockStream = null;
         }
 
         private async Task WriterLoop(CancellationToken ct)
@@ -980,11 +988,18 @@ namespace MarketRecorder
         {
             string path = Path.Combine(SymbolRoot, day, "manifest.jsonl");
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.AppendAllText(path, JsonSerializer.Serialize(record, _jsonOptions) + Environment.NewLine);
+            string line = JsonSerializer.Serialize(record, _jsonOptions) + Environment.NewLine;
+            WithFileRetry(() =>
+            {
+                using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                using var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                writer.Write(line);
+            });
         }
 
         private void WriteStatusFile()
         {
+            string tmp = null;
             try
             {
                 UpdateBookTelemetry(DateTime.UtcNow);
@@ -992,16 +1007,76 @@ namespace MarketRecorder
                 status.NowUtc = DateTime.UtcNow.ToString("O");
                 string json = JsonSerializer.Serialize(status, _jsonOptions);
                 string path = StatusPath;
-                string tmp = path + ".tmp";
+                tmp = path + ".tmp-" + _instanceId;
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
-                File.WriteAllText(tmp, json);
-                File.Move(tmp, path, overwrite: true);
+                WithFileRetry(() => File.WriteAllText(tmp, json));
+                WithFileRetry(() => File.Move(tmp, path, overwrite: true));
+                tmp = null;
                 lock (_statusGate)
                     _lastStatusUtc = DateTime.UtcNow;
             }
             catch (Exception ex)
             {
+                if (!string.IsNullOrEmpty(tmp))
+                {
+                    try { File.Delete(tmp); } catch { }
+                }
                 RecordError("write status", ex);
+            }
+        }
+
+        private void AcquireCaptureLock()
+        {
+            string path = Path.Combine(SymbolRoot, "capture.lock");
+            try
+            {
+                _captureLockStream = new FileStream(
+                    path,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.Read);
+                _captureLockStream.SetLength(0);
+                string content =
+                    $"symbol={_symbolKey}{Environment.NewLine}"
+                    + $"pid={Environment.ProcessId}{Environment.NewLine}"
+                    + $"startedUtc={DateTime.UtcNow:O}{Environment.NewLine}"
+                    + $"version={Version}{Environment.NewLine}";
+                byte[] bytes = Encoding.UTF8.GetBytes(content);
+                _captureLockStream.Write(bytes, 0, bytes.Length);
+                _captureLockStream.Flush(flushToDisk: true);
+                _captureLockStream.Position = 0;
+            }
+            catch (IOException ex)
+            {
+                throw new InvalidOperationException(
+                    $"another MarketRecorder instance is already writing {_symbolKey} under {SymbolRoot}",
+                    ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new InvalidOperationException(
+                    $"cannot acquire MarketRecorder capture lock for {_symbolKey} under {SymbolRoot}",
+                    ex);
+            }
+        }
+
+        private static void WithFileRetry(Action action)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    action();
+                    return;
+                }
+                catch (IOException) when (attempt < FileRetryCount)
+                {
+                    Thread.Sleep(FileRetryBaseDelayMs * attempt);
+                }
+                catch (UnauthorizedAccessException) when (attempt < FileRetryCount)
+                {
+                    Thread.Sleep(FileRetryBaseDelayMs * attempt);
+                }
             }
         }
 

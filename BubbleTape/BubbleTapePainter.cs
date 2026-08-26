@@ -159,7 +159,7 @@ namespace BubbleTape
         {
             int w = Math.Min(Math.Max(220, PanelWidthPx), Math.Max(1, rect.Width - 8));
             int rowH = Math.Max(17, (int)Math.Ceiling(FontSize + 8));
-            int h = rowH * 5 + 12;
+            int h = rowH * 6 + 12;
             int x = Math.Min(Math.Max(rect.Left + 4, rect.Left + PanelLeftOffsetPx), rect.Right - w - 4);
             int y = Math.Min(Math.Max(rect.Top + 4, rect.Top + PanelTopOffsetPx), rect.Bottom - h - 4);
 
@@ -179,12 +179,30 @@ namespace BubbleTape
             rowY += rowH;
             DrawRow(g, rowFont, muted, titleBrush, x + 8, rowY, w - 16, "bubbles", snapshot.Bubbles.Length.ToString());
             rowY += rowH;
+            DrawRow(g, rowFont, muted, titleBrush, x + 8, rowY, w - 16, "basis", BasisText(snapshot));
+            rowY += rowH;
             DrawRow(g, rowFont, muted, titleBrush, x + 8, rowY, w - 16, "thresh", snapshot.Threshold.ToString("0"));
             rowY += rowH;
             string last = snapshot.LastTradeTick.HasValue
                 ? Abbrev(snapshot.LastTradeTick.Value)
                 : "waiting";
             DrawRow(g, rowFont, muted, titleBrush, x + 8, rowY, w - 16, "last", last);
+        }
+
+        private static string BasisText(BubbleTapeSnapshot snapshot)
+        {
+            int trade = Math.Max(0, snapshot.TradeGroupBubbles);
+            int id = Math.Max(0, snapshot.IdentityBackedBubbles);
+            int fallback = Math.Max(0, snapshot.FallbackTradeGroupBubbles);
+            int delta = Math.Max(0, snapshot.DeltaBubbles);
+            if (trade <= 0)
+                return "delta " + delta.ToString(CultureInfo.InvariantCulture);
+            if (delta > 0)
+                return "id " + id.ToString(CultureInfo.InvariantCulture) + "/" + trade.ToString(CultureInfo.InvariantCulture)
+                    + " fb " + fallback.ToString(CultureInfo.InvariantCulture)
+                    + " d " + delta.ToString(CultureInfo.InvariantCulture);
+            return "id " + id.ToString(CultureInfo.InvariantCulture) + "/" + trade.ToString(CultureInfo.InvariantCulture)
+                + " fb " + fallback.ToString(CultureInfo.InvariantCulture);
         }
 
         private static void DrawRow(

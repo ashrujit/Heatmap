@@ -90,6 +90,10 @@ namespace BubbleTape
         public double Cap;
         public int CandidateBars;
         public int CandidateClusters;
+        public int TradeGroupBubbles;
+        public int IdentityBackedBubbles;
+        public int FallbackTradeGroupBubbles;
+        public int DeltaBubbles;
         public string Status = "starting";
     }
 
@@ -217,6 +221,11 @@ namespace BubbleTape
                 return a.Side.CompareTo(b.Side);
             });
 
+            int tradeGroupBubbles = rows.Count(b => b.Source == ClusterSourceTrade);
+            int identityBackedBubbles = rows.Count(b => b.Source == ClusterSourceTrade ? b.IdentityBacked : false);
+            int fallbackTradeGroupBubbles = tradeGroupBubbles - identityBackedBubbles;
+            int deltaBubbles = rows.Count(b => b.Source == ClusterSourceDelta);
+
             return new BubbleTapeSnapshot
             {
                 Bubbles = rows.ToArray(),
@@ -226,6 +235,10 @@ namespace BubbleTape
                 Cap = _lastCap,
                 CandidateBars = _candidateBars.Count,
                 CandidateClusters = _candidateBars.Sum(b => ActiveClusters(b.Clusters).Count()),
+                TradeGroupBubbles = tradeGroupBubbles,
+                IdentityBackedBubbles = identityBackedBubbles,
+                FallbackTradeGroupBubbles = fallbackTradeGroupBubbles,
+                DeltaBubbles = deltaBubbles,
                 Status = _status,
             };
         }

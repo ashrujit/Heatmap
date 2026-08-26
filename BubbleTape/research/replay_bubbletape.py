@@ -1,9 +1,10 @@
 """Replay BubbleTape bubbles from MarketRecorder tick captures.
 
 The live indicator can group executions by Quantower Last.TradeId when the feed
-provides it. MarketRecorder tick parquet currently stores timestamp, price,
-size, and aggressor sign, so this replay usually exercises BubbleTape's
-same-side price/time fallback grouping.
+provides it. MarketRecorder tick schema v2 stores optional trade_id, buyer, and
+seller fields; replay groups by non-empty trade_id first and otherwise uses the
+same-side price/time fallback grouping. Use identity_backed and identity summary
+counts to distinguish those paths.
 """
 
 from __future__ import annotations
@@ -662,6 +663,8 @@ def main() -> None:
     )
 
     trades = load_trades(args.symbol_dir, replay_start, window_end)
+    identity_ticks = sum(1 for trade in trades if trade.trade_id.strip())
+    identity_trade_ids = len({trade.trade_id.strip() for trade in trades if trade.trade_id.strip()})
     replay = BubbleTapeReplay(settings)
     for trade in trades:
         replay.on_trade(trade)
@@ -691,6 +694,11 @@ def main() -> None:
     )
     if replay.ignored_zero_sign:
         print(f"ignored_zero_sign_ticks={replay.ignored_zero_sign:,}")
+    print(
+        f"identity_ticks={identity_ticks:,} "
+        f"identity_trade_ids={identity_trade_ids:,} "
+        f"identity_bubbles={sum(1 for b in visible if b.identity_backed):,}"
+    )
     if args.csv_out:
         print(f"csv={args.csv_out}")
 
