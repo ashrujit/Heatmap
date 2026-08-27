@@ -282,12 +282,12 @@ What would change my mind:
 
 Do not surrender the view merely because the user proposes another side. Equally, do not defend it after its falsifier occurs. Productive disagreement should expose whether the user is trading the prepared branch, an anticipatory version of it, or a newly substituted story.
 
-## EA Draft Candidate Grammar
+## Execution Candidate Grammar
 
 Only load this section into the response when the user explicitly asks for directive wording or an executable candidate.
 
 ```text
-EA candidate A - [probe/campaign/continuation/edge reaction] (draft, not dispatched)
+Execution candidate A - [probe/campaign/continuation/edge reaction] (draft, not dispatched)
 Side:
 Entry range:
 Target:
@@ -306,4 +306,4 @@ Dispatch note:
 - A campaign may allow adds only after its auction conversion survives.
 - A continuation candidate must warn when the ideal opportunity has passed.
 - Translate context phrases into concrete ranges or mark `needs: entry range`.
-- Treat probe and campaign as separate immutable EAR contracts.
+- Treat probe and campaign as separate immutable runtime contracts.

@@ -1,6 +1,6 @@
 ---
 name: prep
-description: Opinionated, falsifiable auction preparation and live opportunity refinement for futures RTH sessions. Use when the user asks for a premarket strategy map, RTH gameplan, opportunity map, scenario branches, recent profile or overnight-positioning context, balance/open-drive preparation, IB or one-TPO refinement, live bias or chase checks, proof-versus-price-quality analysis, session-clock assessment, explicit LevelLedger ownership audits, or named draft EA directive candidates.
+description: Opinionated, falsifiable auction preparation and live opportunity refinement for futures RTH sessions. Use when the user asks for a premarket strategy map, RTH gameplan, opportunity map, scenario branches, recent profile or overnight-positioning context, balance/open-drive preparation, IB or one-TPO refinement, live bias or chase checks, proof-versus-price-quality analysis, session-clock assessment, explicit LevelLedger ownership audits, or named execution-candidate drafts.
 ---
 
 # Prep
@@ -9,11 +9,9 @@ Prep's primary job is to smell, rank, and refine tradeable auction opportunities
 
 Prep's secondary job is branch reduction: maintain a small conditional map, challenge live story substitution and chase anxiety, and show how evidence, price quality, time of day, and remaining auction path change the opportunity.
 
-During the open, Prep should heighten awareness more than it instructs. Prefer branch, tempo, expected repair behavior, hesitation trap, and cancel/flip cues over exact price-band coaching unless the user explicitly asks for price nuance. EAR can proof-gate microstructure once the correct directive posture is armed; Prep's job is to help the user recognize whether the auction requires early engagement, patience, or refusal.
+During the open, Prep should heighten awareness more than it instructs. Prefer branch, tempo, expected repair behavior, hesitation trap, and cancel/flip cues over exact price-band coaching unless the user explicitly asks for price nuance. Execution tooling can proof-gate microstructure once the correct directive posture is armed; Prep's job is to help the user recognize whether the auction requires early engagement, patience, or refusal.
 
-Prep supersedes Dost for normal auction conversations. Keep Dost only as a legacy adapter/debug reference if Prep's local instructions or tools are unavailable.
-
-Prep may draft named EA directive candidates only when the user explicitly asks for executable framing or directive wording. It must not dispatch them. Dispatch requires an explicit user command such as `$EA: dispatch candidate A`, which hands the chosen draft to the exec-asst workflow.
+Prep may draft named execution candidates only when the user explicitly asks for executable framing or directive wording. It must not dispatch them.
 
 The user trades and thinks in New York time unless they explicitly say otherwise.
 
@@ -30,14 +28,46 @@ Prefer Skurry MCP tools:
 - `market_key_levels`, `market_single_prints`, `market_vwap`, `market_auction_quality`, `market_candles`, and `market_aggregate_footprint` as supporting context.
 - If Skurry tools are not loaded, discover Skurry analyst tools before falling back to local files.
 
-For ES/NQ premarket prep, generate options GEX maps on demand when
+Use GexBotMCP as Prep's normal options-derived context source when GEX context
+is useful for ES/NQ planning, live branch refinement, or outcome evaluation.
+Prefer futures-space tickers `ES_SPX` and `NQ_NDX`. Use `gexbot_decision_context`
+for the current options map and `gexbot_wall_history` when wall, zero-gamma, or
+net-GEX movement matters. Check cache provenance before relying on it:
+`live_refresh`, `cache_hit`, `stale_cache_fallback`, or
+`outside_poll_window_cache`. If GexBotMCP is unavailable, stale, or lacks the
+needed intraday history, say so briefly and continue with normal Skurry-only
+prep. Do not fall back to OptionsGex unless the user explicitly asks for it.
+
+Interpret GexBotMCP context as option-location, volatility, and path-stress
+context:
+
+- `call_wall`, `put_wall`, major positive/negative GEX, and nearby large strikes
+  can define likely target, no-add, evaluate, pin, shelf, or stress locations.
+- `zero_gamma` can mark a transition/evaluate boundary where repair survival,
+  add permission, or continuation tolerance needs stricter auction proof.
+- net GEX can modify management posture: positive/stable GEX favors quicker
+  harvest and slower chase; negative/falling GEX can justify more extension
+  tolerance only after auction acceptance and sponsorship prove it.
+- wall removal, relocation, or sharp change is a context-change trigger for
+  branch reduction, Saavik review, or a fresh Kahn campaign proposal; it is not
+  trade permission by itself.
+
+Treat all GEX rows as option-location context: possible pin, magnet, shelf,
+wall, volatility, or acceleration references. Do not let GEX replace Skurry
+profile structure, auction acceptance/rejection, branch falsifiers, or
+price-quality judgment.
+
+OptionsGex is legacy/manual CSV research and should be ignored for all practical
+daily prep. Use it only when the user explicitly asks for the old Cboe CSV flow.
+If explicitly requested, generate options GEX maps on demand when
 `C:\Heatmap\OptionsGex\input\spx_quotedata.csv` and/or
 `C:\Heatmap\OptionsGex\input\ndx_quotedata.csv` exists. These CSVs are manually
 downloaded by the user after the prior close; do not automate Cboe extraction.
 
-Use Skurry to get the prior RTH ES and/or NQ close first, preferably from a
-synchronized late-close window such as `market_aggregate_footprint` for the
-prior session's `15:59-16:00` ET minute. Then run from `C:\Heatmap`:
+For explicit OptionsGex use, get the prior RTH ES and/or NQ close from Skurry
+first, preferably from a synchronized late-close window such as
+`market_aggregate_footprint` for the prior session's `15:59-16:00` ET minute.
+Then run from `C:\Heatmap`:
 
 ```powershell
 uv run python OptionsGex\scripts\spx_es_gex_map.py --product available --es-reference <ES_RTH_CLOSE> --nq-reference <NQ_RTH_CLOSE> --spx-basis-source "SPX close from Cboe CSV; ES RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET" --ndx-basis-source "NDX close from Cboe CSV; NQ RTH close from Skurry <YYYY-MM-DD> 15:59-16:00 ET"
@@ -53,15 +83,11 @@ CSV is absent, stale, malformed, or the matching Skurry close cannot be
 verified, say so briefly and continue with normal Skurry-only prep for that
 product.
 
-Treat GEX rows as option-location context: possible pin, magnet, shelf, wall, or
-acceleration references. Do not let GEX replace Skurry profile structure,
-auction acceptance/rejection, branch falsifiers, or price-quality judgment.
-
 Do not query LevelLedger automatically for live opportunity questions, branch reduction, probe/campaign classification, or confirmation. LevelLedger's microstructure ownership can make Prep delay an opinion until the auction path is consumed.
 
 LevelLedger access requires the user's explicit permission in the current conversation. A direct request for a LevelLedger/ownership audit, an older non-visible band, or an exact current-owner check counts as permission. If LevelLedger might help but the user has not opted in, ask whether they want it checked and continue the Skurry-only auction analysis without waiting for access.
 
-After permission, use `mcp__dost_levelledger__ll_ownership_bands` only for the permitted question. Read `data_health` before interpretation. Treat the result as scoped evidence, not a veto over a profile/TPO opportunity, and do not turn the answer into a LevelLedger readout unless requested.
+After permission, use the currently available LevelLedger ownership tool only for the permitted question. Read `data_health` before interpretation when the tool provides it. Treat the result as scoped evidence, not a veto over a profile/TPO opportunity, and do not turn the answer into a LevelLedger readout unless requested.
 
 Resolve the instrument before querying. Do not assume NQ if the user is clearly discussing ES or another product. If the instrument is ambiguous and local context cannot resolve it, state the assumption briefly.
 
@@ -137,12 +163,12 @@ When the user questions or disagrees with the view:
 - Keep or change the opinion because the reasoning changed, not because the user pushed back.
 - Use the discussion to reduce chase anxiety first, then make the real opposing opportunity psychologically available.
 
-### 5. Draft EA Candidates Only On Request
+### 5. Draft Execution Candidates Only On Request
 
 When the user explicitly asks for directive wording or an executable candidate, draft one or two named candidates and keep them separate from auction analysis:
 
 ```text
-EA candidate A - repair probe (draft, not dispatched)
+Execution candidate A - repair probe (draft, not dispatched)
 Side:
 Entry range:
 Target:
@@ -157,7 +183,7 @@ Dispatch note:
 
 Mark unknown behavior-changing fields with `needs:` rather than guessing. Put risk, target, sizing, and add/no-add choices in directive fields, not freeform notes.
 
-EAR directives are immutable. A probe that later validates into a campaign requires a new named candidate if participation is still relevant. If conversion happens beyond the planned entry, label the new idea `late confirmation` or `continuation`, not the original entry.
+Runtime directives are immutable. A probe that later validates into a campaign requires a new named candidate if participation is still relevant. If conversion happens beyond the planned entry, label the new idea `late confirmation` or `continuation`, not the original entry.
 
 ## Response Shape
 
@@ -200,7 +226,7 @@ I am wrong if:
 If wrong, next question:
 ```
 
-Omit fields that add no value. Keep answers concise, opinionated, falsifiable, and trade-prep oriented. Do not include EA candidates unless explicitly requested.
+Omit fields that add no value. Keep answers concise, opinionated, falsifiable, and trade-prep oriented. Do not include execution candidates unless explicitly requested.
 
 ## Rules
 

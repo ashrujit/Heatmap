@@ -10,8 +10,8 @@ help draft or critique plans, but only deterministic code may enforce decisions.
 
 - `CampaignPlan` is the immutable input contract.
 - `CampaignState` is the mutable runtime memory: phase, simulated/live quantity,
-  active risk anchor, root risk anchor, armed probe, suppressed-add windows, and
-  retirement state.
+  active risk anchor, root risk anchor, armed probe, suppressed-add windows,
+  accepted probe-attempt count, execution-pause reason, and retirement state.
 - `CampaignEvidence` is the normalized event stream from price, LevelLedger,
   BubbleTape, footprint/delta replay, broker state, live LL transitions, or
   manual replay tools.
@@ -54,6 +54,14 @@ change size for a new situation without restarting and losing live LL warmup.
 The strategy-level `Instance Max Quantity` remains a hard cap over any
 campaign request.
 
+`execution.max_retry` is also directive-local and defaults to `3`. It is a
+probe-attempt budget, not an evidence retry counter and not a broker-rejection
+counter. Once the budget is exhausted and the campaign has flattened, the
+state moves to `Paused` rather than `Retired`. The plan, waypoints, live LL
+warmup, decision log, and checkpoint context remain available; an amended or
+reissued campaign digest can clear the pause and continue evaluation from the
+current auction map.
+
 ## Evidence
 
 Live LL evidence uses the copied EAR/LevelLedger ownership engine against the
@@ -64,6 +72,41 @@ means probe, add, suppress, hold, reduce, or flatten.
 
 The JSONL evidence path remains active in live mode. This keeps manual/research
 evidence injection available without requiring a constantly waking agent.
+
+## GexBot Integration Plan
+
+GexBotMCP is the options-context source, not an execution signal. The first Kahn
+integration should use GexBot data during campaign drafting and replay, where a
+human-woken agent or prep pass converts futures-space context into explicit
+waypoints and management constraints.
+
+Useful GEX-derived campaign context:
+
+- `call_wall`, `put_wall`, major positive/negative GEX, and nearby large strikes
+  can become `target`, `no_add`, `evaluate`, `path_stress`, or `risk` waypoints.
+- `zero_gamma` can mark an evaluate boundary where add permission, repair
+  survival, and continuation tolerance need stricter auction proof.
+- net-GEX level and movement can adjust management posture: positive/stable GEX
+  favors quicker harvest and slower chase; negative/falling GEX can justify more
+  extension tolerance only after LL, footprint, BubbleTape, or price acceptance
+  proves sponsorship.
+- wall removal, wall relocation, or a sharp wall-history change should wake
+  Saavik or prompt a fresh campaign proposal. It is not a policy decision by
+  itself.
+
+Do not let GEX authorize `AllowProbe` or `AllowAdd`. Kahn still requires LL,
+BubbleTape/footprint, price acceptance, or explicit campaign evidence for any
+entry/add decision. GEX can support `SuppressAdd`, `TightenRisk`, `Reduce`,
+`Harvest`, `EvaluateZone`, `PathStress`, or `Retire` decisions when auction
+context agrees.
+
+The likely runtime shape is a typed, cache-provenanced `GexContext` or
+`ContextMarker` evidence source with ticker, category, snapshot timestamp, cache
+source, futures-space levels, and derived waypoint suggestions. Start offline in
+`KahnRuntime.Replay` against the 2026-08-26 failed-breakout and reversal legs,
+then validate on a full live cached session before wiring any automatic runtime
+polling. A direct MCP poller inside Kahn is deferred; one separately running
+GexBotMCP service should own SQLite collection and freshness.
 
 ## Policy Families
 

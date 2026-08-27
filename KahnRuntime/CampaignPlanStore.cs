@@ -96,6 +96,7 @@ namespace KahnRuntime
                 Window = ParseWindow(RequireObjectProperty(root, "window", "campaign")),
                 Arena = ParseRange(RequireObjectProperty(root, "arena", "campaign"), "campaign.arena"),
                 Sizing = ParseSizing(OptionalObjectProperty(root, "sizing")),
+                Execution = ParseExecution(OptionalObjectProperty(root, "execution"), root),
                 Risk = ParseRisk(OptionalObjectProperty(root, "risk")),
                 Objective = ParseObjective(OptionalObjectProperty(root, "objective")),
                 Policies = ParsePolicyFlags(OptionalObjectProperty(root, "policies")),
@@ -147,6 +148,14 @@ namespace KahnRuntime
                 AddQuantity = OptionalPositiveInt(value, "add_quantity", 1),
                 MaxPositionQuantity = OptionalPositiveInt(value, "max_position_quantity", 1),
             };
+        }
+
+        private static CampaignExecution ParseExecution(JsonElement? element, JsonElement root)
+        {
+            int maxRetry = OptionalPositiveInt(root, "max_retry", 3);
+            if (element.HasValue)
+                maxRetry = OptionalPositiveInt(element.Value, "max_retry", maxRetry);
+            return new CampaignExecution { MaxRetry = maxRetry };
         }
 
         private static CampaignRisk ParseRisk(JsonElement? element)

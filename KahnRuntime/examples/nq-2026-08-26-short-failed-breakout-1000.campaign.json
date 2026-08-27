@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "nq-2026-08-26-short-failed-breakout-1000",
+  "status": "active",
+  "created_at": "2026-08-26T14:00:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-26T14:00:00Z",
+    "expires_at": "2026-08-26T14:45:00Z"
+  },
+  "arena": {
+    "lower": 29150.0,
+    "upper": 29340.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "execution": {
+    "max_retry": 3
+  },
+  "risk": {
+    "root_stop_ticks": 64,
+    "sponsor_failure_buffer_ticks": 8,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 29172.0,
+      "upper": 29180.0
+    },
+    "target_proximity_ticks": 16,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-29315-29333",
+      "role": "trap_probe",
+      "range": {
+        "lower": 29315.0,
+        "upper": 29333.0
+      },
+      "label": "probe short only after the breakout above 29315 fails to build"
+    },
+    {
+      "id": "press-below-29308",
+      "role": "press",
+      "range": {
+        "lower": 29296.0,
+        "upper": 29308.5
+      },
+      "label": "first scale is allowed after sellers own below 29308",
+      "preserve_risk_anchor_on_add": true
+    },
+    {
+      "id": "press-29289-29292",
+      "role": "press",
+      "range": {
+        "lower": 29288.0,
+        "upper": 29292.0
+      },
+      "label": "second scale while the break is still in transit and before target proximity",
+      "preserve_risk_anchor_on_add": true
+    },
+    {
+      "id": "target-29172-29180",
+      "role": "target",
+      "range": {
+        "lower": 29172.0,
+        "upper": 29180.0
+      },
+      "label": "target at 29176; harvest on seller effort or opposite demand"
+    }
+  ],
+  "notes": "Synthetic Skurry-derived 2026-08-26 NQ failed-breakout short replay. Evidence is normalized from footprint/profile reads, not live Kahn LL emissions."
+}

@@ -20,6 +20,7 @@ namespace KahnRuntime
         Pressing,
         BuildTrial,
         TargetZone,
+        Paused,
         Retired,
     }
 
@@ -163,6 +164,11 @@ namespace KahnRuntime
         public int MaxPositionQuantity { get; init; } = 1;
     }
 
+    internal sealed class CampaignExecution
+    {
+        public int MaxRetry { get; init; } = 3;
+    }
+
     internal sealed class CampaignRisk
     {
         public int RootStopTicks { get; init; } = 16;
@@ -214,6 +220,7 @@ namespace KahnRuntime
         public CampaignWindow Window { get; init; }
         public PriceRange Arena { get; init; }
         public CampaignSizing Sizing { get; init; }
+        public CampaignExecution Execution { get; init; }
         public CampaignRisk Risk { get; init; }
         public CampaignObjective Objective { get; init; }
         public CampaignPolicyFlags Policies { get; init; }
@@ -349,9 +356,19 @@ namespace KahnRuntime
         public string RootRiskAnchorEvidenceId { get; private set; }
         public DateTimeOffset? SuppressAddsUntil { get; private set; }
         public DateTimeOffset LastDecisionUtc { get; private set; }
+        public int ExecutionAttemptCount { get; private set; }
+        public string ExecutionPauseReason { get; private set; }
+        public DateTimeOffset? ExecutionPausedAt { get; private set; }
 
         public bool HasPosition => SimulatedPositionQuantity > 0;
         public bool IsRetired => Phase == CampaignPhase.Retired;
+        public bool ExecutionPaused => Phase == CampaignPhase.Paused;
+
+        public bool CanAttemptEntry(CampaignPlan plan)
+            => !ExecutionPaused && ExecutionAttemptCount < MaxRetry(plan);
+
+        public int ExecutionRetriesRemaining(CampaignPlan plan)
+            => Math.Max(0, MaxRetry(plan) - ExecutionAttemptCount);
 
         public static CampaignState ForPlan(CampaignPlan plan)
             => new()
@@ -394,6 +411,8 @@ namespace KahnRuntime
                     ArmedWaypointId = decision.WaypointId;
                     break;
                 case PolicyAction.AllowProbe:
+                    ExecutionAttemptCount = Math.Min(MaxRetry(plan), ExecutionAttemptCount + 1);
+                    ClearExecutionPause();
                     if (simulateAcceptedDecisions)
                         SimulatedPositionQuantity = Math.Max(
                             SimulatedPositionQuantity,
@@ -458,8 +477,12 @@ namespace KahnRuntime
                     if (simulateAcceptedDecisions)
                         SimulatedPositionQuantity = 0;
                     ClearRiskAnchors();
+                    ArmedWaypointId = null;
 
-                    Phase = CampaignPhase.Ready;
+                    if (ExecutionAttemptCount >= MaxRetry(plan))
+                        PauseExecution("max_retry_exhausted", now);
+                    else
+                        Phase = CampaignPhase.Ready;
                     break;
                 case PolicyAction.Retire:
                     if (simulateAcceptedDecisions)
@@ -490,7 +513,7 @@ namespace KahnRuntime
             if (SimulatedPositionQuantity <= 0)
             {
                 ClearRiskAnchors();
-                if (Phase != CampaignPhase.Retired)
+                if (Phase != CampaignPhase.Retired && Phase != CampaignPhase.Paused)
                     Phase = CampaignPhase.Ready;
                 return;
             }
@@ -506,6 +529,28 @@ namespace KahnRuntime
             RootRiskAnchor = decision.RiskAnchor;
             RootRiskAnchorEvidenceId = decision.RiskAnchorEvidenceId ?? decision.EvidenceId;
         }
+
+        private void PauseExecution(string reasonCode, DateTimeOffset now)
+        {
+            if (Phase == CampaignPhase.Retired)
+                return;
+            Phase = CampaignPhase.Paused;
+            ExecutionPauseReason = string.IsNullOrWhiteSpace(reasonCode)
+                ? "execution_paused"
+                : reasonCode;
+            ExecutionPausedAt = now;
+            SuppressAddsUntil = null;
+            ArmedWaypointId = null;
+        }
+
+        private void ClearExecutionPause()
+        {
+            ExecutionPauseReason = null;
+            ExecutionPausedAt = null;
+        }
+
+        private static int MaxRetry(CampaignPlan plan)
+            => Math.Max(1, plan?.Execution?.MaxRetry ?? 3);
 
         private void ClearRiskAnchors()
         {

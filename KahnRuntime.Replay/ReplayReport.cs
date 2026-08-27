@@ -136,6 +136,11 @@ namespace KahnRuntime.Replay
                 RootRiskAnchor = Range(root, "root_risk_anchor"),
                 RootRiskAnchorEvidenceId = String(root, "root_risk_anchor_evidence_id"),
                 SuppressAddsUntilEt = TimeEt(String(root, "suppress_adds_until")),
+                ExecutionAttemptCount = NullableString(root, "execution_attempt_count"),
+                MaxRetry = NullableString(root, "max_retry"),
+                RetriesRemaining = NullableString(root, "retries_remaining"),
+                ExecutionPauseReason = String(root, "execution_pause_reason"),
+                ExecutionPausedAtEt = TimeEt(String(root, "execution_paused_at")),
             };
 
         private static string Render(ReplayReportModel model)
@@ -193,6 +198,9 @@ namespace KahnRuntime.Replay
                 builder.AppendLine();
                 builder.AppendLine($"- Phase: `{Escape(model.FinalState.Phase)}`");
                 builder.AppendLine($"- Position: `{Escape(model.FinalState.Position)}`");
+                builder.AppendLine($"- Retries: `{Escape(RetryState(model.FinalState))}`");
+                if (!string.IsNullOrWhiteSpace(model.FinalState.ExecutionPauseReason))
+                    builder.AppendLine($"- Pause: `{Escape(model.FinalState.ExecutionPauseReason)}` at `{Escape(Dash(model.FinalState.ExecutionPausedAtEt))}`");
                 builder.AppendLine($"- Active risk: `{Escape(Dash(model.FinalState.ActiveRiskAnchor))}`"
                     + EvidenceSuffix(model.FinalState.ActiveRiskAnchorEvidenceId));
                 builder.AppendLine($"- Root risk: `{Escape(Dash(model.FinalState.RootRiskAnchor))}`"
@@ -212,6 +220,17 @@ namespace KahnRuntime.Replay
             => string.IsNullOrWhiteSpace(decision.PositionAfter)
                 ? Dash(decision.PositionBefore)
                 : $"{Dash(decision.PositionBefore)}->{decision.PositionAfter}";
+
+        private static string RetryState(ReportState state)
+        {
+            if (state == null || string.IsNullOrWhiteSpace(state.ExecutionAttemptCount))
+                return "-";
+            string maxRetry = string.IsNullOrWhiteSpace(state.MaxRetry) ? "?" : state.MaxRetry;
+            string remaining = string.IsNullOrWhiteSpace(state.RetriesRemaining)
+                ? "?"
+                : state.RetriesRemaining;
+            return state.ExecutionAttemptCount + "/" + maxRetry + " remaining=" + remaining;
+        }
 
         private static string Risk(ReportDecision decision)
             => string.IsNullOrWhiteSpace(decision.RiskAnchor)
@@ -375,5 +394,10 @@ namespace KahnRuntime.Replay
         public string RootRiskAnchor { get; init; }
         public string RootRiskAnchorEvidenceId { get; init; }
         public string SuppressAddsUntilEt { get; init; }
+        public string ExecutionAttemptCount { get; init; }
+        public string MaxRetry { get; init; }
+        public string RetriesRemaining { get; init; }
+        public string ExecutionPauseReason { get; init; }
+        public string ExecutionPausedAtEt { get; init; }
     }
 }

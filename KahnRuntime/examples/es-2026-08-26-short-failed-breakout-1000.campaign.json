@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-26-short-failed-breakout-1000",
+  "status": "active",
+  "created_at": "2026-08-26T14:00:00Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-26T14:00:00Z",
+    "expires_at": "2026-08-26T17:05:00Z"
+  },
+  "arena": {
+    "lower": 7670.0,
+    "upper": 7704.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "execution": {
+    "max_retry": 3
+  },
+  "risk": {
+    "root_stop_ticks": 18,
+    "sponsor_failure_buffer_ticks": 4,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7677.5,
+      "upper": 7678.5
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "trap-7700-7703",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7700.0,
+        "upper": 7703.0
+      },
+      "require_price_inside": true,
+      "label": "probe short only at the failed excess above 7700"
+    },
+    {
+      "id": "press-below-7700",
+      "role": "press",
+      "range": {
+        "lower": 7694.0,
+        "upper": 7700.0
+      },
+      "require_price_inside": true,
+      "preserve_risk_anchor_on_add": true,
+      "label": "scale only after 7700 fails and retests cannot rebuild"
+    },
+    {
+      "id": "press-7687-7692",
+      "role": "press",
+      "range": {
+        "lower": 7687.0,
+        "upper": 7692.5
+      },
+      "require_price_inside": true,
+      "preserve_risk_anchor_on_add": true,
+      "label": "second scale on continuation before lower response zone"
+    },
+    {
+      "id": "stress-7680-7683",
+      "role": "path_stress",
+      "range": {
+        "lower": 7680.0,
+        "upper": 7683.0
+      },
+      "max_position_quantity": 1,
+      "label": "first-leg response zone; reduce full inventory and keep only a runner"
+    },
+    {
+      "id": "target-7678",
+      "role": "target",
+      "range": {
+        "lower": 7677.5,
+        "upper": 7678.5
+      },
+      "label": "runner target around 7678"
+    }
+  ],
+  "notes": "Synthetic Skurry-derived 2026-08-26 ES failed-breakout short replay. First leg harvests around 7680-7682 because the exact 7678 objective does not print until later."
+}

@@ -34,6 +34,12 @@ governor into a form-filled EAR directive dispatcher.
   `add_quantity`, `max_position_quantity`) so size can change by situation
   without restarting the strategy. `Instance Max Quantity` is only a runtime
   safety cap and campaign admission guard.
+- `execution.max_retry` is directive-local and defaults to `3`. It counts accepted
+  probe attempts that later flatten/scratch; quote staleness or broker submit
+  rejection is logged but does not spend the campaign retry budget. Once the
+  retry budget is exhausted and the campaign is flat, Kahn enters `Paused`
+  rather than `Retired`, keeps the loaded auction map/checkpoint context,
+  and waits for an amended/reissued campaign digest to resume.
 - Kahn does not adopt manual or orphan live positions. If live mode sees an
   existing bound position while campaign state is flat, or multiple bound
   positions, it logs `ERR: recovery action required` and pauses campaign
@@ -63,6 +69,12 @@ governor into a form-filled EAR directive dispatcher.
 - LevelLedger/EAR ownership math is an evidence source, not sufficient
   permission to add. Phase, runway, target proximity, and risk ownership can
   suppress or retire otherwise valid LL participation.
+- GexBotMCP may propose futures-space campaign context such as walls,
+  zero-gamma, net-GEX movement, and large-strike stress zones. Treat it as
+  waypoint and management context only: it may suppress adds, tighten risk,
+  harvest, or trigger review, but it must not authorize probe or add decisions
+  without LL, footprint, BubbleTape, price acceptance, or explicit campaign
+  evidence.
 - BubbleTape and footprint/delta evidence are allowed to justify aggressive
   trap probes and target-zone harvest decisions before full LL proof is
   complete. Treat BubbleTape as compressed footprint/delta unless the evidence

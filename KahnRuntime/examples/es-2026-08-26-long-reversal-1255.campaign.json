@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-2026-08-26-long-reversal-1255",
+  "status": "active",
+  "created_at": "2026-08-26T16:55:00Z",
+  "side": "long",
+  "window": {
+    "not_before": "2026-08-26T16:55:00Z",
+    "expires_at": "2026-08-26T19:10:00Z"
+  },
+  "arena": {
+    "lower": 7670.0,
+    "upper": 7708.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 2
+  },
+  "execution": {
+    "max_retry": 3
+  },
+  "risk": {
+    "root_stop_ticks": 24,
+    "sponsor_failure_buffer_ticks": 4,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7702.5,
+      "upper": 7704.0
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "probe-7680-7690",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7680.0,
+        "upper": 7690.0
+      },
+      "require_price_inside": true,
+      "label": "probe long only after lower response enters 7680-7690"
+    },
+    {
+      "id": "no-add-7680-7690",
+      "role": "no_add",
+      "range": {
+        "lower": 7680.0,
+        "upper": 7690.0
+      },
+      "label": "hold corridor; do not add while price is still repairing inside 7680-7690"
+    },
+    {
+      "id": "evaluate-7688-7692",
+      "role": "evaluate",
+      "range": {
+        "lower": 7688.0,
+        "upper": 7692.0
+      },
+      "label": "first 7690 tests are review-only until acceptance appears"
+    },
+    {
+      "id": "press-above-7690",
+      "role": "press",
+      "range": {
+        "lower": 7690.0,
+        "upper": 7697.0
+      },
+      "require_price_inside": true,
+      "label": "add only after buyers own above 7690"
+    },
+    {
+      "id": "target-7703",
+      "role": "target",
+      "range": {
+        "lower": 7702.5,
+        "upper": 7704.0
+      },
+      "label": "target around 7703; harvest on same-side effort or target supply"
+    }
+  ],
+  "notes": "Synthetic Skurry-derived 2026-08-26 ES long replay after the lower exploration. Probe 7680-7690, no add in the probe corridor, add only after accepted demand above 7690, target 7703."
+}

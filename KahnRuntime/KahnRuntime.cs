@@ -344,12 +344,17 @@ namespace KahnRuntime
             _lastControlId = null;
             _lastControlAction = null;
             _lastControlStatus = null;
+            CampaignPlan priorPlan = _plan;
+            CampaignState priorState = _state;
             _processedControlIds.Clear();
             if (!PlanAdmissible(result.Plan))
                 return;
 
             _plan = result.Plan;
             _state = CampaignState.ForPlan(_plan);
+            int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
+            bool resumedFromRetryPause = priorState?.ExecutionPaused == true
+                && string.Equals(priorPlan?.Id, _plan.Id, StringComparison.Ordinal);
             _decisions.Write("campaign_loaded",
                 ("campaign_id", _plan.Id),
                 ("campaign_digest", _plan.Digest),
@@ -358,10 +363,25 @@ namespace KahnRuntime
                 ("probe_quantity", _plan.Sizing.ProbeQuantity),
                 ("add_quantity", _plan.Sizing.AddQuantity),
                 ("campaign_max_position_quantity", _plan.Sizing.MaxPositionQuantity),
+                ("max_retry", maxRetry),
+                ("resumed_from_retry_pause", resumedFromRetryPause),
                 ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
                 ("waypoint_count", _plan.Waypoints.Count),
                 ("notes", _plan.Notes));
-            LogOperator("INFO", $"Loaded campaign {_plan.Id} ({_plan.Side}).");
+            if (resumedFromRetryPause)
+            {
+                _decisions.Write("campaign_retry_pause_resumed",
+                    ("campaign_id", _plan.Id),
+                    ("campaign_digest", _plan.Digest),
+                    ("prior_campaign_digest", priorPlan?.Digest),
+                    ("prior_execution_attempt_count", priorState?.ExecutionAttemptCount),
+                    ("max_retry", maxRetry));
+                LogOperator("INFO", $"Reissued campaign {_plan.Id}; retry pause cleared, max_retry={maxRetry}.");
+            }
+            else
+            {
+                LogOperator("INFO", $"Loaded campaign {_plan.Id} ({_plan.Side}), max_retry={maxRetry}.");
+            }
             SaveCheckpoint(force: true, runtimeState: "Running");
         }
 
@@ -654,6 +674,8 @@ namespace KahnRuntime
             if (_plan == null || _state == null || _state.IsRetired || !_plan.IsActiveAt(now))
                 return;
 
+            CampaignPhase phaseBefore = _state.Phase;
+            int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
             CampaignContext context = new(_plan, _state, _tickSize, now);
             PolicyDecision decision = _policyEngine.Evaluate(context, evidence);
             if (!_state.ShouldEmit(decision, now, TimeSpan.FromSeconds(5)))
@@ -662,7 +684,7 @@ namespace KahnRuntime
             _decisions.Write("policy_decision",
                 ("campaign_id", _plan.Id),
                 ("campaign_digest", _plan.Digest),
-                ("phase_before", _state.Phase),
+                ("phase_before", phaseBefore),
                 ("action", decision.Action),
                 ("policy", decision.Policy),
                 ("reason_code", decision.ReasonCode),
@@ -683,7 +705,11 @@ namespace KahnRuntime
                 ("evidence_volume", evidence.Volume),
                 ("evidence_score", evidence.Score),
                 ("position_before", CurrentPosition().Quantity),
-                ("simulated_position_before", _state.SimulatedPositionQuantity));
+                ("simulated_position_before", _state.SimulatedPositionQuantity),
+                ("execution_attempt_count", _state.ExecutionAttemptCount),
+                ("max_retry", maxRetry),
+                ("retries_remaining", _state.ExecutionRetriesRemaining(_plan)),
+                ("execution_pause_reason", _state.ExecutionPauseReason));
 
             GatewayResult execution = ExecuteDecision(decision, now);
             if (!execution.Accepted && RequiresBrokerAction(decision.Action))
@@ -705,6 +731,20 @@ namespace KahnRuntime
 
             bool simulateAccepted = !_runTradingEnabled ? ShadowFillSimulation : true;
             _state.ApplyDecision(decision, _plan, simulateAccepted, now);
+            bool retryPaused = _state.ExecutionPaused && phaseBefore != CampaignPhase.Paused;
+            if (retryPaused)
+            {
+                _decisions.Write("campaign_execution_paused",
+                    ("campaign_id", _plan.Id),
+                    ("campaign_digest", _plan.Digest),
+                    ("reason_code", _state.ExecutionPauseReason),
+                    ("execution_attempt_count", _state.ExecutionAttemptCount),
+                    ("max_retry", maxRetry),
+                    ("evidence_id", evidence.EventId),
+                    ("policy", decision.Policy),
+                    ("decision_action", decision.Action.ToString()));
+                LogOperator("RISK", $"{_plan.Id} paused after {_state.ExecutionAttemptCount}/{maxRetry} probe attempts; reissue or amend the campaign to resume.");
+            }
             LogDecisionForOperator(decision, execution);
 
             _decisions.Write("campaign_state",
@@ -718,6 +758,11 @@ namespace KahnRuntime
                 ("root_risk_anchor_evidence_id", _state.RootRiskAnchorEvidenceId),
                 ("armed_waypoint_id", _state.ArmedWaypointId),
                 ("suppress_adds_until", _state.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture)),
+                ("execution_attempt_count", _state.ExecutionAttemptCount),
+                ("max_retry", maxRetry),
+                ("retries_remaining", _state.ExecutionRetriesRemaining(_plan)),
+                ("execution_pause_reason", _state.ExecutionPauseReason),
+                ("execution_paused_at", _state.ExecutionPausedAt?.ToString("O", CultureInfo.InvariantCulture)),
                 ("execution_accepted", execution.Accepted),
                 ("execution_shadow", execution.Shadow),
                 ("execution_order_id", execution.OrderId),
@@ -1180,6 +1225,11 @@ namespace KahnRuntime
                 CampaignProbeQuantity = _plan?.Sizing?.ProbeQuantity,
                 CampaignAddQuantity = _plan?.Sizing?.AddQuantity,
                 CampaignMaxPositionQuantity = _plan?.Sizing?.MaxPositionQuantity,
+                CampaignMaxRetry = _plan?.Execution?.MaxRetry,
+                ExecutionAttemptCount = _state?.ExecutionAttemptCount,
+                ExecutionRetriesRemaining = _state?.ExecutionRetriesRemaining(_plan),
+                ExecutionPauseReason = _state?.ExecutionPauseReason,
+                ExecutionPausedAtUtc = _state?.ExecutionPausedAt?.ToString("O", CultureInfo.InvariantCulture),
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
                 WorkerPollMs = Math.Max(100, WorkerPollMs),
                 BookSampleMs = Math.Max(250, BookSampleMs),
@@ -1596,6 +1646,9 @@ namespace KahnRuntime
                 ? "-"
                 : $"{_lastControlAction}:{_lastControlStatus}");
             AddMetric(metrics, "Phase", _state?.Phase.ToString() ?? "-");
+            AddMetric(metrics, "Retries", RetryMetricText());
+            if (_state?.ExecutionPaused == true)
+                AddMetric(metrics, "Pause", _state.ExecutionPauseReason ?? "execution_paused");
             AddMetric(metrics, "Exec/Data", $"{RuntimeSymbol?.Name ?? "-"}/{_marketDataSymbol?.Name ?? MarketDataSymbol?.Name ?? "-"}");
             AddMetric(metrics, "Evidence", _evidenceState);
             AddMetric(metrics, "Warmup Left", $"{EvidenceWarmupRemainingSeconds(DateTime.UtcNow):0}s");
@@ -1607,6 +1660,16 @@ namespace KahnRuntime
             AddMetric(metrics, "Live Qty", position.Quantity.ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Risk", _state?.ActiveRiskAnchor?.ToString() ?? "-");
             return metrics;
+        }
+
+        private string RetryMetricText()
+        {
+            if (_plan == null || _state == null)
+                return "-";
+            int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
+            return _state.ExecutionAttemptCount.ToString(CultureInfo.InvariantCulture)
+                + "/"
+                + maxRetry.ToString(CultureInfo.InvariantCulture);
         }
 
         private static void AddMetric(List<StrategyMetric> metrics, string name, string value)

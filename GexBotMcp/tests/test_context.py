@@ -56,6 +56,11 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(result["major_levels"][0]["role"], "zero_gamma")
         self.assertEqual(result["major_levels"][0]["range"], {"lower": 7111.95, "upper": 7113.95})
         self.assertEqual([item["strike"] for item in result["nearby_strikes"]], [7140.0, 7135.0])
+        self.assertEqual(result["wall_context"]["call_wall"]["price"], 7135.0)
+        self.assertEqual(result["wall_context"]["put_wall"]["price"], 7100.0)
+        self.assertEqual(result["wall_context"]["oi_call_wall"]["price"], 7200.0)
+        self.assertEqual(result["wall_context"]["derived_from_strikes"]["max_positive_gex_volume"]["strike"], 7135.0)
+        self.assertEqual(result["wall_context"]["derived_from_strikes"]["max_negative_gex_oi"]["strike"], 6890.0)
         self.assertIn("Kahn entry/add authorization by itself", result["decision_boundary"]["not_usable_for"])
         self.assertEqual(result["kahn_mapping"]["integration_stage"], "proposal_only")
 

@@ -16,11 +16,10 @@ The user trades and thinks in New York time.
 
 - Do not discover new opportunities from scratch. Use Prep for auction branch
   creation and opportunity ranking.
-- Do not dispatch orders, issue EAR controls, issue Kahn controls, or pretend to
-  monitor continuously. Use Exec Assistant only when the user explicitly asks
-  to operate EAR. Use `scripts/kahnctl.py` only when the user explicitly asks
-  to operate Kahn `FLAT`/`CANCEL`; the script writes control JSON and the
-  running KahnRuntime enforces it.
+- Do not dispatch orders, issue external execution controls, issue Kahn controls,
+  or pretend to monitor continuously. Use `scripts/kahnctl.py` only when the
+  user explicitly asks to operate Kahn `FLAT`/`CANCEL`; the script writes control
+  JSON and the running KahnRuntime enforces it.
 - Do not replace Kahn policy with discretionary narrative. Translate the read
   into inspectable campaign semantics, policy posture, waypoint changes, or a
   proposed fresh campaign.
@@ -41,8 +40,6 @@ and `./saavik/SKILL.md` can be referenced together; from the repository root, us
 
 - Read `../prep/SKILL.md` when the user asks for market-prep context, branch
   ranking, or whether the current auction thesis still exists.
-- Read `../exec-asst/SKILL.md` only when the user explicitly asks to dispatch,
-  cancel, flatten, reissue, or inspect EAR.
 - Read `../../KahnRuntime/DESIGN.md` or campaign examples when constructing or
   changing concrete Kahn campaign JSON.
 
@@ -88,7 +85,17 @@ Use evidence with its proper scope:
 - BubbleTape contributes edge probes, absorption, trapped effort, and harvest
   evidence as footprint/delta compression unless identity-backed grouping is
   proven for the session.
-- GEX contributes location and volatility context, not execution permission.
+- GexBotMCP is the normal GEX source for campaign review. Use futures-space
+  tickers `ES_SPX` and `NQ_NDX`. `gexbot_decision_context` gives the current
+  map; `gexbot_wall_history` gives wall, zero-gamma, and net-GEX movement when
+  available. Always state cache provenance before treating a GEX read as current.
+- GEX contributes location, volatility, and path-stress context, not execution
+  permission. It can support `EvaluateZone`, `PathStress`, `SuppressAdd`,
+  `TightenRisk`, `Reduce/harvest`, or a fresh-campaign/reissue prompt, but it
+  must not authorize `AllowProbe` or `AllowAdd` without LL, footprint,
+  BubbleTape, price acceptance, or explicit campaign evidence.
+- OptionsGex is legacy/manual CSV research. Ignore it unless the user explicitly
+  asks for the old Cboe CSV flow; do not use it as a fallback for GexBotMCP.
 - Cross-symbol ES/NQ behavior may raise or lower confidence, but one symbol's
   campaign should not automatically force the other's exit unless the user has
   declared a shared-risk overlay.
@@ -130,7 +137,7 @@ Then make the smallest sufficient audit:
   new risk owner. Adds are not permission to forget the root thesis.
 - Prefer `TrapProbe` for ambitious edge entries where full LL proof would arrive
   too late.
-- Prefer `Press` or `BuildTrial` for in-between participation where LL/EAR math
+- Prefer `Press` or `BuildTrial` for in-between participation where LL/Kahn math
   says aggression is being accepted and the sponsor can be named.
 - Use `EvaluateZone` or `PathStress` when price reaches a waypoint where risk must
   tighten even if the directional thesis remains plausible.

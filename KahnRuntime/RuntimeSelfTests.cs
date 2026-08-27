@@ -7,6 +7,7 @@ namespace KahnRuntime
         public static void RunAll()
         {
             PlanParserAcceptsMinimalCampaign();
+            RetryExhaustionPausesCampaignInsteadOfRetiring();
             TrapProbeAllowsLeanAtEdge();
             ArmedProbeAllowsLaterInsideRail();
             EdgePriceGateBlocksBodyProbe();
@@ -92,6 +93,44 @@ namespace KahnRuntime
             CampaignPlan plan = CampaignPlanParser.Parse(json, "selftest");
             Assert(plan.Side == CampaignSide.Short, "plan side");
             Assert(plan.Waypoints.Count == 1, "waypoint count");
+            Assert(plan.Execution.MaxRetry == 3, "default max retry");
+        }
+
+        private static void RetryExhaustionPausesCampaignInsteadOfRetiring()
+        {
+            CampaignPlan plan = ShortPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+
+            ApplyProbeAndFlatten(state, plan, "first");
+            Assert(state.Phase == CampaignPhase.Ready, "first retry returns ready");
+            Assert(state.ExecutionAttemptCount == 1, "first retry count");
+            Assert(state.CanAttemptEntry(plan), "first retry can continue");
+
+            ApplyProbeAndFlatten(state, plan, "second");
+            Assert(state.Phase == CampaignPhase.Ready, "second retry returns ready");
+            Assert(state.ExecutionAttemptCount == 2, "second retry count");
+            Assert(state.CanAttemptEntry(plan), "second retry can continue");
+
+            ApplyProbeAndFlatten(state, plan, "third");
+            Assert(state.Phase == CampaignPhase.Paused, "retry exhaustion pauses");
+            Assert(!state.IsRetired, "retry exhaustion does not retire");
+            Assert(state.ExecutionAttemptCount == 3, "retry exhausted count");
+            Assert(state.ExecutionRetriesRemaining(plan) == 0, "retry exhausted remaining");
+            Assert(!state.CanAttemptEntry(plan), "retry exhaustion blocks entry");
+
+            CampaignEvidence evidence = new()
+            {
+                EventId = "paused-lean",
+                Timestamp = DateTimeOffset.UtcNow,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Supply,
+                Range = new PriceRange { Lower = 7674.0, Upper = 7674.5 },
+            };
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
+                evidence);
+            Assert(decision.Action == PolicyAction.NoAction, "paused campaign blocks probe");
         }
 
         private static void TrapProbeAllowsLeanAtEdge()
@@ -889,6 +928,29 @@ namespace KahnRuntime
             if (!condition)
                 throw new InvalidOperationException($"Kahn self-test failed: {name}");
         }
+        private static void ApplyProbeAndFlatten(CampaignState state,
+            CampaignPlan plan,
+            string token)
+        {
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "probe_" + token,
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 7673.75, Upper = 7675.25 },
+                EvidenceId = "probe-" + token,
+            }, plan, simulateAcceptedDecisions: true);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.Flatten,
+                Policy = "selftest",
+                ReasonCode = "flatten_" + token,
+                Quantity = 1,
+                EvidenceId = "flatten-" + token,
+            }, plan, simulateAcceptedDecisions: true);
+        }
+
         private static void SeedPosition(CampaignState state,
             CampaignPlan plan,
             int quantity)

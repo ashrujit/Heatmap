@@ -32,6 +32,11 @@ namespace KahnRuntime
         public int? CampaignProbeQuantity { get; set; }
         public int? CampaignAddQuantity { get; set; }
         public int? CampaignMaxPositionQuantity { get; set; }
+        public int? CampaignMaxRetry { get; set; }
+        public int? ExecutionAttemptCount { get; set; }
+        public int? ExecutionRetriesRemaining { get; set; }
+        public string ExecutionPauseReason { get; set; }
+        public string ExecutionPausedAtUtc { get; set; }
         public int? InstanceMaxQuantity { get; set; }
         public int? WorkerPollMs { get; set; }
         public int? BookSampleMs { get; set; }

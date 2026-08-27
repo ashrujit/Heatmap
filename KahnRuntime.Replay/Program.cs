@@ -73,6 +73,7 @@ namespace KahnRuntime.Replay
                 ["campaign_digest"] = plan.Digest,
                 ["status"] = plan.Status,
                 ["side"] = plan.Side,
+                ["max_retry"] = Math.Max(1, plan.Execution?.MaxRetry ?? 3),
                 ["waypoint_count"] = plan.Waypoints.Count,
                 ["notes"] = plan.Notes,
             });
@@ -183,6 +184,10 @@ namespace KahnRuntime.Replay
                 ["evidence_volume"] = evidence.Volume,
                 ["evidence_score"] = evidence.Score,
                 ["simulated_position_before"] = state.SimulatedPositionQuantity,
+                ["execution_attempt_count"] = state.ExecutionAttemptCount,
+                ["max_retry"] = Math.Max(1, plan.Execution?.MaxRetry ?? 3),
+                ["retries_remaining"] = state.ExecutionRetriesRemaining(plan),
+                ["execution_pause_reason"] = state.ExecutionPauseReason,
             };
 
         private static Dictionary<string, object> StatePayload(CampaignPlan plan,
@@ -199,6 +204,11 @@ namespace KahnRuntime.Replay
                 ["root_risk_anchor_evidence_id"] = state.RootRiskAnchorEvidenceId,
                 ["armed_waypoint_id"] = state.ArmedWaypointId,
                 ["suppress_adds_until"] = state.SuppressAddsUntil,
+                ["execution_attempt_count"] = state.ExecutionAttemptCount,
+                ["max_retry"] = Math.Max(1, plan.Execution?.MaxRetry ?? 3),
+                ["retries_remaining"] = state.ExecutionRetriesRemaining(plan),
+                ["execution_pause_reason"] = state.ExecutionPauseReason,
+                ["execution_paused_at"] = state.ExecutionPausedAt,
             };
 
         private static void WriteJsonLine(StreamWriter writer, Dictionary<string, object> payload)

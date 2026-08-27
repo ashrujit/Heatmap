@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "nq-2026-08-26-long-reversal-1255",
+  "status": "active",
+  "created_at": "2026-08-26T16:55:00Z",
+  "side": "long",
+  "window": {
+    "not_before": "2026-08-26T16:55:00Z",
+    "expires_at": "2026-08-26T19:10:00Z"
+  },
+  "arena": {
+    "lower": 29175.0,
+    "upper": 29375.0
+  },
+  "sizing": {
+    "probe_quantity": 1,
+    "add_quantity": 1,
+    "max_position_quantity": 3
+  },
+  "execution": {
+    "max_retry": 3
+  },
+  "risk": {
+    "root_stop_ticks": 72,
+    "sponsor_failure_buffer_ticks": 8,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 29365.0,
+      "upper": 29370.0
+    },
+    "target_proximity_ticks": 20,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "probe-29260-29290",
+      "role": "trap_probe",
+      "range": {
+        "lower": 29260.0,
+        "upper": 29290.0
+      },
+      "require_price_inside": true,
+      "label": "probe long only inside 29260-29290 after lower auction stabilizes"
+    },
+    {
+      "id": "no-add-29260-29290",
+      "role": "no_add",
+      "range": {
+        "lower": 29260.0,
+        "upper": 29290.0
+      },
+      "label": "hold corridor; do not add until price accepts above 29290"
+    },
+    {
+      "id": "evaluate-29288-29296",
+      "role": "evaluate",
+      "range": {
+        "lower": 29288.0,
+        "upper": 29296.0
+      },
+      "label": "first 29290 tests are review-only until they hold"
+    },
+    {
+      "id": "press-above-29290",
+      "role": "press",
+      "range": {
+        "lower": 29290.0,
+        "upper": 29305.0
+      },
+      "require_price_inside": true,
+      "label": "first add after demand owns above 29290"
+    },
+    {
+      "id": "press-29300-29330",
+      "role": "press",
+      "range": {
+        "lower": 29300.0,
+        "upper": 29330.0
+      },
+      "require_price_inside": true,
+      "label": "second add on continuation while still below target proximity"
+    },
+    {
+      "id": "target-29365-29370",
+      "role": "target",
+      "range": {
+        "lower": 29365.0,
+        "upper": 29370.0
+      },
+      "label": "target zone near 29370; harvest because exact 29370 did not have to print"
+    }
+  ],
+  "notes": "Synthetic Skurry-derived 2026-08-26 NQ long replay after the lower exploration. Probe 29260-29290, no add in the probe corridor, add only after accepted demand above 29290, target zone 29365-29370."
+}

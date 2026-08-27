@@ -180,6 +180,7 @@ namespace KahnRuntime
         {
             if (!context.Plan.Policies.TrapProbeEnabled
                 || context.State.IsRetired
+                || !context.State.CanAttemptEntry(context.Plan)
                 || context.State.HasPosition)
             {
                 yield break;
@@ -248,6 +249,7 @@ namespace KahnRuntime
         {
             if (!context.Plan.Policies.PressEnabled
                 || context.State.IsRetired
+                || context.State.ExecutionPaused
                 || !context.State.HasPosition
                 || context.State.AddsSuppressed(context.Now)
                 || context.State.SimulatedPositionQuantity >= context.Plan.Sizing.MaxPositionQuantity)

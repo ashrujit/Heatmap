@@ -60,6 +60,7 @@ def build_decision_context(
         "sec_min_dte": payload.get("sec_min_dte"),
         "regime_hint": _regime_hint(sum_gex_oi=sum_gex_oi, sum_gex_vol=sum_gex_vol),
         "major_levels": markers,
+        "wall_context": _wall_context(payload, tick_size=tick_size, zone_ticks=zone_ticks),
         "nearby_strikes": strikes,
         "aggregates": {
             "sum_gex_oi": sum_gex_oi,
@@ -84,6 +85,7 @@ def build_decision_context(
         "schema_notes": [
             "Raw GexBot fields are preserved separately by gexbot_snapshot.",
             "Strike rows are interpreted as [strike, gex_by_volume, gex_by_oi, priors] from the public response example.",
+            "Classic call_wall/put_wall are aliases for the volume-derived major positive/negative GEX fields; OI variants are preserved separately.",
             "Use ES_SPX/NQ_NDX for futures price-space context when available.",
         ],
     }
@@ -124,6 +126,105 @@ def _level_markers(payload: dict[str, Any], *, tick_size: float, zone_ticks: int
             }
         )
     return markers
+
+
+def _wall_context(payload: dict[str, Any], *, tick_size: float, zone_ticks: int) -> dict[str, Any]:
+    return {
+        "call_wall": _api_wall(
+            payload,
+            field="major_pos_vol",
+            role="call_wall",
+            label="Largest positive GEX by volume",
+            tick_size=tick_size,
+            zone_ticks=zone_ticks,
+        ),
+        "put_wall": _api_wall(
+            payload,
+            field="major_neg_vol",
+            role="put_wall",
+            label="Largest negative GEX by volume",
+            tick_size=tick_size,
+            zone_ticks=zone_ticks,
+        ),
+        "oi_call_wall": _api_wall(
+            payload,
+            field="major_pos_oi",
+            role="oi_call_wall",
+            label="Largest positive GEX by open interest",
+            tick_size=tick_size,
+            zone_ticks=zone_ticks,
+        ),
+        "oi_put_wall": _api_wall(
+            payload,
+            field="major_neg_oi",
+            role="oi_put_wall",
+            label="Largest negative GEX by open interest",
+            tick_size=tick_size,
+            zone_ticks=zone_ticks,
+        ),
+        "derived_from_strikes": {
+            "max_positive_gex_volume": _strike_extreme(payload.get("strikes"), value_index=1, sign=1),
+            "max_negative_gex_volume": _strike_extreme(payload.get("strikes"), value_index=1, sign=-1),
+            "max_positive_gex_oi": _strike_extreme(payload.get("strikes"), value_index=2, sign=1),
+            "max_negative_gex_oi": _strike_extreme(payload.get("strikes"), value_index=2, sign=-1),
+        },
+        "notes": [
+            "Use call_wall/put_wall for the web-UI style Classic volume wall vocabulary.",
+            "Use OI wall variants only when the read is explicitly OI-based.",
+            "Max-change fields describe recent GEX change by lookback, not the static wall.",
+        ],
+    }
+
+
+def _api_wall(
+    payload: dict[str, Any],
+    *,
+    field: str,
+    role: str,
+    label: str,
+    tick_size: float,
+    zone_ticks: int,
+) -> dict[str, Any] | None:
+    price = _number(payload.get(field))
+    if price is None:
+        return None
+    return {
+        "role": role,
+        "price": price,
+        "range": _zone(price, tick_size=tick_size, zone_ticks=zone_ticks),
+        "source_field": field,
+        "calculation": "api_major_level",
+        "label": label,
+        "permission": "context_only",
+    }
+
+
+def _strike_extreme(rows: Any, *, value_index: int, sign: int) -> dict[str, Any] | None:
+    if not isinstance(rows, list):
+        return None
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) <= value_index:
+            continue
+        strike = _number(row[0])
+        value = _number(row[value_index])
+        if strike is None or value is None:
+            continue
+        if sign > 0 and value <= 0:
+            continue
+        if sign < 0 and value >= 0:
+            continue
+        candidates.append(
+            {
+                "strike": strike,
+                "value": value,
+                "source_column": "gex_volume" if value_index == 1 else "gex_oi",
+                "calculation": "derived_from_strikes",
+            }
+        )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: abs(item["value"]))
 
 
 def _nearby_strikes(
