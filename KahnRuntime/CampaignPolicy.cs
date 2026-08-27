@@ -180,6 +180,7 @@ namespace KahnRuntime
         {
             if (!context.Plan.Policies.TrapProbeEnabled
                 || context.State.IsRetired
+                || !context.Plan.IsActiveAt(context.Now)
                 || !context.State.CanAttemptEntry(context.Plan)
                 || context.State.HasPosition)
             {

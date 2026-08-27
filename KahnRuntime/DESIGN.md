@@ -48,6 +48,11 @@ Kahn reconciles live position state from the configured execution
 `Symbol`/`Account`. It pauses and logs operator-action errors rather than
 adopting manual/orphan positions or ambiguous multiple positions.
 
+Campaign expiry is an entry-admission boundary, not a campaign kill switch.
+`window.expires_at` blocks fresh flat probe entries, but if a probe filled
+before expiry, Kahn continues evaluating typed evidence for adds, suppressions,
+reductions, sponsor-failure flattening, and target/retirement decisions.
+
 Campaign sizing is directive-local. `probe_quantity`, `add_quantity`, and
 `max_position_quantity` come from the loaded campaign so an operator can
 change size for a new situation without restarting and losing live LL warmup.

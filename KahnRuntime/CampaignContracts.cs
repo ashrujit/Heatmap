@@ -229,9 +229,18 @@ namespace KahnRuntime
         public string Digest { get; init; }
 
         public bool IsActiveAt(DateTimeOffset now)
-            => string.Equals(Status, "active", StringComparison.OrdinalIgnoreCase)
-                && Window != null
-                && Window.Contains(now);
+            => IsActiveStatus
+                && IsEntryWindowOpen(now);
+
+        public bool ShouldEvaluateEvidenceAt(DateTimeOffset now, CampaignState state)
+            => IsActiveStatus
+                && (IsEntryWindowOpen(now) || state?.HasPosition == true);
+
+        private bool IsActiveStatus
+            => string.Equals(Status, "active", StringComparison.OrdinalIgnoreCase);
+
+        private bool IsEntryWindowOpen(DateTimeOffset now)
+            => Window != null && Window.Contains(now);
 
         public IEnumerable<CampaignWaypoint> WaypointsByRole(WaypointRole role)
             => Waypoints?.Where(waypoint => waypoint.Role == role)

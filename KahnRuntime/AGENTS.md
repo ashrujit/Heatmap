@@ -56,6 +56,10 @@ governor into a form-filled EAR directive dispatcher.
   so `FLAT` can close bound exposure after campaign expiry. Existing
   `control.json` contents are marked seen at startup to avoid replaying stale
   controls.
+- Campaign expiry gates new probe admission only. Once Kahn has managed
+  inventory from a pre-expiry fill, evidence evaluation continues after
+  `window.expires_at` so add, suppress, reduce, flatten, and retire decisions
+  still manage the campaign.
 - `FLAT` cancels Kahn-owned working orders, submits Quantower close-position
   requests for all bound live positions, and retires campaign state after
   accepted submission. `CANCEL` retires only when the bound position is flat; if

@@ -81,7 +81,7 @@ namespace KahnRuntime.Replay
             foreach (CampaignEvidence evidence in evidenceEvents)
             {
                 DateTimeOffset now = evidence.Timestamp;
-                if (!plan.IsActiveAt(now))
+                if (!plan.ShouldEvaluateEvidenceAt(now, state))
                 {
                     ignored++;
                     if (options.IncludeIgnored || options.ReportRequested)
@@ -90,7 +90,7 @@ namespace KahnRuntime.Replay
                         {
                             ["event"] = "evidence_ignored",
                             ["campaign_id"] = plan.Id,
-                            ["reason_code"] = "outside_campaign_window",
+                            ["reason_code"] = "outside_campaign_window_flat",
                             ["evidence_id"] = evidence.EventId,
                             ["evidence_ts_utc"] = evidence.Timestamp,
                             ["evidence_kind"] = evidence.Kind,

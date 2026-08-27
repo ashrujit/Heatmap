@@ -300,7 +300,9 @@ namespace KahnRuntime
 
                 ProcessBookSample(now.UtcDateTime);
 
-                if (_plan != null && _state != null && _plan.IsActiveAt(now))
+                if (_plan != null
+                    && _state != null
+                    && _plan.ShouldEvaluateEvidenceAt(now, _state))
                 {
                     foreach (CampaignEvidence evidence in DrainMarketEvents())
                         ProcessEvidence(evidence, now);
@@ -671,8 +673,13 @@ namespace KahnRuntime
 
         private void ProcessEvidence(CampaignEvidence evidence, DateTimeOffset now)
         {
-            if (_plan == null || _state == null || _state.IsRetired || !_plan.IsActiveAt(now))
+            if (_plan == null
+                || _state == null
+                || _state.IsRetired
+                || !_plan.ShouldEvaluateEvidenceAt(now, _state))
+            {
                 return;
+            }
 
             CampaignPhase phaseBefore = _state.Phase;
             int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
@@ -883,7 +890,7 @@ namespace KahnRuntime
                 if (TryTranslateLiveEvidence(transition, out CampaignEvidence evidence)
                     && _plan != null
                     && _state != null
-                    && _plan.IsActiveAt(evidence.Timestamp))
+                    && _plan.ShouldEvaluateEvidenceAt(evidence.Timestamp, _state))
                 {
                     ProcessEvidence(evidence, DateTimeOffset.UtcNow);
                 }

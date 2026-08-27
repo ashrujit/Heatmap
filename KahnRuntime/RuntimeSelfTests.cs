@@ -10,6 +10,8 @@ namespace KahnRuntime
             RetryExhaustionPausesCampaignInsteadOfRetiring();
             TrapProbeAllowsLeanAtEdge();
             ArmedProbeAllowsLaterInsideRail();
+            ExpiredFlatCampaignBlocksProbeAdmission();
+            ExpiredPositionedCampaignStillManagesAddsAndRisk();
             EdgePriceGateBlocksBodyProbe();
             EdgePriceGateAllowsEdgeProbe();
             EdgePriceGateBlocksBodyAdd();
@@ -183,6 +185,70 @@ namespace KahnRuntime
                 new CampaignContext(plan, state, 0.25, evidence.Timestamp),
                 evidence);
             Assert(decision.Action == PolicyAction.AllowProbe, "armed probe later inside rail");
+        }
+
+        private static void ExpiredFlatCampaignBlocksProbeAdmission()
+        {
+            CampaignPlan plan = ShortPlan(ExpiredWindow());
+            CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CampaignEvidence evidence = new()
+            {
+                EventId = "expired-flat-lean",
+                Timestamp = now,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Supply,
+                Range = new PriceRange { Lower = 7674.0, Upper = 7674.5 },
+            };
+
+            Assert(!plan.ShouldEvaluateEvidenceAt(now, state),
+                "expired flat campaign skips evidence");
+            PolicyDecision decision = engine.Evaluate(new CampaignContext(plan, state, 0.25, now), evidence);
+            Assert(decision.Action == PolicyAction.NoAction,
+                "expired flat campaign blocks probe");
+        }
+
+        private static void ExpiredPositionedCampaignStillManagesAddsAndRisk()
+        {
+            CampaignPlan plan = LongPlan(ExpiredWindow());
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, 1);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            CampaignEvidence pressEvidence = new()
+            {
+                EventId = "expired-position-press",
+                Timestamp = now,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 7675.5, Upper = 7676.0 },
+            };
+            Assert(plan.ShouldEvaluateEvidenceAt(now, state),
+                "expired positioned campaign keeps evaluating evidence");
+            PolicyDecision add = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, now),
+                pressEvidence);
+            Assert(add.Action == PolicyAction.AllowAdd,
+                "expired positioned campaign still allows campaign add");
+
+            CampaignEvidence sponsorFailure = new()
+            {
+                EventId = "expired-position-sponsor-fail",
+                Timestamp = now.AddSeconds(1),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.SponsorFailed,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 7676.0, Upper = 7678.0 },
+            };
+            PolicyDecision flatten = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, sponsorFailure.Timestamp),
+                sponsorFailure);
+            Assert(flatten.Action == PolicyAction.Flatten,
+                "expired positioned campaign still flattens on sponsor failure");
         }
         private static void EdgePriceGateBlocksBodyProbe()
         {
@@ -629,7 +695,7 @@ namespace KahnRuntime
             Assert(state.ActiveRiskAnchorEvidenceId == "seed-probe",
                 "active risk evidence remains root after preserve add");
         }
-        private static CampaignPlan ShortPlan()
+        private static CampaignPlan ShortPlan(CampaignWindow window = null)
             => new()
             {
                 SchemaVersion = 1,
@@ -638,7 +704,7 @@ namespace KahnRuntime
                 Status = "active",
                 CreatedAt = DateTimeOffset.UtcNow,
                 Side = CampaignSide.Short,
-                Window = Window(),
+                Window = window ?? Window(),
                 Arena = new PriceRange { Lower = 7650.0, Upper = 7680.0 },
                 Sizing = new CampaignSizing
                 {
@@ -875,7 +941,7 @@ namespace KahnRuntime
                     },
                 },
             };
-        private static CampaignPlan LongPlan()
+        private static CampaignPlan LongPlan(CampaignWindow window = null)
             => new()
             {
                 SchemaVersion = 1,
@@ -884,7 +950,7 @@ namespace KahnRuntime
                 Status = "active",
                 CreatedAt = DateTimeOffset.UtcNow,
                 Side = CampaignSide.Long,
-                Window = Window(),
+                Window = window ?? Window(),
                 Arena = new PriceRange { Lower = 7660.0, Upper = 7690.0 },
                 Sizing = new CampaignSizing
                 {
@@ -921,6 +987,13 @@ namespace KahnRuntime
             {
                 NotBefore = DateTimeOffset.UtcNow.AddMinutes(-1),
                 ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(30),
+            };
+
+        private static CampaignWindow ExpiredWindow()
+            => new()
+            {
+                NotBefore = DateTimeOffset.UtcNow.AddMinutes(-30),
+                ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1),
             };
 
         private static void Assert(bool condition, string name)
