@@ -28,9 +28,11 @@ help draft or critique plans, but only deterministic code may enforce decisions.
 write synthetic fills when `Shadow Fill Simulation=true`; this is useful for
 policy rehearsal and dry runs.
 
-`Trading Enabled=true` submits market entry/add orders and uses Quantower
-`ClosePosition` for reduce, flatten, and retire decisions. Runtime orders are
-tagged `KH:`. On stop, Kahn cancels only its own tagged working orders.
+`Trading Enabled=true` submits market entry/add orders, can work tagged
+reduce-only close-limit orders for configured passive harvest objectives, and
+uses Quantower `ClosePosition` for active reduce, flatten, and retire decisions.
+Runtime orders are tagged `KH:`. On stop, Kahn cancels only its own tagged
+working orders.
 
 Operator controls are not campaign evidence and do not depend on the campaign
 active window. A changed `Control Path` file with `kind=KAHN_CONTROL` and
@@ -40,9 +42,18 @@ positions, and retires campaign state once close submission is accepted.
 asks for `FLAT`. Existing control contents are marked seen at startup so stale
 controls are not replayed into a new run.
 
-The adapter deliberately does not manage brackets, TP limits, BE migration, or
-protection stops yet. Those require a separate protection-order design because
-Kahn's risk can move by policy, waypoint, path stress, and sponsor lineage.
+Runtime paths are part of the instance boundary. In multi-symbol use, keep
+campaign, control, evidence, decision-log, and checkpoint files under the same
+symbol/account profile directory, for example `...\KahnRuntime\ES\` and
+`...\KahnRuntime\NQ\`. A shared root `control.json` can be used for a deliberate
+single-instance setup, but it is not safe as the normal ES/NQ live convention
+because controls are delivered by path.
+
+Passive harvest is not a bracket/TP engine. It is a campaign objective that lets
+Kahn progressively lighten inside a declared paid area before waiting for full
+opposite-side proof. BE migration, protection stops, and bracket lifecycles still
+require a separate protection-order design because Kahn's risk can move by
+policy, waypoint, path stress, and sponsor lineage.
 
 Kahn reconciles live position state from the configured execution
 `Symbol`/`Account`. It pauses and logs operator-action errors rather than
@@ -52,6 +63,34 @@ Campaign expiry is an entry-admission boundary, not a campaign kill switch.
 `window.expires_at` blocks fresh flat probe entries, but if a probe filled
 before expiry, Kahn continues evaluating typed evidence for adds, suppressions,
 reductions, sponsor-failure flattening, and target/retirement decisions.
+
+`objective.passive_harvest` describes the paid area where exit inventory should
+be offered/bid before Kahn waits for a confirmed auction failure. It accepts a
+side-aware `range`: for longs the lower edge is the harvest floor and upper edge
+is stretch; for shorts the upper edge is the floor and lower edge is stretch.
+Kahn submits reduce-only close-limit orders at the passive BBO (`ask` to sell a
+long, `bid` to cover a short), capped by `max_working_quantity` and the current
+position. A live limit submission marks harvest active but does not decrement
+campaign quantity until broker fills/position reconciliation prove it. Shadow
+mode can simulate a touched passive fill. Once harvest is active, loss of the
+floor triggers active retire/cleanup of remaining inventory.
+
+Example:
+
+```json
+"objective": {
+  "target_range": { "lower": 7740.0, "upper": 7743.0 },
+  "target_proximity_ticks": 8,
+  "suppress_adds_in_target_zone": true,
+  "passive_harvest": {
+    "range": { "lower": 7740.0, "upper": 7743.0 },
+    "initial_clip_quantity": 1,
+    "follow_clip_quantity": 2,
+    "max_working_quantity": 2,
+    "floor_failure_ticks": 0
+  }
+}
+```
 
 Campaign sizing is directive-local. `probe_quantity`, `add_quantity`, and
 `max_position_quantity` come from the loaded campaign so an operator can

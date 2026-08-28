@@ -366,6 +366,12 @@ namespace KahnRuntime
                 ("add_quantity", _plan.Sizing.AddQuantity),
                 ("campaign_max_position_quantity", _plan.Sizing.MaxPositionQuantity),
                 ("max_retry", maxRetry),
+                ("passive_harvest_enabled", _plan.Objective?.PassiveHarvest?.IsUsable ?? false),
+                ("passive_harvest_range", _plan.Objective?.PassiveHarvest?.Range),
+                ("passive_harvest_initial_clip_quantity", _plan.Objective?.PassiveHarvest?.InitialClipQuantity),
+                ("passive_harvest_follow_clip_quantity", _plan.Objective?.PassiveHarvest?.FollowClipQuantity),
+                ("passive_harvest_max_working_quantity", _plan.Objective?.PassiveHarvest?.MaxWorkingQuantity),
+                ("passive_harvest_floor_failure_ticks", _plan.Objective?.PassiveHarvest?.FloorFailureTicks),
                 ("resumed_from_retry_pause", resumedFromRetryPause),
                 ("instance_max_quantity", Math.Max(1, InstanceMaxQuantity)),
                 ("waypoint_count", _plan.Waypoints.Count),
@@ -737,7 +743,16 @@ namespace KahnRuntime
             }
 
             bool simulateAccepted = !_runTradingEnabled ? ShadowFillSimulation : true;
-            _state.ApplyDecision(decision, _plan, simulateAccepted, now);
+            int? passiveHarvestFillQuantity = decision.Action == PolicyAction.PassiveHarvest
+                && execution.Shadow
+                && execution.FilledQuantity > 0
+                    ? Math.Max(1, (int)Math.Round(execution.FilledQuantity))
+                    : null;
+            _state.ApplyDecision(decision,
+                _plan,
+                simulateAccepted,
+                now,
+                passiveHarvestFillQuantity);
             bool retryPaused = _state.ExecutionPaused && phaseBefore != CampaignPhase.Paused;
             if (retryPaused)
             {
@@ -765,6 +780,10 @@ namespace KahnRuntime
                 ("root_risk_anchor_evidence_id", _state.RootRiskAnchorEvidenceId),
                 ("armed_waypoint_id", _state.ArmedWaypointId),
                 ("suppress_adds_until", _state.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture)),
+                ("passive_harvest_active", _state.PassiveHarvestActive),
+                ("passive_harvest_started_at", _state.PassiveHarvestStartedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("last_passive_harvest_at", _state.LastPassiveHarvestAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("passive_harvest_signal_count", _state.PassiveHarvestSignalCount),
                 ("execution_attempt_count", _state.ExecutionAttemptCount),
                 ("max_retry", maxRetry),
                 ("retries_remaining", _state.ExecutionRetriesRemaining(_plan)),
@@ -801,6 +820,7 @@ namespace KahnRuntime
         private static bool RequiresBrokerAction(PolicyAction action)
             => action is PolicyAction.AllowProbe
                 or PolicyAction.AllowAdd
+                or PolicyAction.PassiveHarvest
                 or PolicyAction.Reduce
                 or PolicyAction.Flatten
                 or PolicyAction.Retire;
@@ -811,6 +831,7 @@ namespace KahnRuntime
             {
                 PolicyAction.AllowProbe => "ENTRY",
                 PolicyAction.AllowAdd => "ADD",
+                PolicyAction.PassiveHarvest => "EXIT",
                 PolicyAction.Reduce => "EXIT",
                 PolicyAction.Flatten => "RISK",
                 PolicyAction.Retire => "EXIT",
@@ -1212,7 +1233,11 @@ namespace KahnRuntime
                 CampaignId = _plan?.Id,
                 CampaignDigest = _plan?.Digest,
                 CampaignStatus = _plan?.Status,
+                CampaignPath = Environment.ExpandEnvironmentVariables(CampaignPath),
                 ControlPath = Environment.ExpandEnvironmentVariables(ControlPath),
+                EvidencePath = Environment.ExpandEnvironmentVariables(EvidencePath),
+                DecisionLogPath = Environment.ExpandEnvironmentVariables(DecisionLogPath),
+                CheckpointPath = Environment.ExpandEnvironmentVariables(CheckpointPath),
                 LastControlId = _lastControlId,
                 LastControlAction = _lastControlAction,
                 LastControlStatus = _lastControlStatus,
@@ -1233,6 +1258,12 @@ namespace KahnRuntime
                 CampaignAddQuantity = _plan?.Sizing?.AddQuantity,
                 CampaignMaxPositionQuantity = _plan?.Sizing?.MaxPositionQuantity,
                 CampaignMaxRetry = _plan?.Execution?.MaxRetry,
+                PassiveHarvestEnabled = _plan?.Objective?.PassiveHarvest?.IsUsable,
+                PassiveHarvestRange = _plan?.Objective?.PassiveHarvest?.Range,
+                PassiveHarvestInitialClipQuantity = _plan?.Objective?.PassiveHarvest?.InitialClipQuantity,
+                PassiveHarvestFollowClipQuantity = _plan?.Objective?.PassiveHarvest?.FollowClipQuantity,
+                PassiveHarvestMaxWorkingQuantity = _plan?.Objective?.PassiveHarvest?.MaxWorkingQuantity,
+                PassiveHarvestFloorFailureTicks = _plan?.Objective?.PassiveHarvest?.FloorFailureTicks,
                 ExecutionAttemptCount = _state?.ExecutionAttemptCount,
                 ExecutionRetriesRemaining = _state?.ExecutionRetriesRemaining(_plan),
                 ExecutionPauseReason = _state?.ExecutionPauseReason,
@@ -1269,12 +1300,18 @@ namespace KahnRuntime
                 PositionQuantity = FiniteOrZero(position.Quantity),
                 PositionAveragePrice = FiniteOrZero(position.AveragePrice),
                 BoundWorkingOrderCount = BoundWorkingOrders().Count,
+                PassiveHarvestWorkingOrderCount = PassiveHarvestWorkingOrders().Count,
+                PassiveHarvestWorkingQuantity = PassiveHarvestWorkingQuantity(),
                 ArmedWaypointId = _state?.ArmedWaypointId,
                 ActiveRiskAnchor = _state?.ActiveRiskAnchor,
                 ActiveRiskAnchorEvidenceId = _state?.ActiveRiskAnchorEvidenceId,
                 RootRiskAnchor = _state?.RootRiskAnchor,
                 RootRiskAnchorEvidenceId = _state?.RootRiskAnchorEvidenceId,
                 SuppressAddsUntilUtc = _state?.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture),
+                PassiveHarvestActive = _state?.PassiveHarvestActive,
+                PassiveHarvestStartedAtUtc = _state?.PassiveHarvestStartedAt?.ToString("O", CultureInfo.InvariantCulture),
+                LastPassiveHarvestAtUtc = _state?.LastPassiveHarvestAt?.ToString("O", CultureInfo.InvariantCulture),
+                PassiveHarvestSignalCount = _state?.PassiveHarvestSignalCount,
                 LastDecisionUtc = _state?.LastDecisionUtc == default
                     ? null
                     : _state?.LastDecisionUtc.ToString("O", CultureInfo.InvariantCulture),
@@ -1449,6 +1486,13 @@ namespace KahnRuntime
                 .Where(o => SameBoundPair(o.Symbol, o.Account) && o.RemainingQuantity > 0)
                 .ToArray();
         }
+
+        private IReadOnlyList<Order> PassiveHarvestWorkingOrders()
+            => _gateway?.RuntimeHarvestOrders() ?? Array.Empty<Order>();
+
+        private double PassiveHarvestWorkingQuantity()
+            => PassiveHarvestWorkingOrders()
+                .Sum(order => Math.Max(0, order.RemainingQuantity));
 
         private void Subscribe()
         {
@@ -1665,8 +1709,20 @@ namespace KahnRuntime
             AddMetric(metrics, "Inst Cap", Math.Max(1, InstanceMaxQuantity).ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Sim Qty", (_state?.SimulatedPositionQuantity ?? 0).ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Live Qty", position.Quantity.ToString(CultureInfo.InvariantCulture));
+            AddMetric(metrics, "Harvest", HarvestMetricText());
             AddMetric(metrics, "Risk", _state?.ActiveRiskAnchor?.ToString() ?? "-");
             return metrics;
+        }
+
+        private string HarvestMetricText()
+        {
+            if (_plan?.Objective?.PassiveHarvest?.IsUsable != true)
+                return "-";
+            string active = _state?.PassiveHarvestActive == true ? "active" : "armed";
+            return active
+                + " "
+                + PassiveHarvestWorkingQuantity().ToString("0.########", CultureInfo.InvariantCulture)
+                + "w";
         }
 
         private string RetryMetricText()

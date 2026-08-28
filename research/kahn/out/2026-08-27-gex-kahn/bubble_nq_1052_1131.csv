@@ -1,0 +1,4 @@
+bar,display,side,price_range,center,label_size,source,identity_backed,prints,buy_volume,sell_volume,volume,delta,delta_share,bins,visual01
+10:55:00,10:57:30,BUY,29580.00-29583.75,29581.75,162,delta,0,421,302,140,442,162,0.367,2,0.373
+11:15:00,11:17:30,BUY,29630.00-29635.00,29631.75,277,delta,0,528,448,171,619,277,0.447,3,1.000
+11:25:00,11:27:30,SELL,29574.00-29579.75,29577.00,154,delta,0,456,172,326,498,-154,0.309,3,0.255

@@ -44,10 +44,15 @@ governor into a form-filled EAR directive dispatcher.
   existing bound position while campaign state is flat, or multiple bound
   positions, it logs `ERR: recovery action required` and pauses campaign
   decisions until the operator intervenes.
-- The first live adapter is intentionally narrow: market entry/add orders and
-  market close-position reduce/flatten/retire. It does not yet manage target
-  limit orders, bracket orders, BE stop migration, or EAR-style protection order
-  lifecycle.
+- The live adapter is still narrow: market entry/add orders, reduce-only
+  close-limit orders for configured passive harvest objectives, and market
+  close-position reduce/flatten/retire. It does not manage bracket orders, BE
+  stop migration, or EAR-style protection order lifecycle.
+- Passive harvest belongs to the campaign objective, not LL confirmation. A
+  plan can declare a side-aware paid range; once price reaches the floor Kahn can
+  work tagged `HARVEST` close limits at passive BBO, increase clip size near the
+  stretch edge, and actively clean up remaining inventory if the floor is lost.
+  Do not require an owned supply/demand band before lightening a paid target.
 - Live orders are tagged with `KH:` in `GroupId`/`Comment`. Kahn only cancels its
   own tagged working orders on stop or explicit operator `FLAT`/`CANCEL`
   control; it does not cancel unrelated account orders.
@@ -56,6 +61,11 @@ governor into a form-filled EAR directive dispatcher.
   so `FLAT` can close bound exposure after campaign expiry. Existing
   `control.json` contents are marked seen at startup to avoid replaying stale
   controls.
+- Runtime file paths are an instance boundary. When more than one KahnRuntime can
+  run, configure campaign, control, evidence, decision-log, and checkpoint paths
+  under the same symbol/account profile directory, such as
+  `...\KahnRuntime\ES\` or `...\KahnRuntime\NQ\`. A shared root `control.json`
+  is only acceptable for a deliberate single-instance setup.
 - Campaign expiry gates new probe admission only. Once Kahn has managed
   inventory from a pre-expiry fill, evidence evaluation continues after
   `window.expires_at` so add, suppress, reduce, flatten, and retire decisions

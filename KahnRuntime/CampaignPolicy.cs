@@ -42,6 +42,7 @@ namespace KahnRuntime
                 new NoAddZonePolicy(),
                 new EvaluateZonePolicy(),
                 new PathStressPolicy(),
+                new PassiveHarvestPolicy(),
                 new TargetZonePolicy(),
                 new BuildTrialPolicy(),
                 new RepairHoldPolicy(),
@@ -59,6 +60,7 @@ namespace KahnRuntime
             [PolicyAction.Reduce] = 850,
             [PolicyAction.SuppressAdd] = 700,
             [PolicyAction.TightenRisk] = 625,
+            [PolicyAction.PassiveHarvest] = 845,
             [PolicyAction.HoldRoot] = 500,
             [PolicyAction.AllowProbe] = 420,
             [PolicyAction.AllowAdd] = 320,
@@ -378,6 +380,90 @@ namespace KahnRuntime
                     context.State.ActiveRiskAnchor,
                     priority: DecisionResolver.PriorityFor(PolicyAction.Retire));
             }
+        }
+    }
+
+    internal sealed class PassiveHarvestPolicy : CampaignPolicyBase
+    {
+        public override string Name => "passive_harvest";
+
+        public override IEnumerable<PolicyDecision> Evaluate(CampaignContext context,
+            CampaignEvidence evidence)
+        {
+            PassiveHarvestObjective harvest = context.Plan.Objective?.PassiveHarvest;
+            if (harvest?.IsUsable != true
+                || context.State.IsRetired
+                || !context.State.HasPosition)
+            {
+                yield break;
+            }
+
+            if (context.State.PassiveHarvestActive
+                && evidence.Price.HasValue
+                && harvest.IsFloorLost(context.Plan.Side, evidence.Price.Value, context.TickSize))
+            {
+                yield return Decision(
+                    PolicyAction.Retire,
+                    Name,
+                    "harvest_floor_lost",
+                    evidence,
+                    NearestWaypoint(context, evidence, WaypointRole.Target, 12)?.Id,
+                    context.State.SimulatedPositionQuantity,
+                    riskAnchor: new PriceRange
+                    {
+                        Lower = harvest.Floor(context.Plan.Side),
+                        Upper = harvest.Floor(context.Plan.Side),
+                    },
+                    priority: 940,
+                    detail: "Passive harvest was active, but price lost the harvest floor; clean up remaining inventory.");
+                yield break;
+            }
+
+            PriceRange evidenceRange = evidence.EffectiveRange(context.TickSize);
+            if (!harvest.IsAtOrBeyondFloor(context.Plan.Side, evidenceRange))
+                yield break;
+
+            bool atStretch = harvest.IsAtOrBeyondStretch(context.Plan.Side, evidenceRange);
+            bool sameSideAbsorbed = evidence.Kind == EvidenceKind.Absorption
+                && CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side)
+                && evidence.IsLargeEffort;
+            bool oppositeOwnership = evidence.Kind == EvidenceKind.RailOwned
+                && CampaignSideMath.IsOppositeSide(context.Plan.Side, evidence.Side);
+
+            string reason = "harvest_floor_reached";
+            int priority = 745;
+            int quantity = context.State.PassiveHarvestActive
+                ? harvest.FollowClipQuantity
+                : harvest.InitialClipQuantity;
+            if (atStretch)
+            {
+                reason = "harvest_stretch_reached";
+                priority = 880;
+                quantity = Math.Max(quantity, harvest.FollowClipQuantity);
+            }
+            if (sameSideAbsorbed)
+            {
+                reason = "same_side_effort_absorbed_at_harvest";
+                priority = 885;
+                quantity = Math.Max(quantity, harvest.FollowClipQuantity);
+            }
+            if (oppositeOwnership)
+            {
+                reason = "opposite_ownership_at_harvest";
+                priority = 960;
+                quantity = Math.Max(quantity, harvest.FollowClipQuantity);
+            }
+
+            yield return Decision(
+                PolicyAction.PassiveHarvest,
+                Name,
+                reason,
+                evidence,
+                NearestWaypoint(context, evidence, WaypointRole.Target, 12)?.Id,
+                Math.Min(quantity, Math.Max(1, context.State.SimulatedPositionQuantity)),
+                expiresAt: context.Now.AddSeconds(90),
+                detail: "Paid target area is active; work reduce-only limit exits before asking for more continuation.",
+                priority: priority);
         }
     }
 

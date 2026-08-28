@@ -188,6 +188,66 @@ namespace KahnRuntime
                 TargetRange = target,
                 TargetProximityTicks = OptionalNonNegativeInt(value, "target_proximity_ticks", 8),
                 SuppressAddsInTargetZone = OptionalBool(value, "suppress_adds_in_target_zone", true),
+                PassiveHarvest = ParsePassiveHarvest(OptionalObjectProperty(value, "passive_harvest")),
+            };
+        }
+
+        private static PassiveHarvestObjective ParsePassiveHarvest(JsonElement? element)
+        {
+            if (!element.HasValue)
+                return null;
+
+            JsonElement value = element.Value;
+            bool enabled = OptionalBool(value, "enabled", true);
+            PriceRange range = null;
+            if (value.TryGetProperty("range", out JsonElement rangeElement)
+                && rangeElement.ValueKind != JsonValueKind.Null)
+            {
+                range = ParseRange(RequireObject(rangeElement, "campaign.objective.passive_harvest.range"),
+                    "campaign.objective.passive_harvest.range");
+            }
+            else if (value.TryGetProperty("floor", out JsonElement floorElement)
+                && value.TryGetProperty("stretch", out JsonElement stretchElement)
+                && floorElement.ValueKind != JsonValueKind.Null
+                && stretchElement.ValueKind != JsonValueKind.Null)
+            {
+                double floor = ReadFiniteDouble(floorElement,
+                    "campaign.objective.passive_harvest.floor");
+                double stretch = ReadFiniteDouble(stretchElement,
+                    "campaign.objective.passive_harvest.stretch");
+                range = new PriceRange
+                {
+                    Lower = Math.Min(floor, stretch),
+                    Upper = Math.Max(floor, stretch),
+                };
+            }
+
+            if (enabled && range == null)
+                throw Invalid("campaign.objective.passive_harvest.range is required when enabled");
+
+            int clipQuantity = OptionalPositiveInt(value, "clip_quantity", 1);
+            int initialClipQuantity = OptionalPositiveInt(value,
+                "initial_clip_quantity",
+                clipQuantity);
+            int followClipQuantity = OptionalPositiveInt(value,
+                "follow_clip_quantity",
+                clipQuantity);
+            int maxWorkingQuantity = OptionalPositiveInt(value,
+                "max_working_quantity",
+                Math.Max(initialClipQuantity, followClipQuantity));
+            int floorFailureTicks = OptionalNonNegativeInt(value, "floor_failure_ticks", 0);
+            floorFailureTicks = OptionalNonNegativeInt(value,
+                "cleanup_retreat_ticks",
+                floorFailureTicks);
+
+            return new PassiveHarvestObjective
+            {
+                Enabled = enabled,
+                Range = range,
+                InitialClipQuantity = initialClipQuantity,
+                FollowClipQuantity = followClipQuantity,
+                MaxWorkingQuantity = maxWorkingQuantity,
+                FloorFailureTicks = floorFailureTicks,
             };
         }
 
@@ -314,8 +374,14 @@ namespace KahnRuntime
         internal static double RequireDouble(JsonElement element, string property, string context)
         {
             JsonElement value = RequireProperty(element, property, context);
+            double number = ReadFiniteDouble(value, $"{context}.{property}");
+            return number;
+        }
+
+        private static double ReadFiniteDouble(JsonElement value, string context)
+        {
             if (!value.TryGetDouble(out double number) || !double.IsFinite(number))
-                throw Invalid($"{context}.{property} must be a finite number");
+                throw Invalid($"{context} must be a finite number");
             return number;
         }
 

@@ -87,6 +87,7 @@ namespace KahnRuntime
         SuppressAdd,
         HoldRoot,
         TightenRisk,
+        PassiveHarvest,
         Reduce,
         Flatten,
         Retire,
@@ -176,11 +177,64 @@ namespace KahnRuntime
         public bool AllowContestBeyondRiskAnchor { get; init; } = true;
     }
 
+    internal sealed class PassiveHarvestObjective
+    {
+        public bool Enabled { get; init; } = true;
+        public PriceRange Range { get; init; }
+        public int InitialClipQuantity { get; init; } = 1;
+        public int FollowClipQuantity { get; init; } = 1;
+        public int MaxWorkingQuantity { get; init; } = 1;
+        public int FloorFailureTicks { get; init; }
+
+        public bool IsUsable
+            => Enabled
+                && Range?.IsValid == true
+                && InitialClipQuantity > 0
+                && FollowClipQuantity > 0
+                && MaxWorkingQuantity > 0;
+
+        public double Floor(CampaignSide side)
+            => side == CampaignSide.Long ? Range.Lower : Range.Upper;
+
+        public double Stretch(CampaignSide side)
+            => side == CampaignSide.Long ? Range.Upper : Range.Lower;
+
+        public bool IsAtOrBeyondFloor(CampaignSide side, PriceRange range)
+        {
+            if (!IsUsable || range?.IsValid != true)
+                return false;
+            return side == CampaignSide.Long
+                ? range.Upper >= Range.Lower
+                : range.Lower <= Range.Upper;
+        }
+
+        public bool IsAtOrBeyondStretch(CampaignSide side, PriceRange range)
+        {
+            if (!IsUsable || range?.IsValid != true)
+                return false;
+            return side == CampaignSide.Long
+                ? range.Upper >= Range.Upper
+                : range.Lower <= Range.Lower;
+        }
+
+        public bool IsFloorLost(CampaignSide side, double price, double tickSize)
+        {
+            if (!IsUsable || !double.IsFinite(price))
+                return false;
+            double padding = Math.Max(0, FloorFailureTicks) * Math.Max(tickSize, 0.0000001);
+            double floor = Floor(side);
+            return side == CampaignSide.Long
+                ? price < floor - padding
+                : price > floor + padding;
+        }
+    }
+
     internal sealed class CampaignObjective
     {
         public PriceRange TargetRange { get; init; }
         public int TargetProximityTicks { get; init; } = 8;
         public bool SuppressAddsInTargetZone { get; init; } = true;
+        public PassiveHarvestObjective PassiveHarvest { get; init; }
     }
 
     internal sealed class CampaignPolicyFlags
@@ -368,6 +422,10 @@ namespace KahnRuntime
         public int ExecutionAttemptCount { get; private set; }
         public string ExecutionPauseReason { get; private set; }
         public DateTimeOffset? ExecutionPausedAt { get; private set; }
+        public bool PassiveHarvestActive { get; private set; }
+        public DateTimeOffset? PassiveHarvestStartedAt { get; private set; }
+        public DateTimeOffset? LastPassiveHarvestAt { get; private set; }
+        public int PassiveHarvestSignalCount { get; private set; }
 
         public bool HasPosition => SimulatedPositionQuantity > 0;
         public bool IsRetired => Phase == CampaignPhase.Retired;
@@ -406,7 +464,8 @@ namespace KahnRuntime
         public void ApplyDecision(PolicyDecision decision,
             CampaignPlan plan,
             bool simulateAcceptedDecisions,
-            DateTimeOffset? appliedAt = null)
+            DateTimeOffset? appliedAt = null,
+            int? passiveHarvestFilledQuantity = null)
         {
             if (decision == null || decision.Action == PolicyAction.NoAction)
                 return;
@@ -460,6 +519,27 @@ namespace KahnRuntime
                     if (HasPosition && Phase != CampaignPhase.TargetZone)
                         Phase = CampaignPhase.BuildTrial;
                     break;
+                case PolicyAction.PassiveHarvest:
+                    ActivatePassiveHarvest(now);
+                    if (decision.ExpiresAt.HasValue)
+                        SuppressAddsUntil = decision.ExpiresAt;
+                    if (simulateAcceptedDecisions
+                        && passiveHarvestFilledQuantity.GetValueOrDefault() > 0)
+                    {
+                        int quantity = Math.Max(1, passiveHarvestFilledQuantity.Value);
+                        SimulatedPositionQuantity = Math.Max(0, SimulatedPositionQuantity - quantity);
+                    }
+                    if (SimulatedPositionQuantity > 0)
+                    {
+                        Phase = CampaignPhase.TargetZone;
+                    }
+                    else
+                    {
+                        ClearRiskAnchors();
+                        ClearPassiveHarvest();
+                        Phase = CampaignPhase.Retired;
+                    }
+                    break;
                 case PolicyAction.Reduce:
                     if (simulateAcceptedDecisions && SimulatedPositionQuantity > 0)
                     {
@@ -477,6 +557,7 @@ namespace KahnRuntime
                     else
                     {
                         ClearRiskAnchors();
+                        ClearPassiveHarvest();
                         Phase = string.Equals(decision.Policy, "target_zone", StringComparison.Ordinal)
                             ? CampaignPhase.Retired
                             : CampaignPhase.Ready;
@@ -486,6 +567,7 @@ namespace KahnRuntime
                     if (simulateAcceptedDecisions)
                         SimulatedPositionQuantity = 0;
                     ClearRiskAnchors();
+                    ClearPassiveHarvest();
                     ArmedWaypointId = null;
 
                     if (ExecutionAttemptCount >= MaxRetry(plan))
@@ -497,6 +579,7 @@ namespace KahnRuntime
                     if (simulateAcceptedDecisions)
                         SimulatedPositionQuantity = 0;
                     ClearRiskAnchors();
+                    ClearPassiveHarvest();
 
                     Phase = CampaignPhase.Retired;
                     break;
@@ -522,6 +605,7 @@ namespace KahnRuntime
             if (SimulatedPositionQuantity <= 0)
             {
                 ClearRiskAnchors();
+                ClearPassiveHarvest();
                 if (Phase != CampaignPhase.Retired && Phase != CampaignPhase.Paused)
                     Phase = CampaignPhase.Ready;
                 return;
@@ -556,6 +640,22 @@ namespace KahnRuntime
         {
             ExecutionPauseReason = null;
             ExecutionPausedAt = null;
+        }
+
+        private void ActivatePassiveHarvest(DateTimeOffset now)
+        {
+            PassiveHarvestActive = true;
+            PassiveHarvestStartedAt ??= now;
+            LastPassiveHarvestAt = now;
+            PassiveHarvestSignalCount++;
+        }
+
+        private void ClearPassiveHarvest()
+        {
+            PassiveHarvestActive = false;
+            PassiveHarvestStartedAt = null;
+            LastPassiveHarvestAt = null;
+            PassiveHarvestSignalCount = 0;
         }
 
         private static int MaxRetry(CampaignPlan plan)

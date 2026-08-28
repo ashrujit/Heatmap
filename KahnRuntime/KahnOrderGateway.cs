@@ -44,6 +44,7 @@ namespace KahnRuntime
         public string OrderId { get; init; }
         public string Message { get; init; }
         public double SyntheticFillPrice { get; init; } = double.NaN;
+        public double FilledQuantity { get; init; }
     }
 
     internal sealed class KahnOrderGateway
@@ -87,6 +88,7 @@ namespace KahnRuntime
             {
                 PolicyAction.AllowProbe => PlaceMarket(decision, plan, position, market, "ENTRY"),
                 PolicyAction.AllowAdd => PlaceMarket(decision, plan, position, market, "ADD"),
+                PolicyAction.PassiveHarvest => PlaceHarvestLimit(decision, plan, position, market),
                 PolicyAction.Reduce => ClosePosition(decision, plan, position, "REDUCE"),
                 PolicyAction.Flatten => ClosePosition(decision, plan, position, "FLAT"),
                 PolicyAction.Retire => ClosePosition(decision, plan, position, "RETIRE"),
@@ -97,6 +99,11 @@ namespace KahnRuntime
         public IReadOnlyList<Order> RuntimeOrders()
             => Core.Instance.Orders.Where(IsRuntimeOrder).ToArray();
 
+        public IReadOnlyList<Order> RuntimeHarvestOrders()
+            => RuntimeOrders()
+                .Where(order => IsWorkingOrder(order) && IsRole(order, "HARVEST"))
+                .ToArray();
+
         public IReadOnlyList<Order> BoundWorkingOrders()
             => Core.Instance.Orders
                 .Where(o => SameBoundPair(o.Symbol, o.Account) && IsWorkingOrder(o))
@@ -105,13 +112,14 @@ namespace KahnRuntime
         public void CancelRuntimeOrdersOnStop()
             => CancelRuntimeOrders("order_cancel_on_stop");
 
-        public void CancelRuntimeOrders(string eventType)
+        public bool CancelRuntimeOrders(string eventType)
         {
             if (!_tradingEnabled)
-                return;
+                return true;
             string cancelEvent = string.IsNullOrWhiteSpace(eventType)
                 ? "order_cancel"
                 : eventType;
+            bool allAccepted = true;
             foreach (Order order in RuntimeOrders().Where(IsWorkingOrder))
             {
                 try
@@ -119,18 +127,22 @@ namespace KahnRuntime
                     TradingOperationResult result = Core.Instance.CancelOrder(
                         (IOrder)order,
                         SendingSource);
+                    bool accepted = IsSuccess(result);
+                    allAccepted &= accepted;
                     _events.Write(cancelEvent,
                         ("order_id", order.Id),
-                        ("accepted", IsSuccess(result)),
+                        ("accepted", accepted),
                         ("message", result.Message));
                 }
                 catch (Exception ex)
                 {
+                    allAccepted = false;
                     _events.Write(cancelEvent + "_error",
                         ("order_id", order.Id),
                         ("message", ex.Message));
                 }
             }
+            return allAccepted;
         }
 
         public bool IsRuntimeOrder(IOrder order)
@@ -259,6 +271,158 @@ namespace KahnRuntime
             };
         }
 
+        private GatewayResult PlaceHarvestLimit(PolicyDecision decision,
+            CampaignPlan plan,
+            RuntimePosition position,
+            ExecutableMarket market)
+        {
+            if (position == null || position.IsFlat)
+                return Success(null, "already flat");
+
+            if (position.Direction != plan.Side)
+            {
+                return Failure("bound position is opposite campaign side",
+                    requiresOperatorAction: true);
+            }
+
+            if (market == null || !market.IsValid)
+                return Failure("no fresh executable quote");
+
+            double limitPrice = HarvestLimitPrice(plan.Side, market);
+            PassiveHarvestObjective harvest = plan.Objective?.PassiveHarvest;
+            if (harvest?.IsUsable == true
+                && !HarvestQuoteSatisfiesFloor(plan.Side, limitPrice, harvest))
+            {
+                return Failure("quote is outside passive harvest floor");
+            }
+            limitPrice = RoundPrice(limitPrice);
+
+            int positionQuantity = Math.Max(0, (int)Math.Round(position.Quantity));
+            int requested = Math.Max(1, decision.Quantity
+                ?? harvest?.InitialClipQuantity
+                ?? plan.Sizing.AddQuantity);
+            int maxWorking = Math.Max(1, harvest?.MaxWorkingQuantity ?? requested);
+            int outstanding = _tradingEnabled
+                ? RuntimeHarvestOrders().Sum(order => Math.Max(0, (int)Math.Ceiling(order.RemainingQuantity)))
+                : 0;
+            int remainingToWork = Math.Max(0, positionQuantity - outstanding);
+            int workingRoom = Math.Max(0, Math.Min(positionQuantity, maxWorking) - outstanding);
+            int quantity = Math.Min(requested, Math.Min(remainingToWork, workingRoom));
+            if (quantity <= 0)
+            {
+                return Success(null, outstanding >= positionQuantity
+                    ? "harvest limits already cover remaining position"
+                    : "harvest working quantity cap reached");
+            }
+
+            Side exitSide = plan.Side == CampaignSide.Long ? Side.Sell : Side.Buy;
+            if (!_tradingEnabled)
+            {
+                _events.Write("harvest_shadow_limit",
+                    ("campaign_id", plan.Id),
+                    ("decision_action", decision.Action.ToString()),
+                    ("policy", decision.Policy),
+                    ("reason_code", decision.ReasonCode),
+                    ("role", "HARVEST"),
+                    ("position_side", position.Direction.ToString()),
+                    ("order_side", exitSide.ToString()),
+                    ("quantity", quantity),
+                    ("position_quantity", position.Quantity),
+                    ("limit_price", limitPrice),
+                    ("submit_bid", market.Bid),
+                    ("submit_ask", market.Ask));
+                return new GatewayResult
+                {
+                    Accepted = true,
+                    Shadow = true,
+                    OrderId = $"shadow-harvest-{decision.EvidenceId}",
+                    SyntheticFillPrice = limitPrice,
+                    FilledQuantity = quantity,
+                    Message = "shadow passive harvest fill",
+                };
+            }
+
+            if (position.LivePosition == null || string.IsNullOrWhiteSpace(position.PositionId))
+            {
+                return Failure("live position handle is unavailable",
+                    requiresOperatorAction: true);
+            }
+
+            OrderType limitType = _symbol.GetAlowedOrderTypes(OrderTypeUsage.CloseOrder)?
+                .FirstOrDefault(o => o.Behavior == OrderTypeBehavior.Limit);
+            if (limitType == null)
+            {
+                return Failure("broker exposes no close-position limit order type",
+                    requiresOperatorAction: true);
+            }
+
+            string tag = BuildTag(plan.Id, "HARVEST", decision.EvidenceId);
+            var request = new PlaceOrderRequestParameters
+            {
+                Symbol = _symbol,
+                Account = _account,
+                PositionId = position.PositionId,
+                Side = exitSide,
+                Quantity = quantity,
+                OrderTypeId = limitType.Id,
+                Price = limitPrice,
+                TimeInForce = TimeInForce.Day,
+                GroupId = tag,
+                Comment = tag,
+                SendingSource = SendingSource,
+            };
+
+            long before = Stopwatch.GetTimestamp();
+            _events.Write("harvest_limit_submit",
+                ("campaign_id", plan.Id),
+                ("decision_action", decision.Action.ToString()),
+                ("policy", decision.Policy),
+                ("reason_code", decision.ReasonCode),
+                ("role", "HARVEST"),
+                ("position_id", position.PositionId),
+                ("position_side", position.Direction.ToString()),
+                ("order_side", exitSide.ToString()),
+                ("quantity", quantity),
+                ("position_quantity", position.Quantity),
+                ("outstanding_harvest_quantity", outstanding),
+                ("limit_price", limitPrice),
+                ("bid", market.Bid),
+                ("ask", market.Ask),
+                ("quote_utc", market.QuoteUtc.ToString("O", CultureInfo.InvariantCulture)),
+                ("tag", tag));
+
+            TradingOperationResult result;
+            try
+            {
+                result = Core.Instance.PlaceOrder(request);
+            }
+            catch (Exception ex)
+            {
+                _events.Write("harvest_limit_submit_exception",
+                    ("campaign_id", plan.Id),
+                    ("position_id", position.PositionId),
+                    ("message", ex.Message));
+                return Failure(ex.Message, requiresOperatorAction: true);
+            }
+
+            double elapsedMs = (Stopwatch.GetTimestamp() - before)
+                * 1000.0 / Stopwatch.Frequency;
+            bool accepted = IsSuccess(result);
+            _events.Write("harvest_limit_submit_result",
+                ("campaign_id", plan.Id),
+                ("accepted", accepted),
+                ("order_id", result.OrderId),
+                ("message", result.Message),
+                ("elapsed_ms", elapsedMs));
+            return new GatewayResult
+            {
+                Accepted = accepted,
+                OrderId = result.OrderId,
+                Message = result.Message,
+                RequiresOperatorAction = !accepted,
+            };
+        }
+
         private GatewayResult ClosePosition(PolicyDecision decision,
             CampaignPlan plan,
             RuntimePosition position,
@@ -295,6 +459,12 @@ namespace KahnRuntime
             if (position.LivePosition == null)
                 return Failure("live position handle is unavailable",
                     requiresOperatorAction: true);
+
+            if (!CancelRuntimeOrders("order_cancel_before_" + role.ToLowerInvariant()))
+            {
+                return Failure("failed to cancel Kahn working orders before close",
+                    requiresOperatorAction: true);
+            }
 
             string tag = BuildTag(plan.Id, role, decision.EvidenceId);
             _events.Write("close_submit",
@@ -359,6 +529,30 @@ namespace KahnRuntime
                 && (order.Status == OrderStatus.Opened
                     || order.Status == OrderStatus.PartiallyFilled
                     || order.Status == OrderStatus.Inactive);
+
+        private static bool IsRole(IOrder order, string role)
+        {
+            if (order == null || string.IsNullOrWhiteSpace(role))
+                return false;
+            string token = ":" + role + ":";
+            return (order.Comment?.Contains(token, StringComparison.Ordinal) ?? false)
+                || (order.GroupId?.Contains(token, StringComparison.Ordinal) ?? false);
+        }
+
+        private double RoundPrice(double price)
+            => _symbol == null || !double.IsFinite(price)
+                ? price
+                : _symbol.RoundPriceToTickSize(price);
+
+        private static double HarvestLimitPrice(CampaignSide side, ExecutableMarket market)
+            => side == CampaignSide.Long ? market.Ask : market.Bid;
+
+        private static bool HarvestQuoteSatisfiesFloor(CampaignSide side,
+            double limitPrice,
+            PassiveHarvestObjective harvest)
+            => side == CampaignSide.Long
+                ? limitPrice >= harvest.Floor(side)
+                : limitPrice <= harvest.Floor(side);
 
         private static bool IsSuccess(TradingOperationResult result)
             => result != null && result.Status == TradingOperationResultStatus.Success;

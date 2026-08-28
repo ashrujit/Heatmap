@@ -12,7 +12,11 @@ namespace KahnRuntime
         public string CampaignId { get; set; }
         public string CampaignDigest { get; set; }
         public string CampaignStatus { get; set; }
+        public string CampaignPath { get; set; }
         public string ControlPath { get; set; }
+        public string EvidencePath { get; set; }
+        public string DecisionLogPath { get; set; }
+        public string CheckpointPath { get; set; }
         public string LastControlId { get; set; }
         public string LastControlAction { get; set; }
         public string LastControlStatus { get; set; }
@@ -33,6 +37,12 @@ namespace KahnRuntime
         public int? CampaignAddQuantity { get; set; }
         public int? CampaignMaxPositionQuantity { get; set; }
         public int? CampaignMaxRetry { get; set; }
+        public bool? PassiveHarvestEnabled { get; set; }
+        public PriceRange PassiveHarvestRange { get; set; }
+        public int? PassiveHarvestInitialClipQuantity { get; set; }
+        public int? PassiveHarvestFollowClipQuantity { get; set; }
+        public int? PassiveHarvestMaxWorkingQuantity { get; set; }
+        public int? PassiveHarvestFloorFailureTicks { get; set; }
         public int? ExecutionAttemptCount { get; set; }
         public int? ExecutionRetriesRemaining { get; set; }
         public string ExecutionPauseReason { get; set; }
@@ -74,10 +84,16 @@ namespace KahnRuntime
         public int EvidenceWarmupRequiredSamples { get; set; }
         public double EvidenceWarmupRemainingSeconds { get; set; }
         public int BoundWorkingOrderCount { get; set; }
+        public int PassiveHarvestWorkingOrderCount { get; set; }
+        public double PassiveHarvestWorkingQuantity { get; set; }
         public string PositionId { get; set; }
         public string PositionDirection { get; set; }
         public double PositionQuantity { get; set; }
         public double PositionAveragePrice { get; set; }
+        public bool? PassiveHarvestActive { get; set; }
+        public string PassiveHarvestStartedAtUtc { get; set; }
+        public string LastPassiveHarvestAtUtc { get; set; }
+        public int? PassiveHarvestSignalCount { get; set; }
         public long DroppedDecisionLogEvents { get; set; }
     }
 
@@ -118,6 +134,7 @@ namespace KahnRuntime
             data.EvidenceWarmupRemainingSeconds = FiniteOrZero(data.EvidenceWarmupRemainingSeconds);
             data.PositionQuantity = FiniteOrZero(data.PositionQuantity);
             data.PositionAveragePrice = FiniteOrZero(data.PositionAveragePrice);
+            data.PassiveHarvestWorkingQuantity = FiniteOrZero(data.PassiveHarvestWorkingQuantity);
         }
 
         private static double? NullableFinite(double? value)

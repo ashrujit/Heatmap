@@ -7,6 +7,7 @@ namespace KahnRuntime
         public static void RunAll()
         {
             PlanParserAcceptsMinimalCampaign();
+            PlanParserAcceptsPassiveHarvestObjective();
             RetryExhaustionPausesCampaignInsteadOfRetiring();
             TrapProbeAllowsLeanAtEdge();
             ArmedProbeAllowsLaterInsideRail();
@@ -20,6 +21,10 @@ namespace KahnRuntime
             EvaluateZoneSuppressesAdd();
             PressAboveNoAddAllowsAdd();
             PreserveRiskAnchorOnAddUsesRoot();
+            PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill();
+            PassiveHarvestShadowFillReducesPosition();
+            PassiveHarvestOppositeOwnershipOverridesTargetRetire();
+            PassiveHarvestFloorLossRetires();
             TargetOppositeOwnershipRetires();
             BuildTrialEffortNoRewardRetires();
             SponsorFailureFlattensBeforeHold();
@@ -96,6 +101,50 @@ namespace KahnRuntime
             Assert(plan.Side == CampaignSide.Short, "plan side");
             Assert(plan.Waypoints.Count == 1, "waypoint count");
             Assert(plan.Execution.MaxRetry == 3, "default max retry");
+        }
+
+        private static void PlanParserAcceptsPassiveHarvestObjective()
+        {
+            string json = """
+            {
+              "schema_version": 1,
+              "kind": "KAHN_CAMPAIGN",
+              "id": "selftest-passive-harvest",
+              "status": "active",
+              "created_at": "2026-08-24T13:50:00Z",
+              "side": "long",
+              "window": {
+                "not_before": "2026-08-24T13:50:00Z",
+                "expires_at": "2026-08-24T14:20:00Z"
+              },
+              "arena": { "lower": 7670.0, "upper": 7690.0 },
+              "objective": {
+                "target_range": { "lower": 7680.0, "upper": 7685.0 },
+                "passive_harvest": {
+                  "range": { "lower": 7680.0, "upper": 7683.0 },
+                  "initial_clip_quantity": 1,
+                  "follow_clip_quantity": 2,
+                  "max_working_quantity": 2,
+                  "floor_failure_ticks": 1
+                }
+              },
+              "waypoints": [
+                {
+                  "id": "trap-7674",
+                  "role": "trap_probe",
+                  "range": { "lower": 7673.75, "upper": 7675.25 }
+                }
+              ]
+            }
+            """;
+
+            CampaignPlan plan = CampaignPlanParser.Parse(json, "selftest");
+            PassiveHarvestObjective harvest = plan.Objective.PassiveHarvest;
+            Assert(harvest?.IsUsable == true, "passive harvest parses usable");
+            Assert(harvest.Floor(plan.Side) == 7680.0, "long passive harvest floor");
+            Assert(harvest.Stretch(plan.Side) == 7683.0, "long passive harvest stretch");
+            Assert(harvest.FollowClipQuantity == 2, "passive harvest follow clip");
+            Assert(harvest.MaxWorkingQuantity == 2, "passive harvest working cap");
         }
 
         private static void RetryExhaustionPausesCampaignInsteadOfRetiring()
@@ -695,6 +744,123 @@ namespace KahnRuntime
             Assert(state.ActiveRiskAnchorEvidenceId == "seed-probe",
                 "active risk evidence remains root after preserve add");
         }
+
+        private static void PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill()
+        {
+            CampaignPlan plan = LongPassiveHarvestPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, quantity: 4);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CampaignEvidence evidence = new()
+            {
+                EventId = "harvest-floor-touch",
+                Timestamp = now,
+                Source = EvidenceSource.Price,
+                Kind = EvidenceKind.PriceTouch,
+                Side = EvidenceSide.None,
+                Price = 7680.25,
+            };
+
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, now),
+                evidence);
+            Assert(decision.Action == PolicyAction.PassiveHarvest,
+                "passive harvest floor touch");
+            Assert(decision.Quantity == 1, "passive harvest initial clip");
+            state.ApplyDecision(decision, plan, simulateAcceptedDecisions: true, appliedAt: now);
+            Assert(state.PassiveHarvestActive, "passive harvest active after submit");
+            Assert(state.SimulatedPositionQuantity == 4,
+                "passive harvest submit does not assume live fill");
+            Assert(state.Phase == CampaignPhase.TargetZone, "passive harvest phase");
+        }
+
+        private static void PassiveHarvestShadowFillReducesPosition()
+        {
+            CampaignPlan plan = LongPassiveHarvestPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, quantity: 4);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            PolicyDecision decision = new()
+            {
+                Action = PolicyAction.PassiveHarvest,
+                Policy = "passive_harvest",
+                ReasonCode = "harvest_floor_reached",
+                Quantity = 1,
+                ExpiresAt = now.AddSeconds(90),
+                EvidenceId = "shadow-harvest",
+            };
+
+            state.ApplyDecision(decision,
+                plan,
+                simulateAcceptedDecisions: true,
+                appliedAt: now,
+                passiveHarvestFilledQuantity: 1);
+            Assert(state.PassiveHarvestActive, "shadow passive harvest active");
+            Assert(state.SimulatedPositionQuantity == 3,
+                "shadow passive harvest fill reduces position");
+        }
+
+        private static void PassiveHarvestOppositeOwnershipOverridesTargetRetire()
+        {
+            CampaignPlan plan = LongPassiveHarvestPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, quantity: 4);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CampaignEvidence evidence = new()
+            {
+                EventId = "harvest-opposite-owned",
+                Timestamp = now,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Supply,
+                Price = 7683.25,
+                Range = new PriceRange { Lower = 7682.75, Upper = 7683.5 },
+                WaypointId = "target-7680",
+            };
+
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, now),
+                evidence);
+            Assert(decision.Action == PolicyAction.PassiveHarvest,
+                "passive harvest beats target retire while floor holds");
+            Assert(decision.ReasonCode == "opposite_ownership_at_harvest",
+                "passive harvest opposite ownership reason");
+            Assert(decision.Quantity == 2, "passive harvest follow clip at stretch");
+        }
+
+        private static void PassiveHarvestFloorLossRetires()
+        {
+            CampaignPlan plan = LongPassiveHarvestPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, quantity: 3);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.PassiveHarvest,
+                Policy = "passive_harvest",
+                ReasonCode = "harvest_floor_reached",
+                Quantity = 1,
+                EvidenceId = "seed-harvest",
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
+
+            CampaignEvidence evidence = new()
+            {
+                EventId = "floor-lost",
+                Timestamp = now.AddSeconds(10),
+                Source = EvidenceSource.Price,
+                Kind = EvidenceKind.PriceTouch,
+                Side = EvidenceSide.None,
+                Price = 7679.75,
+            };
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, evidence.Timestamp),
+                evidence);
+            Assert(decision.Action == PolicyAction.Retire,
+                "passive harvest floor loss retires");
+            Assert(decision.ReasonCode == "harvest_floor_lost",
+                "passive harvest floor loss reason");
+        }
+
         private static CampaignPlan ShortPlan(CampaignWindow window = null)
             => new()
             {
@@ -732,6 +898,48 @@ namespace KahnRuntime
                         Id = "build-7660",
                         Role = WaypointRole.BuildTrial,
                         Range = new PriceRange { Lower = 7658.0, Upper = 7660.0 },
+                    },
+                },
+            };
+
+        private static CampaignPlan LongPassiveHarvestPlan()
+            => new()
+            {
+                SchemaVersion = 1,
+                Kind = "KAHN_CAMPAIGN",
+                Id = "long-passive-harvest-plan",
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                Side = CampaignSide.Long,
+                Window = Window(),
+                Arena = new PriceRange { Lower = 7660.0, Upper = 7690.0 },
+                Sizing = new CampaignSizing
+                {
+                    ProbeQuantity = 1,
+                    AddQuantity = 1,
+                    MaxPositionQuantity = 4,
+                },
+                Risk = new CampaignRisk(),
+                Objective = new CampaignObjective
+                {
+                    TargetRange = new PriceRange { Lower = 7680.0, Upper = 7685.0 },
+                    TargetProximityTicks = 8,
+                    PassiveHarvest = new PassiveHarvestObjective
+                    {
+                        Range = new PriceRange { Lower = 7680.0, Upper = 7683.0 },
+                        InitialClipQuantity = 1,
+                        FollowClipQuantity = 2,
+                        MaxWorkingQuantity = 2,
+                    },
+                },
+                Policies = new CampaignPolicyFlags(),
+                Waypoints = new[]
+                {
+                    new CampaignWaypoint
+                    {
+                        Id = "target-7680",
+                        Role = WaypointRole.Target,
+                        Range = new PriceRange { Lower = 7680.0, Upper = 7685.0 },
                     },
                 },
             };

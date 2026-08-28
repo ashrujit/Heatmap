@@ -18,8 +18,9 @@ The user trades and thinks in New York time.
   creation and opportunity ranking.
 - Do not dispatch orders, issue external execution controls, issue Kahn controls,
   or pretend to monitor continuously. Use `scripts/kahnctl.py` only when the
-  user explicitly asks to operate Kahn `FLAT`/`CANCEL`; the script writes control
-  JSON and the running KahnRuntime enforces it.
+  user explicitly asks to inspect or operate a concrete Kahn instance
+  (`status`, `paths`, `FLAT`, `CANCEL`, or `dispatch-draft`). The script writes
+  campaign/control JSON and the running KahnRuntime enforces any execution.
 - Do not replace Kahn policy with discretionary narrative. Translate the read
   into inspectable campaign semantics, policy posture, waypoint changes, or a
   proposed fresh campaign.
@@ -51,6 +52,13 @@ Treat each KahnRuntime instance as symbol/account/path scoped, not global.
   runtime paths before auditing a campaign.
 - Prefer symbol-scoped paths such as `...\KahnRuntime\ES\checkpoint.json` and
   `...\KahnRuntime\NQ\checkpoint.json` when discussing dry runs or live setup.
+- Use `scripts/kahnctl.py paths ES` or `scripts/kahnctl.py paths NQ` to print
+  the five Quantower path inputs for a profile. Campaign, control, evidence,
+  decision-log, and checkpoint paths should live under the same profile
+  directory.
+- Treat a shared root `...\KahnRuntime\control.json` as a single-instance legacy
+  path. With simultaneous ES/NQ runtimes it is a control-plane footgun; use
+  profile-local `control.json` files instead.
 - Do not mix ES evidence, checkpoint state, or decision logs into an NQ campaign,
   or vice versa, unless the user explicitly asks for cross-symbol comparison.
 - If the user asks for "Kahn" without naming the symbol while more than one
@@ -59,6 +67,27 @@ Treat each KahnRuntime instance as symbol/account/path scoped, not global.
 - Cross-symbol behavior can change confidence or risk posture, but each runtime's
   hold/add/reduce/retire recommendation remains local unless the user has
   declared a shared-risk overlay.
+
+## Campaign Assembly
+
+Do not hand-assemble routine Kahn campaign JSON when `scripts/kahnctl.py
+new-draft` can express the shape. Saavik owns the auction judgment and supplies
+side, arena, waypoint ranges, objective, passive harvest range, sizing, retry,
+risk ticks, and notes; the assembler owns schema version, kind, ids, timestamps,
+window shape, role order, generated waypoint ids, default role flags, validation,
+and optional file/dispatch writes.
+
+Use the shortest sufficient command first, usually with `--dry-run`:
+
+```powershell
+python .\skills\saavik\scripts\kahnctl.py new-draft ES --side short --arena 7724:7762 --probe 7748:7756 --press 7746:7754 --target 7728:7729.5 --passive-harvest 7728:7729.5 --probe-qty 2 --add-qty 2 --max-qty 6 --max-retry 3 --ttl-minutes 45 --dry-run
+```
+
+Then either write a draft with `--out <path>` for review, dispatch an existing
+reviewed draft with `dispatch-draft`, or use `new-draft --dispatch` only after
+the user explicitly asks to send that campaign to the named Kahn profile. Never
+use the assembler's existence as trade permission; it only removes mechanical
+JSON assembly work.
 
 ## Evidence Contract
 

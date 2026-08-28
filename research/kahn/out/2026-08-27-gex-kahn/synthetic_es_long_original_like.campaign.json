@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "synthetic-es-2026-08-27-long-orr-post-7728",
+  "status": "active",
+  "created_at": "2026-08-27T13:51:50Z",
+  "side": "long",
+  "window": {
+    "not_before": "2026-08-27T13:51:00Z",
+    "expires_at": "2026-08-27T14:20:00Z"
+  },
+  "arena": {
+    "lower": 7708,
+    "upper": 7744
+  },
+  "sizing": {
+    "probe_quantity": 2,
+    "add_quantity": 2,
+    "max_position_quantity": 4
+  },
+  "execution": {
+    "max_retry": 3
+  },
+  "risk": {
+    "root_stop_ticks": 32,
+    "sponsor_failure_buffer_ticks": 4,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7740,
+      "upper": 7742
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true
+  },
+  "waypoints": [
+    {
+      "id": "probe-7716-7726",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7716,
+        "upper": 7726
+      },
+      "require_price_inside": true
+    },
+    {
+      "id": "no-add-7716-7728",
+      "role": "no_add",
+      "range": {
+        "lower": 7716,
+        "upper": 7728
+      }
+    },
+    {
+      "id": "press-7728-7732",
+      "role": "press",
+      "range": {
+        "lower": 7728,
+        "upper": 7732
+      },
+      "require_price_inside": true,
+      "preserve_risk_anchor_on_add": true
+    },
+    {
+      "id": "build-7728-7736",
+      "role": "build_trial",
+      "range": {
+        "lower": 7728,
+        "upper": 7736
+      }
+    },
+    {
+      "id": "harvest-7732-7736",
+      "role": "path_stress",
+      "range": {
+        "lower": 7732,
+        "upper": 7736
+      },
+      "max_position_quantity": 2
+    },
+    {
+      "id": "target-7741",
+      "role": "target",
+      "range": {
+        "lower": 7740,
+        "upper": 7742
+      }
+    },
+    {
+      "id": "wrong-below-7712",
+      "role": "invalidation",
+      "range": {
+        "lower": 7708,
+        "upper": 7712
+      }
+    }
+  ],
+  "notes": "Synthetic reconstruction from ES 2026-08-27 ORR notes: probe 7716-7726, scale above 7728, harvest 7732-7736, target 7741. Used to test fixed post-expiry management semantics."
+}
