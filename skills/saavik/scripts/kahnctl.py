@@ -164,9 +164,48 @@ def same_path(left: str | Path | None, right: str | Path) -> bool:
     if not left:
         return False
     try:
-        return Path(left).resolve() == Path(right).resolve()
+        resolved_left = Path(os.path.expandvars(os.path.expanduser(str(left)))).resolve()
+        resolved_right = Path(os.path.expandvars(os.path.expanduser(str(right)))).resolve()
+        return resolved_left == resolved_right
     except OSError:
         return str(left).lower() == str(right).lower()
+
+
+def checkpoint_updated_at(checkpoint: dict[str, Any]) -> datetime | None:
+    updated = checkpoint.get("updated_utc")
+    if not isinstance(updated, str):
+        return None
+    try:
+        return parse_utc(updated, "checkpoint.updated_utc")
+    except KahnctlError:
+        return None
+
+
+def checkpoint_fresh(checkpoint: dict[str, Any], stale_seconds: int) -> bool:
+    updated = checkpoint_updated_at(checkpoint)
+    if updated is None:
+        return False
+    age = (utc_now() - updated).total_seconds()
+    return stale_seconds <= 0 or age <= stale_seconds
+
+
+def expected_runtime_paths(runtime_dir: Path) -> dict[str, Path]:
+    return {
+        "campaign_path": runtime_dir / "campaign.json",
+        "control_path": runtime_dir / "control.json",
+        "evidence_path": runtime_dir / "evidence.jsonl",
+        "decision_log_path": runtime_dir / "decisions.jsonl",
+        "checkpoint_path": runtime_dir / "checkpoint.json",
+    }
+
+
+def checkpoint_path_mismatches(runtime_dir: Path, checkpoint: dict[str, Any]) -> list[str]:
+    mismatches: list[str] = []
+    for key, expected in expected_runtime_paths(runtime_dir).items():
+        actual = checkpoint.get(key)
+        if actual and not same_path(actual, expected):
+            mismatches.append(key)
+    return mismatches
 
 
 def checkpoint_warnings(
@@ -176,33 +215,140 @@ def checkpoint_warnings(
     stale_seconds: int,
 ) -> list[str]:
     warnings: list[str] = []
-    expected_paths = {
-        "campaign_path": runtime_dir / "campaign.json",
-        "control_path": runtime_dir / "control.json",
-        "evidence_path": runtime_dir / "evidence.jsonl",
-        "decision_log_path": runtime_dir / "decisions.jsonl",
-        "checkpoint_path": runtime_dir / "checkpoint.json",
-    }
-    for key, expected in expected_paths.items():
-        actual = checkpoint.get(key)
-        if actual and not same_path(actual, expected):
-            warnings.append(f"checkpoint_{key}_mismatch")
-        if key == "control_path" and actual and same_path(actual, DEFAULT_RUNTIME_DIR / "control.json"):
-            warnings.append("shared_root_control_path")
+    for key in checkpoint_path_mismatches(runtime_dir, checkpoint):
+        warnings.append(f"checkpoint_{key}_mismatch")
 
-    updated = checkpoint.get("updated_utc")
-    if isinstance(updated, str):
-        try:
-            age = (utc_now() - parse_utc(updated, "checkpoint.updated_utc")).total_seconds()
-        except KahnctlError:
-            warnings.append("checkpoint_updated_utc_invalid")
-        else:
-            if stale_seconds > 0 and age > stale_seconds:
-                warnings.append("checkpoint_stale")
-    else:
+    actual_control = checkpoint.get("control_path")
+    if actual_control and same_path(actual_control, DEFAULT_RUNTIME_DIR / "control.json"):
+        warnings.append("shared_root_control_path")
+
+    updated = checkpoint_updated_at(checkpoint)
+    if updated is None:
         warnings.append("checkpoint_updated_utc_missing")
+    elif stale_seconds > 0 and (utc_now() - updated).total_seconds() > stale_seconds:
+        warnings.append("checkpoint_stale")
 
     return warnings
+
+
+def number_or_zero(value: Any) -> float:
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def position_summary(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    data = checkpoint or {}
+    quantity = number_or_zero(data.get("position_quantity"))
+    return {
+        "flat": abs(quantity) < 0.000001,
+        "id": data.get("position_id"),
+        "direction": data.get("position_direction"),
+        "quantity": quantity,
+        "average_price": number_or_zero(data.get("position_average_price")),
+    }
+
+
+def active_campaign_summary(checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    data = checkpoint or {}
+    status = data.get("campaign_status")
+    active = isinstance(status, str) and status.lower() == "active"
+    return {
+        "present": bool(active and data.get("campaign_id")),
+        "id": data.get("campaign_id") if active else None,
+        "status": status if active else None,
+    }
+
+
+def candidate_control_paths(runtime_dir: Path, checkpoint: dict[str, Any] | None) -> list[Path]:
+    candidates = [runtime_dir / "control.json"]
+    configured = (checkpoint or {}).get("control_path")
+    if configured and not same_path(configured, candidates[0]):
+        candidates.append(runtime_dir_arg(str(configured)))
+
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+
+def control_file_is_stale(
+    runtime_dir: Path,
+    checkpoint: dict[str, Any] | None,
+    *,
+    stale_seconds: int,
+) -> bool:
+    data = checkpoint or {}
+    updated = checkpoint_updated_at(data) if data else None
+    last_id = data.get("last_control_id")
+    last_status = data.get("last_control_status")
+
+    for path in candidate_control_paths(runtime_dir, checkpoint):
+        if not path.exists():
+            continue
+        try:
+            control = read_json(path)
+        except KahnctlError:
+            return True
+        control_id = control.get("id")
+        if control_id and control_id == last_id and last_status:
+            continue
+        created_text = control.get("created_at")
+        if not isinstance(created_text, str):
+            return True
+        try:
+            created = parse_utc(created_text, "control.created_at")
+        except KahnctlError:
+            return True
+        if updated and created <= updated:
+            return True
+        if stale_seconds > 0 and (utc_now() - created).total_seconds() > stale_seconds:
+            return True
+    return False
+
+
+def preflight_assessment(
+    runtime_dir: Path,
+    checkpoint: dict[str, Any] | None,
+    *,
+    checkpoint_stale_seconds: int,
+    control_stale_seconds: int,
+) -> dict[str, Any]:
+    data = checkpoint or {}
+    running = data.get("runtime_state") == "Running"
+    fresh = bool(checkpoint and checkpoint_fresh(data, checkpoint_stale_seconds))
+    paths_ok = bool(checkpoint) and not checkpoint_path_mismatches(runtime_dir, data)
+    position = position_summary(checkpoint)
+    active_campaign = active_campaign_summary(checkpoint)
+    stale_control = control_file_is_stale(
+        runtime_dir,
+        checkpoint,
+        stale_seconds=control_stale_seconds,
+    )
+    phase = data.get("phase")
+    ready = running and fresh and paths_ok and not stale_control
+    active_blocks_dispatch = active_campaign["present"] and phase != "Retired"
+    return {
+        "runtime_running": running,
+        "checkpoint_fresh": fresh,
+        "correct_paths": paths_ok,
+        "symbol_account": {
+            "execution_symbol": data.get("execution_symbol"),
+            "market_data_symbol": data.get("market_data_symbol"),
+            "account": data.get("account"),
+            "account_id": data.get("account_id"),
+        },
+        "phase": phase,
+        "position": position,
+        "active_campaign": active_campaign,
+        "stale_control_file": stale_control,
+        "safe": {
+            "dispatch": ready and position["flat"] and not active_blocks_dispatch,
+            "cancel": ready and position["flat"],
+        },
+    }
 
 
 def command_profiles(_: argparse.Namespace) -> int:
@@ -254,6 +400,30 @@ def command_control(args: argparse.Namespace) -> int:
             "control_id": payload["id"],
             "action": payload["action"],
         }
+    )
+    return 0
+
+
+def read_checkpoint_if_present(runtime_dir: Path) -> dict[str, Any] | None:
+    path = runtime_dir / "checkpoint.json"
+    if not path.exists():
+        return None
+    return read_json(path)
+
+
+def command_preflight(args: argparse.Namespace) -> int:
+    _, runtime_dir, _ = select_runtime(args)
+    try:
+        checkpoint = read_checkpoint_if_present(runtime_dir)
+    except KahnctlError:
+        checkpoint = None
+    write_result(
+        preflight_assessment(
+            runtime_dir,
+            checkpoint,
+            checkpoint_stale_seconds=max(0, args.stale_seconds),
+            control_stale_seconds=max(0, args.control_stale_seconds),
+        )
     )
     return 0
 
@@ -576,6 +746,37 @@ def backup_existing(path: Path) -> str | None:
     return str(backup)
 
 
+def archive_acknowledged_control(runtime_dir: Path) -> str | None:
+    control_path = runtime_dir / "control.json"
+    if not control_path.exists():
+        return None
+
+    checkpoint = read_checkpoint_if_present(runtime_dir)
+    if not checkpoint:
+        return None
+
+    try:
+        control = read_json(control_path)
+    except KahnctlError:
+        return None
+
+    control_id = control.get("id")
+    if not (
+        control_id
+        and control_id == checkpoint.get("last_control_id")
+        and checkpoint.get("last_control_status")
+    ):
+        return None
+
+    token = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    archive = control_path.with_name(f"{control_path.name}.bak.{token}")
+    try:
+        control_path.replace(archive)
+    except OSError as exc:
+        raise KahnctlError(f"failed to archive acknowledged {control_path}: {exc}") from exc
+    return str(archive)
+
+
 def command_validate_draft(args: argparse.Namespace) -> int:
     draft_path = runtime_dir_arg(args.draft)
     campaign = stamp_campaign(args, read_json(draft_path))
@@ -591,6 +792,119 @@ def command_validate_draft(args: argparse.Namespace) -> int:
     return 0
 
 
+def add_supersession_note(campaign: dict[str, Any], prior: dict[str, Any]) -> None:
+    note = (
+        f"Supersedes flat {prior['phase']} campaign {prior['id']} "
+        f"at {iso_utc(utc_now())}."
+    )
+    existing = campaign.get("notes")
+    campaign["notes"] = f"{existing} {note}" if existing else note
+
+
+def dispatch_preflight_preview(
+    runtime_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any] | None:
+    checkpoint = read_checkpoint_if_present(runtime_dir)
+    if not checkpoint:
+        return None
+
+    active = active_campaign_summary(checkpoint)
+    if not active["present"]:
+        return None
+
+    phase = checkpoint.get("phase")
+    position = position_summary(checkpoint)
+    if phase == "Retired":
+        action = "would_replace_after_retired"
+    elif phase == "Ready" and position["flat"]:
+        action = (
+            "would_supersede_flat_ready"
+            if getattr(args, "retire_existing_if_flat", False)
+            else "requires_retire_existing_if_flat"
+        )
+    else:
+        action = "blocked_active_campaign"
+
+    return {
+        "id": active["id"],
+        "status": active["status"],
+        "phase": phase,
+        "action": action,
+    }
+
+
+def prepare_campaign_dispatch(
+    runtime_dir: Path,
+    campaign: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any] | None:
+    if getattr(args, "dry_run", False):
+        return None
+
+    checkpoint = read_checkpoint_if_present(runtime_dir)
+    if not checkpoint:
+        return None
+
+    active = active_campaign_summary(checkpoint)
+    if not active["present"]:
+        return None
+
+    phase = checkpoint.get("phase")
+    position = position_summary(checkpoint)
+    assessment = preflight_assessment(
+        runtime_dir,
+        checkpoint,
+        checkpoint_stale_seconds=max(0, getattr(args, "preflight_stale_seconds", 15)),
+        control_stale_seconds=max(0, getattr(args, "control_stale_seconds", 60)),
+    )
+    preflight_safe = (
+        assessment["runtime_running"]
+        and assessment["checkpoint_fresh"]
+        and assessment["correct_paths"]
+        and not assessment["stale_control_file"]
+        and assessment["position"]["flat"]
+    )
+    if phase == "Retired":
+        if not preflight_safe:
+            raise KahnctlError(
+                "cannot replace retired campaign: preflight is not safe"
+            )
+        return {
+            "id": active["id"],
+            "status": active["status"],
+            "phase": phase,
+            "action": "replaced_after_retired",
+        }
+
+    flat_ready = phase == "Ready" and position["flat"]
+    if not flat_ready:
+        raise KahnctlError(
+            f"refusing to replace active campaign {active['id']} in phase {phase}; "
+            "use FLAT/CANCEL or wait for Retired before dispatch"
+        )
+
+    if not getattr(args, "retire_existing_if_flat", False):
+        raise KahnctlError(
+            f"active campaign {active['id']} is flat/Ready; pass "
+            "--retire-existing-if-flat to supersede it cleanly"
+        )
+
+    if not preflight_safe:
+        raise KahnctlError(
+            "cannot supersede active flat/Ready campaign: preflight is not safe"
+        )
+
+    prior = {
+        "id": active["id"],
+        "status": active["status"],
+        "phase": phase,
+        "action": "superseded_flat_ready",
+    }
+    add_supersession_note(campaign, prior)
+    return prior
+
+
 def command_dispatch_draft(args: argparse.Namespace) -> int:
     profile, runtime_dir, custom = select_runtime(args)
     draft_path = runtime_dir_arg(args.draft)
@@ -599,6 +913,7 @@ def command_dispatch_draft(args: argparse.Namespace) -> int:
     target = runtime_dir / "campaign.json"
 
     if args.dry_run:
+        prior = dispatch_preflight_preview(runtime_dir, args)
         write_result(
             {
                 "ok": True,
@@ -608,12 +923,15 @@ def command_dispatch_draft(args: argparse.Namespace) -> int:
                 "runtime_dir": str(runtime_dir),
                 "draft_path": str(draft_path),
                 "campaign_path": str(target),
+                "prior_campaign": prior,
                 "summary": summary,
             }
         )
         return 0
 
+    prior = prepare_campaign_dispatch(runtime_dir, campaign, args)
     backup = None if args.no_backup else backup_existing(target)
+    control_backup = archive_acknowledged_control(runtime_dir)
     atomic_write(target, campaign, sort_keys=False)
     write_result(
         {
@@ -624,6 +942,8 @@ def command_dispatch_draft(args: argparse.Namespace) -> int:
             "draft_path": str(draft_path),
             "campaign_path": str(target),
             "backup_path": backup,
+            "control_backup_path": control_backup,
+            "prior_campaign": prior,
             "summary": summary,
         }
     )
@@ -722,11 +1042,16 @@ def command_new_draft(args: argparse.Namespace) -> int:
     out_path = runtime_dir_arg(args.out) if args.out else None
     dispatch_path = runtime_dir / "campaign.json" if args.dispatch else None
     backup = None
+    control_backup = None
+    prior = dispatch_preflight_preview(runtime_dir, args) if args.dispatch else None
     if not args.dry_run:
+        if dispatch_path:
+            prior = prepare_campaign_dispatch(runtime_dir, campaign, args)
         if out_path:
             atomic_write(out_path, campaign, sort_keys=False)
         if dispatch_path:
             backup = None if args.no_backup else backup_existing(dispatch_path)
+            control_backup = archive_acknowledged_control(runtime_dir)
             atomic_write(dispatch_path, campaign, sort_keys=False)
 
     payload: dict[str, Any] = {
@@ -738,6 +1063,8 @@ def command_new_draft(args: argparse.Namespace) -> int:
         "out_path": str(out_path) if out_path else None,
         "campaign_path": str(dispatch_path) if dispatch_path else None,
         "backup_path": backup,
+        "control_backup_path": control_backup,
+        "prior_campaign": prior,
         "summary": summary,
     }
     if not args.summary_only:
@@ -802,6 +1129,22 @@ def parser() -> argparse.ArgumentParser:
     add_profile_argument(paths)
     paths.set_defaults(func=command_paths)
 
+    preflight = sub.add_parser("preflight", help="Print a terse Kahn dispatch/control readiness gate.")
+    add_profile_argument(preflight)
+    preflight.add_argument(
+        "--stale-seconds",
+        type=int,
+        default=15,
+        help="Checkpoint freshness threshold.",
+    )
+    preflight.add_argument(
+        "--control-stale-seconds",
+        type=int,
+        default=60,
+        help="Unprocessed control file age threshold.",
+    )
+    preflight.set_defaults(func=command_preflight)
+
     for name, action, help_text in (
         ("flat", "FLAT", "Cancel Kahn-owned working orders, close bound position(s), and retire the campaign."),
         ("flatten", "FLAT", "Alias for flat."),
@@ -837,6 +1180,23 @@ def parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--draft", required=True, help="Path to a KAHN_CAMPAIGN draft JSON file.")
     dispatch.add_argument("--dry-run", action="store_true", help="Validate and show target without writing.")
     dispatch.add_argument("--no-backup", action="store_true", help="Do not back up existing campaign.json.")
+    dispatch.add_argument(
+        "--retire-existing-if-flat",
+        action="store_true",
+        help="Allow superseding an active flat/Ready campaign after safe preflight.",
+    )
+    dispatch.add_argument(
+        "--preflight-stale-seconds",
+        type=int,
+        default=15,
+        help="Checkpoint freshness required by --retire-existing-if-flat.",
+    )
+    dispatch.add_argument(
+        "--control-stale-seconds",
+        type=int,
+        default=60,
+        help="Control-file freshness required by --retire-existing-if-flat.",
+    )
     add_stamp_arguments(dispatch)
     dispatch.set_defaults(func=command_dispatch_draft)
 
@@ -932,6 +1292,23 @@ def parser() -> argparse.ArgumentParser:
     new_draft.add_argument("--dispatch", action="store_true", help="Write directly to profile campaign.json.")
     new_draft.add_argument("--dry-run", action="store_true", help="Validate and print without writing.")
     new_draft.add_argument("--no-backup", action="store_true", help="Do not back up campaign.json when dispatching.")
+    new_draft.add_argument(
+        "--retire-existing-if-flat",
+        action="store_true",
+        help="Allow superseding an active flat/Ready campaign after safe preflight.",
+    )
+    new_draft.add_argument(
+        "--preflight-stale-seconds",
+        type=int,
+        default=15,
+        help="Checkpoint freshness required by --retire-existing-if-flat.",
+    )
+    new_draft.add_argument(
+        "--control-stale-seconds",
+        type=int,
+        default=60,
+        help="Control-file freshness required by --retire-existing-if-flat.",
+    )
     new_draft.add_argument(
         "--force-default-profile",
         action="store_true",

@@ -89,6 +89,24 @@ the user explicitly asks to send that campaign to the named Kahn profile. Never
 use the assembler's existence as trade permission; it only removes mechanical
 JSON assembly work.
 
+Before dispatch or control, prefer a terse profile preflight:
+
+```powershell
+python .\skills\saavik\scripts\kahnctl.py preflight ES
+```
+
+`preflight` intentionally reports only runtime running, checkpoint freshness,
+path correctness, symbol/account, phase, position, active campaign, stale
+control-file status, and whether dispatch/cancel is safe. If a new campaign is
+explicitly dispatched while the current campaign is still `active` but flat and
+`Ready`, use `new-draft --dispatch --retire-existing-if-flat` or
+`dispatch-draft --retire-existing-if-flat` only after preflight proves the
+runtime is fresh, path-correct, flat, and control-clean. The helper supersedes
+the old flat/Ready campaign by backing up and replacing `campaign.json`; on
+successful dispatch it also archives an already-acknowledged `control.json` so
+the next preflight does not inherit stale cancel/flat state. It does not invent
+execution permission or issue an implicit `FLAT`.
+
 ## Evidence Contract
 
 Keep these dimensions separate:

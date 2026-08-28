@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using TradingPlatform.BusinessLayer;
@@ -155,6 +156,8 @@ namespace KahnRuntime
         private string _lastRecoverySignature;
         private string _lastPlanError;
         private string _lastControlError;
+        private string _lastCheckpointErrorSignature;
+        private DateTime _lastCheckpointErrorUtc = DateTime.MinValue;
         private string _lastControlId;
         private string _lastControlAction;
         private string _lastControlStatus;
@@ -1227,7 +1230,7 @@ namespace KahnRuntime
             }
 
             RuntimePosition position = CurrentPosition();
-            _checkpointStore?.Save(new RuntimeCheckpointData
+            RuntimeCheckpointData checkpoint = new()
             {
                 RuntimeState = runtimeState,
                 CampaignId = _plan?.Id,
@@ -1324,7 +1327,40 @@ namespace KahnRuntime
                     ? null
                     : l2Utc.ToString("O", CultureInfo.InvariantCulture),
                 DroppedDecisionLogEvents = _decisions?.DroppedCount ?? 0,
-            });
+            };
+            TrySaveCheckpoint(checkpoint);
+        }
+
+        private void TrySaveCheckpoint(RuntimeCheckpointData checkpoint)
+        {
+            if (_checkpointStore == null)
+                return;
+
+            try
+            {
+                _checkpointStore.Save(checkpoint);
+                _lastCheckpointErrorSignature = null;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                string path = Environment.ExpandEnvironmentVariables(CheckpointPath ?? string.Empty);
+                string exceptionType = ex.GetType().Name;
+                string signature = $"{exceptionType}|{path}|{ex.Message}";
+                DateTime now = DateTime.UtcNow;
+                bool repeated = string.Equals(signature, _lastCheckpointErrorSignature, StringComparison.Ordinal)
+                    && now - _lastCheckpointErrorUtc < TimeSpan.FromSeconds(10);
+
+                _lastCheckpointErrorSignature = signature;
+                _lastCheckpointErrorUtc = now;
+                if (repeated)
+                    return;
+
+                _decisions?.Write("checkpoint_save_error",
+                    ("message", ex.Message),
+                    ("exception_type", exceptionType),
+                    ("checkpoint_path", path));
+                LogOperator("ERR", $"Checkpoint save failed for {path}: {ex.Message}", error: true);
+            }
         }
 
         private void DrainBrokerEvents()
