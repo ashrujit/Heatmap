@@ -73,6 +73,10 @@ namespace KahnRuntime.Replay
                 ["campaign_digest"] = plan.Digest,
                 ["status"] = plan.Status,
                 ["side"] = plan.Side,
+                ["probe_quantity"] = plan.Sizing.ProbeQuantity,
+                ["add_quantity"] = plan.Sizing.AddQuantity,
+                ["campaign_max_position_quantity"] = plan.Sizing.MaxPositionQuantity,
+                ["scale_mode"] = plan.Sizing.ScaleMode,
                 ["max_retry"] = Math.Max(1, plan.Execution?.MaxRetry ?? 3),
                 ["waypoint_count"] = plan.Waypoints.Count,
                 ["notes"] = plan.Notes,
@@ -107,7 +111,15 @@ namespace KahnRuntime.Replay
 
                 WriteJsonLine(writer, DecisionPayload(plan, state, decision, evidence));
                 written++;
-                state.ApplyDecision(decision, plan, options.SimulateAcceptedDecisions, now);
+                double? simulatedFillPrice = decision.Action is PolicyAction.AllowProbe or PolicyAction.AllowAdd
+                    ? ReplayFillPrice(evidence, options.TickSize)
+                    : null;
+                state.ApplyDecision(
+                    decision,
+                    plan,
+                    options.SimulateAcceptedDecisions,
+                    now,
+                    simulatedFillPrice: simulatedFillPrice);
                 WriteJsonLine(writer, StatePayload(plan, state));
             }
 
@@ -153,6 +165,14 @@ namespace KahnRuntime.Replay
             return result;
         }
 
+        private static double? ReplayFillPrice(CampaignEvidence evidence, double tickSize)
+        {
+            if (evidence?.Price.HasValue == true && double.IsFinite(evidence.Price.Value))
+                return evidence.Price.Value;
+            PriceRange range = evidence?.EffectiveRange(tickSize);
+            return range?.IsValid == true ? range.Center : null;
+        }
+
         private static Dictionary<string, object> DecisionPayload(CampaignPlan plan,
             CampaignState state,
             PolicyDecision decision,
@@ -172,6 +192,10 @@ namespace KahnRuntime.Replay
                 ["waypoint_id"] = decision.WaypointId,
                 ["risk_anchor"] = decision.RiskAnchor,
                 ["risk_anchor_evidence_id"] = decision.RiskAnchorEvidenceId,
+                ["child_risk_anchor"] = decision.ChildRiskAnchor,
+                ["child_risk_anchor_evidence_id"] = decision.ChildRiskAnchorEvidenceId,
+                ["delay_risk_anchor_promotion_on_add"] = decision.DelayRiskAnchorPromotionOnAdd,
+                ["protection_price"] = decision.ProtectionPrice,
                 ["expires_at"] = decision.ExpiresAt,
                 ["evidence_id"] = evidence.EventId,
                 ["evidence_ts_utc"] = evidence.Timestamp,
@@ -202,6 +226,15 @@ namespace KahnRuntime.Replay
                 ["active_risk_anchor_evidence_id"] = state.ActiveRiskAnchorEvidenceId,
                 ["root_risk_anchor"] = state.RootRiskAnchor,
                 ["root_risk_anchor_evidence_id"] = state.RootRiskAnchorEvidenceId,
+                ["pending_add_risk_anchor"] = state.PendingAddRiskAnchor,
+                ["pending_add_risk_anchor_evidence_id"] = state.PendingAddRiskAnchorEvidenceId,
+                ["pending_add_risk_anchor_queued_at"] = state.PendingAddRiskAnchorQueuedAt,
+                ["accepted_add_count"] = state.AcceptedAddCount,
+                ["simulated_average_price"] = state.SimulatedAveragePrice,
+                ["breakeven_backstop_active"] = state.BreakevenBackstopActive,
+                ["breakeven_backstop_price"] = state.BreakevenBackstopPrice,
+                ["breakeven_backstop_order_id"] = state.BreakevenBackstopOrderId,
+                ["breakeven_backstop_armed_at"] = state.BreakevenBackstopArmedAt,
                 ["armed_waypoint_id"] = state.ArmedWaypointId,
                 ["suppress_adds_until"] = state.SuppressAddsUntil,
                 ["execution_attempt_count"] = state.ExecutionAttemptCount,

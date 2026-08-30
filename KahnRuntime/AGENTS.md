@@ -32,8 +32,11 @@ governor into a form-filled EAR directive dispatcher.
   reconciles campaign state from the bound position.
 - Base/add/max sizing lives in campaign JSON (`probe_quantity`,
   `add_quantity`, `max_position_quantity`) so size can change by situation
-  without restarting the strategy. `Instance Max Quantity` is only a runtime
-  safety cap and campaign admission guard.
+  without restarting the strategy. `scale_mode` is the operator's scaling
+  intent: `root_only` blocks leverage even when same-side ownership appears,
+  while `scale_allowed` lets Kahn discover add locations from fresh evidence
+  inside the campaign arena. `Instance Max Quantity` is only a runtime safety
+  cap and campaign admission guard.
 - `execution.max_retry` is directive-local and defaults to `3`. It counts accepted
   probe attempts that later flatten/scratch; quote staleness or broker submit
   rejection is logged but does not spend the campaign retry budget. Once the
@@ -45,9 +48,10 @@ governor into a form-filled EAR directive dispatcher.
   positions, it logs `ERR: recovery action required` and pauses campaign
   decisions until the operator intervenes.
 - The live adapter is still narrow: market entry/add orders, reduce-only
-  close-limit orders for configured passive harvest objectives, and market
-  close-position reduce/flatten/retire. It does not manage bracket orders, BE
-  stop migration, or EAR-style protection order lifecycle.
+  close-limit orders for configured passive harvest objectives, a weighted-BE
+  stop-market backstop after scale inventory exists, and market close-position
+  reduce/flatten/retire. It does not manage a general bracket lifecycle or
+  EAR-style sponsor stop migration.
 - Passive harvest belongs to the campaign objective, not LL confirmation. A
   plan can declare a side-aware paid range; once price reaches the floor Kahn can
   work tagged `HARVEST` close limits at passive BBO, increase clip size near the
@@ -70,6 +74,15 @@ governor into a form-filled EAR directive dispatcher.
   inventory from a pre-expiry fill, evidence evaluation continues after
   `window.expires_at` so add, suppress, reduce, flatten, and retire decisions
   still manage the campaign.
+- In `scale_allowed`, an add's same-side rail is a child anchor first, not the
+  active sponsor. The active sponsor can promote only the prior pending child
+  when the next accepted add arrives farther in the favorable direction. This
+  intentionally keeps root/older sponsor protection through the first add and
+  prevents immediate sponsor elevation on untested worse-price evidence.
+- Weighted BE is account protection, not the root thesis stop. It is ineligible
+  at root-only/probe-only size, becomes eligible only after Kahn has accepted an
+  add and observed scaled inventory, and arms only when the executable quote is
+  already beyond the weighted average so the stop is broker-valid.
 - `FLAT` cancels Kahn-owned working orders, submits Quantower close-position
   requests for all bound live positions, and retires campaign state after
   accepted submission. `CANCEL` retires only when the bound position is flat; if

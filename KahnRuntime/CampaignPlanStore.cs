@@ -118,6 +118,16 @@ namespace KahnRuntime
                 throw Invalid("campaign.waypoints must contain at least one waypoint");
             if (plan.Sizing.ProbeQuantity > plan.Sizing.MaxPositionQuantity)
                 throw Invalid("sizing.probe_quantity must not exceed max_position_quantity");
+            if (plan.Sizing.ScaleMode == CampaignScaleMode.EvidenceScaled
+                && plan.Sizing.MaxPositionQuantity <= plan.Sizing.ProbeQuantity)
+            {
+                throw Invalid("sizing.max_position_quantity must exceed probe_quantity when scale_mode is scale_allowed");
+            }
+            if (plan.Sizing.ScaleMode == CampaignScaleMode.EvidenceScaled
+                && plan.Sizing.AddQuantity < 1)
+            {
+                throw Invalid("sizing.add_quantity must be positive when scale_mode is scale_allowed");
+            }
 
             foreach (CampaignWaypoint waypoint in plan.Waypoints)
             {
@@ -142,11 +152,20 @@ namespace KahnRuntime
             if (!element.HasValue)
                 return new CampaignSizing();
             JsonElement value = element.Value;
+            int probeQuantity = OptionalPositiveInt(value, "probe_quantity", 1);
+            int addQuantity = OptionalNonNegativeInt(value, "add_quantity", 1);
+            int maxPositionQuantity = OptionalPositiveInt(value, "max_position_quantity", 1);
             return new CampaignSizing
             {
-                ProbeQuantity = OptionalPositiveInt(value, "probe_quantity", 1),
-                AddQuantity = OptionalPositiveInt(value, "add_quantity", 1),
-                MaxPositionQuantity = OptionalPositiveInt(value, "max_position_quantity", 1),
+                ProbeQuantity = probeQuantity,
+                AddQuantity = addQuantity,
+                MaxPositionQuantity = maxPositionQuantity,
+                ScaleMode = ParseScaleMode(
+                    OptionalString(value, "scale_mode")
+                        ?? OptionalString(value, "scaling"),
+                    probeQuantity,
+                    addQuantity,
+                    maxPositionQuantity),
             };
         }
 
@@ -168,6 +187,8 @@ namespace KahnRuntime
                 RootStopTicks = OptionalPositiveInt(value, "root_stop_ticks", 16),
                 SponsorFailureBufferTicks = OptionalNonNegativeInt(value, "sponsor_failure_buffer_ticks", 2),
                 AllowContestBeyondRiskAnchor = OptionalBool(value, "allow_contest_beyond_risk_anchor", true),
+                BreakevenBackstopEnabled = OptionalBool(value, "breakeven_backstop", true),
+                BreakevenBackstopOffsetTicks = OptionalNonNegativeInt(value, "breakeven_backstop_offset_ticks", 0),
             };
         }
 
@@ -459,6 +480,28 @@ namespace KahnRuntime
                 "short" => CampaignSide.Short,
                 _ => throw Invalid($"{context} must be long or short"),
             };
+
+        private static CampaignScaleMode ParseScaleMode(string text,
+            int probeQuantity,
+            int addQuantity,
+            int maxPositionQuantity)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return addQuantity > 0 && maxPositionQuantity > probeQuantity
+                    ? CampaignScaleMode.EvidenceScaled
+                    : CampaignScaleMode.RootOnly;
+            }
+
+            return Normalize(text) switch
+            {
+                "scaleallowed" or "evidencescaled" or "allowed" or "scalingallowed"
+                    => CampaignScaleMode.EvidenceScaled,
+                "rootonly" or "noscaling" or "disabled" or "off"
+                    => CampaignScaleMode.RootOnly,
+                _ => throw Invalid("sizing.scale_mode must be scale_allowed or root_only"),
+            };
+        }
 
         private static WaypointRole ParseWaypointRole(string text, string context)
             => Normalize(text) switch

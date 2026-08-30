@@ -64,6 +64,7 @@ namespace KahnRuntime
             [PolicyAction.HoldRoot] = 500,
             [PolicyAction.AllowProbe] = 420,
             [PolicyAction.AllowAdd] = 320,
+            [PolicyAction.EnsureBreakeven] = 300,
             [PolicyAction.ArmProbe] = 260,
             [PolicyAction.Cooldown] = 200,
             [PolicyAction.NoAction] = 0,
@@ -99,6 +100,10 @@ namespace KahnRuntime
                     WaypointId = decision.WaypointId,
                     RiskAnchor = decision.RiskAnchor,
                     RiskAnchorEvidenceId = decision.RiskAnchorEvidenceId,
+                    ChildRiskAnchor = decision.ChildRiskAnchor,
+                    ChildRiskAnchorEvidenceId = decision.ChildRiskAnchorEvidenceId,
+                    DelayRiskAnchorPromotionOnAdd = decision.DelayRiskAnchorPromotionOnAdd,
+                    ProtectionPrice = decision.ProtectionPrice,
                     ExpiresAt = decision.ExpiresAt,
                     EvidenceId = decision.EvidenceId,
                 };
@@ -139,6 +144,9 @@ namespace KahnRuntime
             return range.IsValid ? range : null;
         }
 
+        protected static int AddClipQuantity(CampaignContext context)
+            => Math.Max(1, context?.Plan?.Sizing?.AddQuantity ?? 1);
+
         protected static bool PriceGateAllows(CampaignWaypoint waypoint,
             CampaignEvidence evidence)
             => waypoint == null
@@ -156,7 +164,11 @@ namespace KahnRuntime
             DateTimeOffset? expiresAt = null,
             string detail = null,
             int priority = 0,
-            string riskAnchorEvidenceId = null)
+            string riskAnchorEvidenceId = null,
+            PriceRange childRiskAnchor = null,
+            string childRiskAnchorEvidenceId = null,
+            bool delayRiskAnchorPromotionOnAdd = false,
+            double? protectionPrice = null)
             => new()
             {
                 Action = action,
@@ -168,6 +180,10 @@ namespace KahnRuntime
                 WaypointId = waypointId,
                 RiskAnchor = riskAnchor,
                 RiskAnchorEvidenceId = riskAnchorEvidenceId ?? (riskAnchor != null ? evidence?.EventId : null),
+                ChildRiskAnchor = childRiskAnchor,
+                ChildRiskAnchorEvidenceId = childRiskAnchorEvidenceId ?? (childRiskAnchor != null ? evidence?.EventId : null),
+                DelayRiskAnchorPromotionOnAdd = delayRiskAnchorPromotionOnAdd,
+                ProtectionPrice = protectionPrice,
                 ExpiresAt = expiresAt,
                 EvidenceId = evidence?.EventId,
             };
@@ -255,6 +271,7 @@ namespace KahnRuntime
                 || context.State.ExecutionPaused
                 || !context.State.HasPosition
                 || context.State.AddsSuppressed(context.Now)
+                || context.Plan.Sizing.ScaleMode != CampaignScaleMode.EvidenceScaled
                 || context.State.SimulatedPositionQuantity >= context.Plan.Sizing.MaxPositionQuantity)
             {
                 yield break;
@@ -265,10 +282,32 @@ namespace KahnRuntime
             if (!sameSideRail)
                 yield break;
 
+            PriceRange childAnchor = EvidenceAnchor(evidence, context.TickSize);
+            if (childAnchor == null)
+                yield break;
+
+            PriceRange activeAnchor = context.State.ActiveRiskAnchor ?? context.State.RootRiskAnchor;
+            if (activeAnchor == null)
+                yield break;
+
+            PriceRange progressionReference = context.State.PendingAddRiskAnchor ?? activeAnchor;
+            if (!CampaignSideMath.IsFavorableBeyond(
+                    context.Plan.Side,
+                    childAnchor,
+                    progressionReference))
+            {
+                yield break;
+            }
+
             CampaignWaypoint press = NearestWaypoint(context, evidence, WaypointRole.Press, 12)
                 ?? NearestWaypoint(context, evidence, WaypointRole.BuildTrial, 8)
                 ?? NearestWaypoint(context, evidence, WaypointRole.RepairHold, 8);
-            if (press == null)
+            CampaignWaypoint explicitWaypoint = context.Plan.FindWaypoint(evidence.WaypointId);
+            if (press == null && explicitWaypoint != null)
+                yield break;
+
+            bool insideArena = context.Plan.Arena?.Intersects(childAnchor) == true;
+            if (press == null && !insideArena)
                 yield break;
             if (!PriceGateAllows(press, evidence))
                 yield break;
@@ -279,27 +318,30 @@ namespace KahnRuntime
             if (quantity <= 0)
                 yield break;
 
-            PriceRange riskAnchor = press.PreserveRiskAnchorOnAdd
-                ? context.State.RootRiskAnchor ?? context.State.ActiveRiskAnchor
-                : EvidenceAnchor(evidence, context.TickSize);
-            string riskAnchorEvidenceId = press.PreserveRiskAnchorOnAdd
-                ? context.State.RootRiskAnchorEvidenceId ?? context.State.ActiveRiskAnchorEvidenceId
-                : evidence.EventId;
+            PriceRange riskAnchor = activeAnchor;
+            string riskAnchorEvidenceId = context.State.ActiveRiskAnchorEvidenceId
+                ?? context.State.RootRiskAnchorEvidenceId;
+            bool hasManualPressWaypoint = press != null;
+            bool preserveRootLabel = press?.PreserveRiskAnchorOnAdd == true;
 
             yield return Decision(
                 PolicyAction.AllowAdd,
                 Name,
-                press.PreserveRiskAnchorOnAdd
+                preserveRootLabel
                     ? "same_side_ownership_add_preserve_root_risk"
-                    : "same_side_ownership_inside_press_window",
+                    : hasManualPressWaypoint
+                        ? "evidence_scaled_same_side_ownership_inside_press_window"
+                        : "evidence_scaled_same_side_ownership_inside_arena",
                 evidence,
-                press.Id,
+                press?.Id,
                 quantity,
                 riskAnchor,
-                detail: press.PreserveRiskAnchorOnAdd
-                    ? "Add is allowed, but the child rail does not become the active risk anchor."
-                    : null,
-                riskAnchorEvidenceId: riskAnchorEvidenceId);
+                detail: "Add is allowed by scale mode; child rail is queued and only the prior child can become sponsor.",
+                priority: DecisionResolver.PriorityFor(PolicyAction.HoldRoot) + 25,
+                riskAnchorEvidenceId: riskAnchorEvidenceId,
+                childRiskAnchor: childAnchor,
+                childRiskAnchorEvidenceId: evidence.EventId,
+                delayRiskAnchorPromotionOnAdd: true);
         }
     }
 
@@ -507,7 +549,7 @@ namespace KahnRuntime
                     "target_same_side_effort_absorbed",
                     evidence,
                     NearestWaypoint(context, evidence, WaypointRole.Target, 12)?.Id,
-                    Math.Min(context.Plan.Sizing.AddQuantity,
+                    Math.Min(AddClipQuantity(context),
                         Math.Max(1, context.State.SimulatedPositionQuantity)));
             }
 
@@ -577,7 +619,7 @@ namespace KahnRuntime
                     "evaluate_same_side_effort_absorbed",
                     evidence,
                     evaluate.Id,
-                    Math.Min(context.Plan.Sizing.AddQuantity,
+                    Math.Min(AddClipQuantity(context),
                         Math.Max(1, context.State.SimulatedPositionQuantity)),
                     priority: 825);
                 yield break;
@@ -591,7 +633,7 @@ namespace KahnRuntime
                     "evaluate_opposite_ownership",
                     evidence,
                     evaluate.Id,
-                    Math.Min(context.Plan.Sizing.AddQuantity,
+                    Math.Min(AddClipQuantity(context),
                         Math.Max(1, context.State.SimulatedPositionQuantity)),
                     EvidenceAnchor(evidence, context.TickSize),
                     priority: 825);
@@ -658,7 +700,7 @@ namespace KahnRuntime
                     "path_same_side_effort_absorbed",
                     evidence,
                     stress.Id,
-                    Math.Min(context.Plan.Sizing.AddQuantity,
+                    Math.Min(AddClipQuantity(context),
                         Math.Max(1, position)),
                     expiresAt: suppressUntil,
                     detail: "Same-side effort in a mature path did not earn enough reward; harvest before asking for continuation.",
@@ -674,7 +716,7 @@ namespace KahnRuntime
                     "path_opposite_ownership",
                     evidence,
                     stress.Id,
-                    Math.Min(context.Plan.Sizing.AddQuantity,
+                    Math.Min(AddClipQuantity(context),
                         Math.Max(1, position)),
                     EvidenceAnchor(evidence, context.TickSize),
                     expiresAt: suppressUntil,

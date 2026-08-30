@@ -57,13 +57,15 @@ namespace KahnRuntime
         private readonly ShadowDecisionLog _events;
         private readonly bool _tradingEnabled;
         private readonly int _instanceMaxQuantity;
+        private readonly double _tickSize;
 
         public KahnOrderGateway(
             Symbol symbol,
             Account account,
             ShadowDecisionLog events,
             bool tradingEnabled,
-            int instanceMaxQuantity)
+            int instanceMaxQuantity,
+            double tickSize)
         {
             _symbol = symbol ?? throw new ArgumentNullException(nameof(symbol));
             if (tradingEnabled && account == null)
@@ -72,6 +74,7 @@ namespace KahnRuntime
             _events = events ?? throw new ArgumentNullException(nameof(events));
             _tradingEnabled = tradingEnabled;
             _instanceMaxQuantity = Math.Max(1, instanceMaxQuantity);
+            _tickSize = tickSize > 0 ? tickSize : 0.25;
         }
 
         public GatewayResult Execute(PolicyDecision decision,
@@ -88,6 +91,7 @@ namespace KahnRuntime
             {
                 PolicyAction.AllowProbe => PlaceMarket(decision, plan, position, market, "ENTRY"),
                 PolicyAction.AllowAdd => PlaceMarket(decision, plan, position, market, "ADD"),
+                PolicyAction.EnsureBreakeven => EnsureBreakeven(decision, plan, position, market),
                 PolicyAction.PassiveHarvest => PlaceHarvestLimit(decision, plan, position, market),
                 PolicyAction.Reduce => ClosePosition(decision, plan, position, "REDUCE"),
                 PolicyAction.Flatten => ClosePosition(decision, plan, position, "FLAT"),
@@ -102,6 +106,11 @@ namespace KahnRuntime
         public IReadOnlyList<Order> RuntimeHarvestOrders()
             => RuntimeOrders()
                 .Where(order => IsWorkingOrder(order) && IsRole(order, "HARVEST"))
+                .ToArray();
+
+        public IReadOnlyList<Order> RuntimeBreakevenOrders()
+            => RuntimeOrders()
+                .Where(order => IsWorkingOrder(order) && IsRole(order, "BE"))
                 .ToArray();
 
         public IReadOnlyList<Order> BoundWorkingOrders()
@@ -423,6 +432,173 @@ namespace KahnRuntime
             };
         }
 
+        private GatewayResult EnsureBreakeven(PolicyDecision decision,
+            CampaignPlan plan,
+            RuntimePosition position,
+            ExecutableMarket market)
+        {
+            if (position == null || position.IsFlat || market == null || !market.IsValid)
+                return Failure("cannot establish breakeven without position and quote",
+                    requiresOperatorAction: true);
+
+            if (position.Direction != plan.Side)
+            {
+                return Failure("bound position is opposite campaign side",
+                    requiresOperatorAction: true);
+            }
+
+            double basis = decision.ProtectionPrice ?? position.AveragePrice;
+            if (!double.IsFinite(basis) || basis <= 0)
+                return Failure("cannot establish breakeven without average price",
+                    requiresOperatorAction: true);
+
+            int offsetTicks = Math.Max(0, plan.Risk?.BreakevenBackstopOffsetTicks ?? 0);
+            double offset = offsetTicks * _tickSize;
+            double trigger = plan.Side == CampaignSide.Long
+                ? RoundUp(basis + offset)
+                : RoundDown(basis - offset);
+            bool valid = plan.Side == CampaignSide.Long
+                ? trigger < market.Bid
+                : trigger > market.Ask;
+            if (!valid)
+                return Failure("breakeven trigger is no longer valid relative to market",
+                    requiresOperatorAction: true);
+
+            double quantity = Math.Max(1, decision.Quantity ?? (int)Math.Ceiling(position.Quantity));
+            quantity = Math.Min(quantity, position.Quantity);
+            if (!_tradingEnabled)
+            {
+                _events.Write("breakeven_shadow",
+                    ("campaign_id", plan.Id),
+                    ("decision_action", decision.Action.ToString()),
+                    ("policy", decision.Policy),
+                    ("reason_code", decision.ReasonCode),
+                    ("role", "BE"),
+                    ("position_side", position.Direction.ToString()),
+                    ("quantity", quantity),
+                    ("position_quantity", position.Quantity),
+                    ("average_price", position.AveragePrice),
+                    ("trigger_price", trigger),
+                    ("submit_bid", market.Bid),
+                    ("submit_ask", market.Ask));
+                return SuccessShadow("shadow breakeven");
+            }
+
+            if (position.LivePosition == null || string.IsNullOrWhiteSpace(position.PositionId))
+            {
+                return Failure("live position handle is unavailable",
+                    requiresOperatorAction: true);
+            }
+
+            try
+            {
+                Order existing = RuntimeBreakevenOrders().FirstOrDefault();
+                if (existing != null)
+                {
+                    if (NearlyEqual(existing.TriggerPrice, trigger)
+                        && NearlyEqual(existing.RemainingQuantity, quantity))
+                    {
+                        return Success(existing.Id, "breakeven already correct");
+                    }
+
+                    TradingOperationResult modify = Core.Instance.ModifyOrder(
+                        existing,
+                        TimeInForce.Default,
+                        quantity,
+                        triggerPrice: trigger);
+                    bool modifyAccepted = IsSuccess(modify);
+                    LogProtectionResult("breakeven_modify",
+                        plan,
+                        decision,
+                        existing.Id,
+                        trigger,
+                        quantity,
+                        modifyAccepted,
+                        modify.Message);
+                    return new GatewayResult
+                    {
+                        Accepted = modifyAccepted,
+                        RequiresOperatorAction = !modifyAccepted,
+                        OrderId = existing.Id,
+                        Message = modify.Message,
+                    };
+                }
+
+                OrderType stopType = _symbol.GetAlowedOrderTypes(OrderTypeUsage.CloseOrder)?
+                    .FirstOrDefault(o => o.Behavior == OrderTypeBehavior.Stop);
+                if (stopType == null)
+                {
+                    return Failure("broker exposes no close-position stop-market order type",
+                        requiresOperatorAction: true);
+                }
+
+                Side exitSide = plan.Side == CampaignSide.Long ? Side.Sell : Side.Buy;
+                string tag = BuildTag(plan.Id, "BE", decision.EvidenceId);
+                var request = new PlaceOrderRequestParameters
+                {
+                    Symbol = _symbol,
+                    Account = _account,
+                    PositionId = position.PositionId,
+                    Side = exitSide,
+                    Quantity = quantity,
+                    OrderTypeId = stopType.Id,
+                    TriggerPrice = trigger,
+                    TimeInForce = TimeInForce.Day,
+                    GroupId = tag,
+                    Comment = tag,
+                    SendingSource = SendingSource,
+                };
+
+                long before = Stopwatch.GetTimestamp();
+                _events.Write("breakeven_submit",
+                    ("campaign_id", plan.Id),
+                    ("decision_action", decision.Action.ToString()),
+                    ("policy", decision.Policy),
+                    ("reason_code", decision.ReasonCode),
+                    ("role", "BE"),
+                    ("position_id", position.PositionId),
+                    ("position_side", position.Direction.ToString()),
+                    ("order_side", exitSide.ToString()),
+                    ("quantity", quantity),
+                    ("position_quantity", position.Quantity),
+                    ("average_price", position.AveragePrice),
+                    ("trigger_price", trigger),
+                    ("bid", market.Bid),
+                    ("ask", market.Ask),
+                    ("quote_utc", market.QuoteUtc.ToString("O", CultureInfo.InvariantCulture)),
+                    ("tag", tag));
+
+                TradingOperationResult result = Core.Instance.PlaceOrder(request);
+                double elapsedMs = (Stopwatch.GetTimestamp() - before)
+                    * 1000.0 / Stopwatch.Frequency;
+                bool placeAccepted = IsSuccess(result);
+                LogProtectionResult("breakeven_place",
+                    plan,
+                    decision,
+                    result.OrderId,
+                    trigger,
+                    quantity,
+                    placeAccepted,
+                    result.Message,
+                    elapsedMs);
+                return new GatewayResult
+                {
+                    Accepted = placeAccepted,
+                    OrderId = result.OrderId,
+                    Message = result.Message,
+                    RequiresOperatorAction = !placeAccepted,
+                };
+            }
+            catch (Exception ex)
+            {
+                _events.Write("breakeven_exception",
+                    ("campaign_id", plan.Id),
+                    ("position_id", position.PositionId),
+                    ("message", ex.Message));
+                return Failure(ex.Message, requiresOperatorAction: true);
+            }
+        }
+
         private GatewayResult ClosePosition(PolicyDecision decision,
             CampaignPlan plan,
             RuntimePosition position,
@@ -543,6 +719,36 @@ namespace KahnRuntime
             => _symbol == null || !double.IsFinite(price)
                 ? price
                 : _symbol.RoundPriceToTickSize(price);
+
+        private double RoundUp(double price)
+            => Math.Ceiling((price / _tickSize) - 1e-9) * _tickSize;
+
+        private double RoundDown(double price)
+            => Math.Floor((price / _tickSize) + 1e-9) * _tickSize;
+
+        private bool NearlyEqual(double left, double right)
+            => Math.Abs(left - right) <= _tickSize / 2.0;
+
+        private void LogProtectionResult(string eventType,
+            CampaignPlan plan,
+            PolicyDecision decision,
+            string orderId,
+            double price,
+            double quantity,
+            bool accepted,
+            string message,
+            double? elapsedMs = null)
+            => _events.Write(eventType,
+                ("campaign_id", plan.Id),
+                ("decision_action", decision.Action.ToString()),
+                ("policy", decision.Policy),
+                ("reason_code", decision.ReasonCode),
+                ("order_id", orderId),
+                ("price", price),
+                ("quantity", quantity),
+                ("accepted", accepted),
+                ("message", message),
+                ("elapsed_ms", elapsedMs));
 
         private static double HarvestLimitPrice(CampaignSide side, ExecutableMarket market)
             => side == CampaignSide.Long ? market.Ask : market.Bid;

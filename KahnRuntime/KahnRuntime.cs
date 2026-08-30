@@ -213,7 +213,8 @@ namespace KahnRuntime
                     RuntimeAccount,
                     _decisions,
                     _runTradingEnabled,
-                    Math.Max(1, InstanceMaxQuantity));
+                    Math.Max(1, InstanceMaxQuantity),
+                    _tickSize);
                 _domParameters = new GetDepthOfMarketParameters
                 {
                     GetLevel2ItemsParameters = new GetLevel2ItemsParameters
@@ -301,6 +302,12 @@ namespace KahnRuntime
                     return;
                 }
 
+                if (!MaintainBreakevenBackstop(now))
+                {
+                    SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
+                    return;
+                }
+
                 ProcessBookSample(now.UtcDateTime);
 
                 if (_plan != null
@@ -313,7 +320,13 @@ namespace KahnRuntime
                         ProcessEvidence(evidence, now);
                 }
 
-                ReconcileLivePosition(DateTime.UtcNow);
+                if (!ReconcileLivePosition(DateTime.UtcNow)
+                    || !MaintainBreakevenBackstop(DateTimeOffset.UtcNow))
+                {
+                    SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
+                    return;
+                }
+
                 SaveCheckpoint(force: false, runtimeState: _running ? "Running" : "Stopped");
             }
             catch (Exception ex)
@@ -368,6 +381,7 @@ namespace KahnRuntime
                 ("probe_quantity", _plan.Sizing.ProbeQuantity),
                 ("add_quantity", _plan.Sizing.AddQuantity),
                 ("campaign_max_position_quantity", _plan.Sizing.MaxPositionQuantity),
+                ("scale_mode", _plan.Sizing.ScaleMode),
                 ("max_retry", maxRetry),
                 ("passive_harvest_enabled", _plan.Objective?.PassiveHarvest?.IsUsable ?? false),
                 ("passive_harvest_range", _plan.Objective?.PassiveHarvest?.Range),
@@ -710,6 +724,10 @@ namespace KahnRuntime
                 ("waypoint_id", decision.WaypointId),
                 ("risk_anchor", decision.RiskAnchor),
                 ("risk_anchor_evidence_id", decision.RiskAnchorEvidenceId),
+                ("child_risk_anchor", decision.ChildRiskAnchor),
+                ("child_risk_anchor_evidence_id", decision.ChildRiskAnchorEvidenceId),
+                ("delay_risk_anchor_promotion_on_add", decision.DelayRiskAnchorPromotionOnAdd),
+                ("protection_price", decision.ProtectionPrice),
                 ("expires_at", decision.ExpiresAt?.ToString("O", CultureInfo.InvariantCulture)),
                 ("evidence_id", evidence.EventId),
                 ("evidence_source", evidence.Source),
@@ -751,11 +769,18 @@ namespace KahnRuntime
                 && execution.FilledQuantity > 0
                     ? Math.Max(1, (int)Math.Round(execution.FilledQuantity))
                     : null;
+            double? simulatedFillPrice = execution.Shadow
+                && decision.Action is PolicyAction.AllowProbe or PolicyAction.AllowAdd
+                && double.IsFinite(execution.SyntheticFillPrice)
+                    ? execution.SyntheticFillPrice
+                    : null;
             _state.ApplyDecision(decision,
                 _plan,
                 simulateAccepted,
                 now,
-                passiveHarvestFillQuantity);
+                passiveHarvestFillQuantity,
+                simulatedFillPrice,
+                execution.OrderId);
             bool retryPaused = _state.ExecutionPaused && phaseBefore != CampaignPhase.Paused;
             if (retryPaused)
             {
@@ -781,6 +806,15 @@ namespace KahnRuntime
                 ("active_risk_anchor_evidence_id", _state.ActiveRiskAnchorEvidenceId),
                 ("root_risk_anchor", _state.RootRiskAnchor),
                 ("root_risk_anchor_evidence_id", _state.RootRiskAnchorEvidenceId),
+                ("pending_add_risk_anchor", _state.PendingAddRiskAnchor),
+                ("pending_add_risk_anchor_evidence_id", _state.PendingAddRiskAnchorEvidenceId),
+                ("pending_add_risk_anchor_queued_at", _state.PendingAddRiskAnchorQueuedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("accepted_add_count", _state.AcceptedAddCount),
+                ("simulated_average_price", _state.SimulatedAveragePrice),
+                ("breakeven_backstop_active", _state.BreakevenBackstopActive),
+                ("breakeven_backstop_price", _state.BreakevenBackstopPrice),
+                ("breakeven_backstop_order_id", _state.BreakevenBackstopOrderId),
+                ("breakeven_backstop_armed_at", _state.BreakevenBackstopArmedAt?.ToString("O", CultureInfo.InvariantCulture)),
                 ("armed_waypoint_id", _state.ArmedWaypointId),
                 ("suppress_adds_until", _state.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture)),
                 ("passive_harvest_active", _state.PassiveHarvestActive),
@@ -800,6 +834,208 @@ namespace KahnRuntime
             SaveCheckpoint(force: true, runtimeState: "Running");
         }
 
+        private bool MaintainBreakevenBackstop(DateTimeOffset now)
+        {
+            if (_plan == null
+                || _state == null
+                || !_state.BreakevenBackstopEligible(_plan))
+            {
+                return true;
+            }
+
+            RuntimePosition position = CurrentPosition();
+            if (position == null || position.IsFlat || position.Direction != _plan.Side)
+                return true;
+            bool scaledInventoryObserved = position.Quantity > _plan.Sizing.ProbeQuantity + 1e-9;
+            if (!_state.BreakevenBackstopActive && !scaledInventoryObserved)
+                return true;
+            if (!double.IsFinite(position.AveragePrice) || position.AveragePrice <= 0)
+                return true;
+
+            ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
+            if (market == null || !market.IsValid)
+                return true;
+
+            double trigger = BreakevenTriggerPrice(_plan, position);
+            if (BreakevenBackstopTouched(_plan.Side, trigger, market))
+            {
+                if (!_state.BreakevenBackstopActive)
+                    return true;
+                double workingBeQuantity = BreakevenBackstopWorkingQuantity();
+                if (_runTradingEnabled && workingBeQuantity > 0)
+                {
+                    _decisions.Write("breakeven_backstop_touched_waiting_for_broker",
+                        ("campaign_id", _plan.Id),
+                        ("trigger_price", trigger),
+                        ("position_quantity", position.Quantity),
+                        ("working_be_quantity", workingBeQuantity));
+                    return true;
+                }
+
+                PolicyDecision retire = BreakevenDecision(
+                    PolicyAction.Retire,
+                    "breakeven_backstop_touched",
+                    position,
+                    trigger,
+                    now);
+                GatewayResult close = ExecuteDecision(retire, now);
+                if (!close.Accepted)
+                {
+                    _decisions.Write("breakeven_backstop_close_rejected",
+                        ("campaign_id", _plan.Id),
+                        ("trigger_price", trigger),
+                        ("position_quantity", position.Quantity),
+                        ("message", close.Message),
+                        ("requires_operator_action", close.RequiresOperatorAction));
+                    LogOperator("ERR", $"Breakeven backstop close rejected: {close.Message}", error: true);
+                    return false;
+                }
+
+                _state.ApplyDecision(
+                    retire,
+                    _plan,
+                    simulateAcceptedDecisions: true,
+                    appliedAt: now,
+                    executionOrderId: close.OrderId);
+                _decisions.Write("breakeven_backstop_retired",
+                    ("campaign_id", _plan.Id),
+                    ("trigger_price", trigger),
+                    ("position_quantity", position.Quantity),
+                    ("execution_order_id", close.OrderId),
+                    ("execution_shadow", close.Shadow),
+                    ("message", close.Message));
+                LogOperator("RISK", $"{_plan.Id} breakeven backstop touched; campaign retired.");
+                return true;
+            }
+
+            bool alreadyArmedAtPrice = _state.BreakevenBackstopActive
+                && _state.BreakevenBackstopPrice.HasValue
+                && NearlyEqual(_state.BreakevenBackstopPrice.Value, trigger);
+            if (!_runTradingEnabled && alreadyArmedAtPrice)
+                return true;
+
+            PolicyDecision ensure = BreakevenDecision(
+                PolicyAction.EnsureBreakeven,
+                alreadyArmedAtPrice
+                    ? "maintain_breakeven_backstop"
+                    : "arm_breakeven_after_first_add",
+                position,
+                trigger,
+                now);
+            GatewayResult execution = ExecuteDecision(ensure, now);
+            if (!execution.Accepted)
+            {
+                _decisions.Write("breakeven_backstop_rejected",
+                    ("campaign_id", _plan.Id),
+                    ("trigger_price", trigger),
+                    ("position_quantity", position.Quantity),
+                    ("message", execution.Message),
+                    ("requires_operator_action", execution.RequiresOperatorAction));
+                LogOperator("ERR", $"Breakeven backstop rejected: {execution.Message}", error: true);
+
+                PolicyDecision retire = BreakevenDecision(
+                    PolicyAction.Retire,
+                    "breakeven_backstop_unavailable_flatten",
+                    position,
+                    trigger,
+                    now);
+                GatewayResult close = ExecuteDecision(retire, now);
+                if (!close.Accepted)
+                {
+                    _decisions.Write("breakeven_backstop_fallback_close_rejected",
+                        ("campaign_id", _plan.Id),
+                        ("trigger_price", trigger),
+                        ("position_quantity", position.Quantity),
+                        ("message", close.Message),
+                        ("requires_operator_action", close.RequiresOperatorAction));
+                    LogOperator("ERR", $"Breakeven fallback close rejected: {close.Message}", error: true);
+                    return false;
+                }
+
+                _state.ApplyDecision(
+                    retire,
+                    _plan,
+                    simulateAcceptedDecisions: true,
+                    appliedAt: now,
+                    executionOrderId: close.OrderId);
+                LogOperator("RISK", $"{_plan.Id} retired after breakeven protection could not be established.");
+                return true;
+            }
+
+            bool changed = !_state.BreakevenBackstopActive || !alreadyArmedAtPrice;
+            _state.ApplyDecision(
+                ensure,
+                _plan,
+                simulateAcceptedDecisions: false,
+                appliedAt: now,
+                executionOrderId: execution.OrderId);
+            if (changed)
+            {
+                _decisions.Write("breakeven_backstop_armed",
+                    ("campaign_id", _plan.Id),
+                    ("trigger_price", trigger),
+                    ("position_quantity", position.Quantity),
+                    ("position_average_price", position.AveragePrice),
+                    ("order_id", execution.OrderId),
+                    ("shadow", execution.Shadow),
+                    ("message", execution.Message));
+                LogOperator("RISK", $"{_plan.Id} breakeven backstop armed at {trigger:R}.");
+            }
+            return true;
+        }
+
+        private PolicyDecision BreakevenDecision(PolicyAction action,
+            string reasonCode,
+            RuntimePosition position,
+            double trigger,
+            DateTimeOffset now)
+            => new()
+            {
+                Action = action,
+                Policy = "breakeven_backstop",
+                ReasonCode = reasonCode,
+                Priority = DecisionResolver.PriorityFor(action),
+                Quantity = Math.Max(1, (int)Math.Ceiling(position?.Quantity ?? 1)),
+                RiskAnchor = PointRange(trigger),
+                RiskAnchorEvidenceId = "weighted_average",
+                ProtectionPrice = trigger,
+                EvidenceId = "be-" + now.UtcDateTime.Ticks.ToString(CultureInfo.InvariantCulture),
+            };
+
+        private double BreakevenTriggerPrice(CampaignPlan plan, RuntimePosition position)
+        {
+            int offsetTicks = Math.Max(0, plan?.Risk?.BreakevenBackstopOffsetTicks ?? 0);
+            double offset = offsetTicks * Math.Max(_tickSize, 0.0000001);
+            return plan?.Side == CampaignSide.Long
+                ? RoundUp(position.AveragePrice + offset)
+                : RoundDown(position.AveragePrice - offset);
+        }
+
+        private static bool BreakevenBackstopTouched(CampaignSide side,
+            double trigger,
+            ExecutableMarket market)
+        {
+            if (!double.IsFinite(trigger) || market?.IsValid != true)
+                return false;
+            return side == CampaignSide.Long
+                ? market.Bid <= trigger
+                : market.Ask >= trigger;
+        }
+
+        private PriceRange PointRange(double price)
+            => new() { Lower = price, Upper = price };
+
+        private double RoundUp(double price)
+            => Math.Ceiling((price / Math.Max(_tickSize, 0.0000001)) - 1e-9)
+                * Math.Max(_tickSize, 0.0000001);
+
+        private double RoundDown(double price)
+            => Math.Floor((price / Math.Max(_tickSize, 0.0000001)) + 1e-9)
+                * Math.Max(_tickSize, 0.0000001);
+
+        private bool NearlyEqual(double left, double right)
+            => Math.Abs(left - right) <= Math.Max(_tickSize, 0.0000001) / 2.0;
+
         private GatewayResult ExecuteDecision(PolicyDecision decision, DateTimeOffset now)
         {
             if (!RequiresBrokerAction(decision.Action))
@@ -815,14 +1051,19 @@ namespace KahnRuntime
             RuntimePosition position = CurrentPosition();
             ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
             GatewayResult result = _gateway.Execute(decision, _plan, position, market);
-            if (_runTradingEnabled && result.Accepted)
+            if (_runTradingEnabled
+                && result.Accepted
+                && decision.Action != PolicyAction.EnsureBreakeven)
+            {
                 _liveSettleUntilUtc = DateTime.UtcNow.AddSeconds(5);
+            }
             return result;
         }
 
         private static bool RequiresBrokerAction(PolicyAction action)
             => action is PolicyAction.AllowProbe
                 or PolicyAction.AllowAdd
+                or PolicyAction.EnsureBreakeven
                 or PolicyAction.PassiveHarvest
                 or PolicyAction.Reduce
                 or PolicyAction.Flatten
@@ -834,6 +1075,7 @@ namespace KahnRuntime
             {
                 PolicyAction.AllowProbe => "ENTRY",
                 PolicyAction.AllowAdd => "ADD",
+                PolicyAction.EnsureBreakeven => "RISK",
                 PolicyAction.PassiveHarvest => "EXIT",
                 PolicyAction.Reduce => "EXIT",
                 PolicyAction.Flatten => "RISK",
@@ -1260,6 +1502,7 @@ namespace KahnRuntime
                 CampaignProbeQuantity = _plan?.Sizing?.ProbeQuantity,
                 CampaignAddQuantity = _plan?.Sizing?.AddQuantity,
                 CampaignMaxPositionQuantity = _plan?.Sizing?.MaxPositionQuantity,
+                CampaignScaleMode = _plan?.Sizing?.ScaleMode.ToString(),
                 CampaignMaxRetry = _plan?.Execution?.MaxRetry,
                 PassiveHarvestEnabled = _plan?.Objective?.PassiveHarvest?.IsUsable,
                 PassiveHarvestRange = _plan?.Objective?.PassiveHarvest?.Range,
@@ -1269,6 +1512,12 @@ namespace KahnRuntime
                 PassiveHarvestFloorFailureTicks = _plan?.Objective?.PassiveHarvest?.FloorFailureTicks,
                 ExecutionAttemptCount = _state?.ExecutionAttemptCount,
                 ExecutionRetriesRemaining = _state?.ExecutionRetriesRemaining(_plan),
+                AcceptedAddCount = _state?.AcceptedAddCount,
+                SimulatedAveragePrice = _state?.SimulatedAveragePrice,
+                BreakevenBackstopActive = _state?.BreakevenBackstopActive,
+                BreakevenBackstopPrice = _state?.BreakevenBackstopPrice,
+                BreakevenBackstopOrderId = _state?.BreakevenBackstopOrderId,
+                BreakevenBackstopArmedAtUtc = _state?.BreakevenBackstopArmedAt?.ToString("O", CultureInfo.InvariantCulture),
                 ExecutionPauseReason = _state?.ExecutionPauseReason,
                 ExecutionPausedAtUtc = _state?.ExecutionPausedAt?.ToString("O", CultureInfo.InvariantCulture),
                 InstanceMaxQuantity = Math.Max(1, InstanceMaxQuantity),
@@ -1310,6 +1559,9 @@ namespace KahnRuntime
                 ActiveRiskAnchorEvidenceId = _state?.ActiveRiskAnchorEvidenceId,
                 RootRiskAnchor = _state?.RootRiskAnchor,
                 RootRiskAnchorEvidenceId = _state?.RootRiskAnchorEvidenceId,
+                PendingAddRiskAnchor = _state?.PendingAddRiskAnchor,
+                PendingAddRiskAnchorEvidenceId = _state?.PendingAddRiskAnchorEvidenceId,
+                PendingAddRiskAnchorQueuedAtUtc = _state?.PendingAddRiskAnchorQueuedAt?.ToString("O", CultureInfo.InvariantCulture),
                 SuppressAddsUntilUtc = _state?.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture),
                 PassiveHarvestActive = _state?.PassiveHarvestActive,
                 PassiveHarvestStartedAtUtc = _state?.PassiveHarvestStartedAt?.ToString("O", CultureInfo.InvariantCulture),
@@ -1420,6 +1672,31 @@ namespace KahnRuntime
             int observed = live.IsFlat
                 ? 0
                 : Math.Max(1, (int)Math.Round(live.Quantity));
+            if (observed == 0
+                && _state.HasPosition
+                && _state.BreakevenBackstopActive
+                && _plan != null)
+            {
+                _decisions.Write("breakeven_backstop_flat_reconciled",
+                    ("campaign_id", _plan.Id),
+                    ("from_simulated_quantity", _state.SimulatedPositionQuantity),
+                    ("position_id", live.PositionId),
+                    ("breakeven_backstop_price", _state.BreakevenBackstopPrice),
+                    ("breakeven_backstop_order_id", _state.BreakevenBackstopOrderId));
+                _state.ApplyDecision(new PolicyDecision
+                {
+                    Action = PolicyAction.Retire,
+                    Policy = "breakeven_backstop",
+                    ReasonCode = "breakeven_backstop_filled",
+                    Quantity = _state.SimulatedPositionQuantity,
+                    ProtectionPrice = _state.BreakevenBackstopPrice,
+                    EvidenceId = "be-reconcile-" + nowUtc.Ticks.ToString(CultureInfo.InvariantCulture),
+                },
+                    _plan,
+                    simulateAcceptedDecisions: true,
+                    appliedAt: new DateTimeOffset(nowUtc, TimeSpan.Zero));
+                return true;
+            }
             if (observed != _state.SimulatedPositionQuantity)
             {
                 _decisions.Write("position_state_reconciled",
@@ -1475,6 +1752,7 @@ namespace KahnRuntime
             {
                 Direction = _plan?.Side ?? CampaignSide.Long,
                 Quantity = _state.SimulatedPositionQuantity,
+                AveragePrice = _state.SimulatedAveragePrice ?? 0,
             };
         }
 
@@ -1525,6 +1803,13 @@ namespace KahnRuntime
 
         private IReadOnlyList<Order> PassiveHarvestWorkingOrders()
             => _gateway?.RuntimeHarvestOrders() ?? Array.Empty<Order>();
+
+        private IReadOnlyList<Order> BreakevenBackstopWorkingOrders()
+            => _gateway?.RuntimeBreakevenOrders() ?? Array.Empty<Order>();
+
+        private double BreakevenBackstopWorkingQuantity()
+            => BreakevenBackstopWorkingOrders()
+                .Sum(order => Math.Max(0, order.RemainingQuantity));
 
         private double PassiveHarvestWorkingQuantity()
             => PassiveHarvestWorkingOrders()
@@ -1742,12 +2027,24 @@ namespace KahnRuntime
             AddMetric(metrics, "Base Qty", sizing?.ProbeQuantity.ToString(CultureInfo.InvariantCulture) ?? "-");
             AddMetric(metrics, "Add Qty", sizing?.AddQuantity.ToString(CultureInfo.InvariantCulture) ?? "-");
             AddMetric(metrics, "Plan Max", sizing?.MaxPositionQuantity.ToString(CultureInfo.InvariantCulture) ?? "-");
+            AddMetric(metrics, "Scale", sizing?.ScaleMode.ToString() ?? "-");
             AddMetric(metrics, "Inst Cap", Math.Max(1, InstanceMaxQuantity).ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Sim Qty", (_state?.SimulatedPositionQuantity ?? 0).ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Live Qty", position.Quantity.ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Harvest", HarvestMetricText());
             AddMetric(metrics, "Risk", _state?.ActiveRiskAnchor?.ToString() ?? "-");
+            AddMetric(metrics, "Pending Risk", _state?.PendingAddRiskAnchor?.ToString() ?? "-");
+            AddMetric(metrics, "BE", BreakevenMetricText());
             return metrics;
+        }
+
+        private string BreakevenMetricText()
+        {
+            if (_state?.BreakevenBackstopActive != true)
+                return "-";
+            return _state.BreakevenBackstopPrice.HasValue
+                ? _state.BreakevenBackstopPrice.Value.ToString("0.########", CultureInfo.InvariantCulture)
+                : "armed";
         }
 
         private string HarvestMetricText()

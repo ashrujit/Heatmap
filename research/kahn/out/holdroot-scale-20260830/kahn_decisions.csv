@@ -1,0 +1,3 @@
+case_id,time,action,policy,reason_code,pos,price,phase
+es_20260827_1330_short_7748,13:39:03,AllowProbe,trap_probe,same_side_lean_at_trap_probe,0->2,7748.75,Ready->ProbeOpen
+es_20260827_1330_short_7748,14:31:48,Retire,target_zone,opposite_ownership_at_target,2->0,7729.0,BuildTrial->Retired

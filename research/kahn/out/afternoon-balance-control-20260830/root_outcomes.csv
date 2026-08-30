@@ -1,0 +1,4 @@
+case_id,scenario_id,time,ref,target_floor,full_mfe,full_mae,full_target_time,mfe_30m,mae_30m,mfe_60m,mae_60m,first_below_7720,first_below_7716_50,be2_favorable_time,be2_return_time,be2_return_after_min,be4_favorable_time,be4_return_time,be4_return_after_min,notes
+es_20260828_1345_short_7726_control,first_supply_test_7726,13:49:34,7726.0,7716.5,13.75,1.25,14:48:56,6.5,1.25,9.5,1.25,13:55:40,14:48:56,13:50:28,13:52:37,2.1,13:55:08,14:00:43,5.6,First 7726 repair/test against upper value supply.
+es_20260828_1345_short_7726_control,supply_hold_7724_50,13:50:09,7724.5,7716.5,12.25,2.75,14:48:56,5.0,2.75,9.25,2.75,13:55:40,14:48:56,13:55:07,13:59:17,4.2,13:55:35,13:59:17,3.7,Hold confirmation after the first 7726 test.
+es_20260828_1345_short_7726_control,balance_retest_7726,14:02:48,7726.0,7716.5,13.75,1.25,14:48:56,8.25,1.25,13.75,1.25,14:23:24,14:48:56,14:04:57,14:05:13,0.3,14:14:32,-,,Second value-center retest near the same short area.

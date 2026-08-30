@@ -11,6 +11,12 @@ namespace KahnRuntime
         Short,
     }
 
+    internal enum CampaignScaleMode
+    {
+        RootOnly,
+        EvidenceScaled,
+    }
+
     internal enum CampaignPhase
     {
         Idle,
@@ -84,6 +90,7 @@ namespace KahnRuntime
         ArmProbe,
         AllowProbe,
         AllowAdd,
+        EnsureBreakeven,
         SuppressAdd,
         HoldRoot,
         TightenRisk,
@@ -163,6 +170,7 @@ namespace KahnRuntime
         public int ProbeQuantity { get; init; } = 1;
         public int AddQuantity { get; init; } = 1;
         public int MaxPositionQuantity { get; init; } = 1;
+        public CampaignScaleMode ScaleMode { get; init; } = CampaignScaleMode.RootOnly;
     }
 
     internal sealed class CampaignExecution
@@ -175,6 +183,8 @@ namespace KahnRuntime
         public int RootStopTicks { get; init; } = 16;
         public int SponsorFailureBufferTicks { get; init; } = 2;
         public bool AllowContestBeyondRiskAnchor { get; init; } = true;
+        public bool BreakevenBackstopEnabled { get; init; } = true;
+        public int BreakevenBackstopOffsetTicks { get; init; }
     }
 
     internal sealed class PassiveHarvestObjective
@@ -388,11 +398,15 @@ namespace KahnRuntime
         public string WaypointId { get; init; }
         public PriceRange RiskAnchor { get; init; }
         public string RiskAnchorEvidenceId { get; init; }
+        public PriceRange ChildRiskAnchor { get; init; }
+        public string ChildRiskAnchorEvidenceId { get; init; }
+        public bool DelayRiskAnchorPromotionOnAdd { get; init; }
+        public double? ProtectionPrice { get; init; }
         public DateTimeOffset? ExpiresAt { get; init; }
         public string EvidenceId { get; init; }
 
         public string DedupeKey
-            => $"{Action}:{Policy}:{ReasonCode}:{WaypointId}:{RiskAnchor}";
+            => $"{Action}:{Policy}:{ReasonCode}:{WaypointId}:{RiskAnchor}:{ChildRiskAnchor}:{ProtectionPrice}";
 
         public static PolicyDecision None(string policy, CampaignEvidence evidence)
             => new()
@@ -417,9 +431,18 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; private set; }
         public PriceRange RootRiskAnchor { get; private set; }
         public string RootRiskAnchorEvidenceId { get; private set; }
+        public PriceRange PendingAddRiskAnchor { get; private set; }
+        public string PendingAddRiskAnchorEvidenceId { get; private set; }
+        public DateTimeOffset? PendingAddRiskAnchorQueuedAt { get; private set; }
         public DateTimeOffset? SuppressAddsUntil { get; private set; }
         public DateTimeOffset LastDecisionUtc { get; private set; }
         public int ExecutionAttemptCount { get; private set; }
+        public int AcceptedAddCount { get; private set; }
+        public double? SimulatedAveragePrice { get; private set; }
+        public bool BreakevenBackstopActive { get; private set; }
+        public double? BreakevenBackstopPrice { get; private set; }
+        public string BreakevenBackstopOrderId { get; private set; }
+        public DateTimeOffset? BreakevenBackstopArmedAt { get; private set; }
         public string ExecutionPauseReason { get; private set; }
         public DateTimeOffset? ExecutionPausedAt { get; private set; }
         public bool PassiveHarvestActive { get; private set; }
@@ -436,6 +459,11 @@ namespace KahnRuntime
 
         public int ExecutionRetriesRemaining(CampaignPlan plan)
             => Math.Max(0, MaxRetry(plan) - ExecutionAttemptCount);
+
+        public bool BreakevenBackstopEligible(CampaignPlan plan)
+            => HasPosition
+                && plan?.Risk?.BreakevenBackstopEnabled != false
+                && AcceptedAddCount > 0;
 
         public static CampaignState ForPlan(CampaignPlan plan)
             => new()
@@ -465,7 +493,9 @@ namespace KahnRuntime
             CampaignPlan plan,
             bool simulateAcceptedDecisions,
             DateTimeOffset? appliedAt = null,
-            int? passiveHarvestFilledQuantity = null)
+            int? passiveHarvestFilledQuantity = null,
+            double? simulatedFillPrice = null,
+            string executionOrderId = null)
         {
             if (decision == null || decision.Action == PolicyAction.NoAction)
                 return;
@@ -482,24 +512,45 @@ namespace KahnRuntime
                     ExecutionAttemptCount = Math.Min(MaxRetry(plan), ExecutionAttemptCount + 1);
                     ClearExecutionPause();
                     if (simulateAcceptedDecisions)
+                    {
+                        int quantity = Math.Max(1, decision.Quantity ?? plan.Sizing.ProbeQuantity);
+                        UpdateSimulatedAverage(quantity, simulatedFillPrice);
                         SimulatedPositionQuantity = Math.Max(
                             SimulatedPositionQuantity,
-                            Math.Max(1, decision.Quantity ?? plan.Sizing.ProbeQuantity));
+                            quantity);
+                    }
                     Phase = CampaignPhase.ProbeOpen;
                     SetRiskAnchor(decision);
                     SetRootRiskAnchorIfUnset(decision);
                     ArmedWaypointId = null;
                     break;
                 case PolicyAction.AllowAdd:
+                    AcceptedAddCount++;
                     if (simulateAcceptedDecisions)
                     {
                         int quantity = Math.Max(1, decision.Quantity ?? plan.Sizing.AddQuantity);
+                        UpdateSimulatedAverage(quantity, simulatedFillPrice);
                         SimulatedPositionQuantity = Math.Min(
                             plan.Sizing.MaxPositionQuantity,
                             SimulatedPositionQuantity + quantity);
                     }
                     Phase = CampaignPhase.Pressing;
-                    SetRiskAnchor(decision);
+                    if (decision.DelayRiskAnchorPromotionOnAdd)
+                    {
+                        PromotePendingAddRiskAnchor(plan, decision);
+                        QueuePendingAddRiskAnchor(decision, plan, now);
+                    }
+                    else
+                    {
+                        SetRiskAnchor(decision);
+                        ClearPendingAddRiskAnchor();
+                    }
+                    break;
+                case PolicyAction.EnsureBreakeven:
+                    ArmBreakevenBackstop(
+                        decision.ProtectionPrice ?? decision.RiskAnchor?.Center,
+                        now,
+                        executionOrderId);
                     break;
                 case PolicyAction.SuppressAdd:
                     SuppressAddsUntil = decision.ExpiresAt
@@ -590,12 +641,68 @@ namespace KahnRuntime
             }
         }
 
+        public void ArmBreakevenBackstop(double? price,
+            DateTimeOffset armedAt,
+            string orderId = null)
+        {
+            if (!price.HasValue || !double.IsFinite(price.Value))
+                return;
+            BreakevenBackstopActive = true;
+            BreakevenBackstopPrice = price.Value;
+            BreakevenBackstopOrderId = orderId;
+            BreakevenBackstopArmedAt ??= armedAt;
+        }
+
         private void SetRiskAnchor(PolicyDecision decision)
         {
             if (decision.RiskAnchor == null)
                 return;
             ActiveRiskAnchor = decision.RiskAnchor;
             ActiveRiskAnchorEvidenceId = decision.RiskAnchorEvidenceId ?? decision.EvidenceId;
+        }
+
+        private void PromotePendingAddRiskAnchor(CampaignPlan plan, PolicyDecision decision)
+        {
+            if (plan == null || PendingAddRiskAnchor == null)
+                return;
+
+            PriceRange child = decision.ChildRiskAnchor ?? decision.RiskAnchor;
+            PriceRange reference = ActiveRiskAnchor ?? RootRiskAnchor;
+            bool childValidatesPending = child != null
+                && CampaignSideMath.IsFavorableBeyond(plan.Side, child, PendingAddRiskAnchor);
+            bool pendingImprovesRisk = reference == null
+                || CampaignSideMath.IsFavorableBeyond(plan.Side, PendingAddRiskAnchor, reference);
+            if (childValidatesPending && pendingImprovesRisk)
+            {
+                ActiveRiskAnchor = PendingAddRiskAnchor;
+                ActiveRiskAnchorEvidenceId = PendingAddRiskAnchorEvidenceId;
+            }
+            ClearPendingAddRiskAnchor();
+        }
+
+        private void QueuePendingAddRiskAnchor(PolicyDecision decision,
+            CampaignPlan plan,
+            DateTimeOffset now)
+        {
+            if (plan == null)
+                return;
+
+            PriceRange child = decision.ChildRiskAnchor ?? decision.RiskAnchor;
+            if (child == null)
+                return;
+
+            PriceRange reference = PendingAddRiskAnchor ?? ActiveRiskAnchor ?? RootRiskAnchor;
+            if (reference != null
+                && !CampaignSideMath.IsFavorableBeyond(plan.Side, child, reference))
+            {
+                return;
+            }
+
+            PendingAddRiskAnchor = child;
+            PendingAddRiskAnchorEvidenceId = decision.ChildRiskAnchorEvidenceId
+                ?? decision.RiskAnchorEvidenceId
+                ?? decision.EvidenceId;
+            PendingAddRiskAnchorQueuedAt = now;
         }
 
         public void ReconcileObservedPositionQuantity(int quantity, CampaignPlan plan)
@@ -658,6 +765,45 @@ namespace KahnRuntime
             PassiveHarvestSignalCount = 0;
         }
 
+        private void UpdateSimulatedAverage(int addedQuantity, double? fillPrice)
+        {
+            if (addedQuantity <= 0
+                || !fillPrice.HasValue
+                || !double.IsFinite(fillPrice.Value))
+            {
+                return;
+            }
+
+            if (SimulatedPositionQuantity <= 0 || !SimulatedAveragePrice.HasValue)
+            {
+                SimulatedAveragePrice = fillPrice.Value;
+                return;
+            }
+
+            double totalQuantity = SimulatedPositionQuantity + addedQuantity;
+            if (totalQuantity <= 0)
+                return;
+            SimulatedAveragePrice =
+                (SimulatedAveragePrice.Value * SimulatedPositionQuantity
+                    + fillPrice.Value * addedQuantity)
+                / totalQuantity;
+        }
+
+        private void ClearPendingAddRiskAnchor()
+        {
+            PendingAddRiskAnchor = null;
+            PendingAddRiskAnchorEvidenceId = null;
+            PendingAddRiskAnchorQueuedAt = null;
+        }
+
+        private void ClearBreakevenBackstop()
+        {
+            BreakevenBackstopActive = false;
+            BreakevenBackstopPrice = null;
+            BreakevenBackstopOrderId = null;
+            BreakevenBackstopArmedAt = null;
+        }
+
         private static int MaxRetry(CampaignPlan plan)
             => Math.Max(1, plan?.Execution?.MaxRetry ?? 3);
 
@@ -667,6 +813,10 @@ namespace KahnRuntime
             ActiveRiskAnchorEvidenceId = null;
             RootRiskAnchor = null;
             RootRiskAnchorEvidenceId = null;
+            SimulatedAveragePrice = null;
+            AcceptedAddCount = 0;
+            ClearBreakevenBackstop();
+            ClearPendingAddRiskAnchor();
         }
     }
 

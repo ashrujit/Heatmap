@@ -34,6 +34,7 @@ namespace KahnRuntime.Replay
             ReportDecision pendingDecision = null;
             string priorActiveRisk = null;
             string priorRootRisk = null;
+            string priorPendingAddRisk = null;
             int lineNumber = 0;
 
             foreach (string line in File.ReadLines(path))
@@ -51,6 +52,7 @@ namespace KahnRuntime.Replay
                         model.CampaignId = String(root, "campaign_id");
                         model.Side = String(root, "side");
                         model.Status = String(root, "status");
+                        model.ScaleMode = String(root, "scale_mode");
                         model.CampaignNotes = String(root, "notes");
                         break;
                     case "evidence_ignored":
@@ -71,6 +73,7 @@ namespace KahnRuntime.Replay
                             pendingDecision.PhaseAfter = state.Phase;
                             pendingDecision.ActiveRiskAfter = state.ActiveRiskAnchor;
                             pendingDecision.RootRiskAfter = state.RootRiskAnchor;
+                            pendingDecision.PendingAddRiskAfter = state.PendingAddRiskAnchor;
 
                             if (!string.Equals(priorActiveRisk, state.ActiveRiskAnchor,
                                     StringComparison.Ordinal))
@@ -87,6 +90,14 @@ namespace KahnRuntime.Replay
                                     + $"{Dash(priorRootRisk)} -> {Dash(state.RootRiskAnchor)}"
                                     + EvidenceSuffix(state.RootRiskAnchorEvidenceId));
                                 priorRootRisk = state.RootRiskAnchor;
+                            }
+                            if (!string.Equals(priorPendingAddRisk, state.PendingAddRiskAnchor,
+                                    StringComparison.Ordinal))
+                            {
+                                model.StateNotes.Add($"{pendingDecision.TimeEt}: pending add risk "
+                                    + $"{Dash(priorPendingAddRisk)} -> {Dash(state.PendingAddRiskAnchor)}"
+                                    + EvidenceSuffix(state.PendingAddRiskAnchorEvidenceId));
+                                priorPendingAddRisk = state.PendingAddRiskAnchor;
                             }
                         }
                         break;
@@ -114,6 +125,8 @@ namespace KahnRuntime.Replay
                 WaypointId = String(root, "waypoint_id"),
                 RiskAnchor = Range(root, "risk_anchor"),
                 RiskAnchorEvidenceId = String(root, "risk_anchor_evidence_id"),
+                ChildRiskAnchor = Range(root, "child_risk_anchor"),
+                ChildRiskAnchorEvidenceId = String(root, "child_risk_anchor_evidence_id"),
                 EvidenceId = String(root, "evidence_id"),
                 EvidenceSource = String(root, "evidence_source"),
                 EvidenceKind = String(root, "evidence_kind"),
@@ -135,6 +148,15 @@ namespace KahnRuntime.Replay
                 ActiveRiskAnchorEvidenceId = String(root, "active_risk_anchor_evidence_id"),
                 RootRiskAnchor = Range(root, "root_risk_anchor"),
                 RootRiskAnchorEvidenceId = String(root, "root_risk_anchor_evidence_id"),
+                PendingAddRiskAnchor = Range(root, "pending_add_risk_anchor"),
+                PendingAddRiskAnchorEvidenceId = String(root, "pending_add_risk_anchor_evidence_id"),
+                PendingAddRiskAnchorQueuedAtEt = TimeEt(String(root, "pending_add_risk_anchor_queued_at")),
+                AcceptedAddCount = NullableString(root, "accepted_add_count"),
+                SimulatedAveragePrice = NullableString(root, "simulated_average_price"),
+                BreakevenBackstopActive = NullableString(root, "breakeven_backstop_active"),
+                BreakevenBackstopPrice = NullableString(root, "breakeven_backstop_price"),
+                BreakevenBackstopOrderId = String(root, "breakeven_backstop_order_id"),
+                BreakevenBackstopArmedAtEt = TimeEt(String(root, "breakeven_backstop_armed_at")),
                 SuppressAddsUntilEt = TimeEt(String(root, "suppress_adds_until")),
                 ExecutionAttemptCount = NullableString(root, "execution_attempt_count"),
                 MaxRetry = NullableString(root, "max_retry"),
@@ -151,6 +173,8 @@ namespace KahnRuntime.Replay
             builder.AppendLine($"Campaign: `{Escape(model.CampaignId)}`");
             builder.AppendLine($"Side: `{Escape(model.Side)}`");
             builder.AppendLine($"Status: `{Escape(model.Status)}`");
+            if (!string.IsNullOrWhiteSpace(model.ScaleMode))
+                builder.AppendLine($"Scale: `{Escape(model.ScaleMode)}`");
             builder.AppendLine($"Decisions: `{model.Decisions.Count}`");
             builder.AppendLine($"Ignored events: `{model.IgnoredEvents}`");
             if (!string.IsNullOrWhiteSpace(model.CampaignNotes))
@@ -205,6 +229,11 @@ namespace KahnRuntime.Replay
                     + EvidenceSuffix(model.FinalState.ActiveRiskAnchorEvidenceId));
                 builder.AppendLine($"- Root risk: `{Escape(Dash(model.FinalState.RootRiskAnchor))}`"
                     + EvidenceSuffix(model.FinalState.RootRiskAnchorEvidenceId));
+                builder.AppendLine($"- Pending add risk: `{Escape(Dash(model.FinalState.PendingAddRiskAnchor))}`"
+                    + EvidenceSuffix(model.FinalState.PendingAddRiskAnchorEvidenceId));
+                builder.AppendLine($"- Accepted adds: `{Escape(Dash(model.FinalState.AcceptedAddCount))}`");
+                builder.AppendLine($"- Sim avg: `{Escape(Dash(model.FinalState.SimulatedAveragePrice))}`");
+                builder.AppendLine($"- BE backstop: `{Escape(BreakevenState(model.FinalState))}`");
                 builder.AppendLine($"- Suppress adds until: `{Escape(Dash(model.FinalState.SuppressAddsUntilEt))}`");
             }
 
@@ -233,9 +262,30 @@ namespace KahnRuntime.Replay
         }
 
         private static string Risk(ReportDecision decision)
-            => string.IsNullOrWhiteSpace(decision.RiskAnchor)
+        {
+            string active = string.IsNullOrWhiteSpace(decision.RiskAnchor)
                 ? "-"
                 : $"{decision.RiskAnchor}{EvidenceSuffix(decision.RiskAnchorEvidenceId)}";
+            if (string.IsNullOrWhiteSpace(decision.ChildRiskAnchor))
+                return active;
+            return active + " child="
+                + decision.ChildRiskAnchor
+                + EvidenceSuffix(decision.ChildRiskAnchorEvidenceId);
+        }
+
+        private static string BreakevenState(ReportState state)
+        {
+            if (state == null
+                || !string.Equals(state.BreakevenBackstopActive, "True",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "-";
+            }
+            return Dash(state.BreakevenBackstopPrice)
+                + (string.IsNullOrWhiteSpace(state.BreakevenBackstopOrderId)
+                    ? string.Empty
+                    : " order=" + state.BreakevenBackstopOrderId);
+        }
 
         private static string Evidence(ReportDecision decision)
         {
@@ -348,6 +398,7 @@ namespace KahnRuntime.Replay
         public string CampaignId { get; set; }
         public string Side { get; set; }
         public string Status { get; set; }
+        public string ScaleMode { get; set; }
         public string CampaignNotes { get; set; }
         public int IgnoredEvents { get; set; }
         public List<ReportDecision> Decisions { get; } = new();
@@ -372,6 +423,8 @@ namespace KahnRuntime.Replay
         public string WaypointId { get; init; }
         public string RiskAnchor { get; init; }
         public string RiskAnchorEvidenceId { get; init; }
+        public string ChildRiskAnchor { get; init; }
+        public string ChildRiskAnchorEvidenceId { get; init; }
         public string EvidenceId { get; init; }
         public string EvidenceSource { get; init; }
         public string EvidenceKind { get; init; }
@@ -382,6 +435,7 @@ namespace KahnRuntime.Replay
         public string EvidenceScore { get; init; }
         public string ActiveRiskAfter { get; set; }
         public string RootRiskAfter { get; set; }
+        public string PendingAddRiskAfter { get; set; }
     }
 
     internal sealed class ReportState
@@ -393,6 +447,15 @@ namespace KahnRuntime.Replay
         public string ActiveRiskAnchorEvidenceId { get; init; }
         public string RootRiskAnchor { get; init; }
         public string RootRiskAnchorEvidenceId { get; init; }
+        public string PendingAddRiskAnchor { get; init; }
+        public string PendingAddRiskAnchorEvidenceId { get; init; }
+        public string PendingAddRiskAnchorQueuedAtEt { get; init; }
+        public string AcceptedAddCount { get; init; }
+        public string SimulatedAveragePrice { get; init; }
+        public string BreakevenBackstopActive { get; init; }
+        public string BreakevenBackstopPrice { get; init; }
+        public string BreakevenBackstopOrderId { get; init; }
+        public string BreakevenBackstopArmedAtEt { get; init; }
         public string SuppressAddsUntilEt { get; init; }
         public string ExecutionAttemptCount { get; init; }
         public string MaxRetry { get; init; }

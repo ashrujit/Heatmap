@@ -36,6 +36,7 @@ namespace KahnRuntime
         public int? CampaignProbeQuantity { get; set; }
         public int? CampaignAddQuantity { get; set; }
         public int? CampaignMaxPositionQuantity { get; set; }
+        public string CampaignScaleMode { get; set; }
         public int? CampaignMaxRetry { get; set; }
         public bool? PassiveHarvestEnabled { get; set; }
         public PriceRange PassiveHarvestRange { get; set; }
@@ -45,6 +46,12 @@ namespace KahnRuntime
         public int? PassiveHarvestFloorFailureTicks { get; set; }
         public int? ExecutionAttemptCount { get; set; }
         public int? ExecutionRetriesRemaining { get; set; }
+        public int? AcceptedAddCount { get; set; }
+        public double? SimulatedAveragePrice { get; set; }
+        public bool? BreakevenBackstopActive { get; set; }
+        public double? BreakevenBackstopPrice { get; set; }
+        public string BreakevenBackstopOrderId { get; set; }
+        public string BreakevenBackstopArmedAtUtc { get; set; }
         public string ExecutionPauseReason { get; set; }
         public string ExecutionPausedAtUtc { get; set; }
         public int? InstanceMaxQuantity { get; set; }
@@ -70,6 +77,9 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; set; }
         public PriceRange RootRiskAnchor { get; set; }
         public string RootRiskAnchorEvidenceId { get; set; }
+        public PriceRange PendingAddRiskAnchor { get; set; }
+        public string PendingAddRiskAnchorEvidenceId { get; set; }
+        public string PendingAddRiskAnchorQueuedAtUtc { get; set; }
         public string SuppressAddsUntilUtc { get; set; }
         public string LastDecisionUtc { get; set; }
         public double? LatestBid { get; set; }
@@ -131,6 +141,8 @@ namespace KahnRuntime
             data.TickSize = FiniteOrZero(data.TickSize);
             data.LatestBid = NullableFinite(data.LatestBid);
             data.LatestAsk = NullableFinite(data.LatestAsk);
+            data.SimulatedAveragePrice = NullableFinite(data.SimulatedAveragePrice);
+            data.BreakevenBackstopPrice = NullableFinite(data.BreakevenBackstopPrice);
             data.EvidenceWarmupRemainingSeconds = FiniteOrZero(data.EvidenceWarmupRemainingSeconds);
             data.PositionQuantity = FiniteOrZero(data.PositionQuantity);
             data.PositionAveragePrice = FiniteOrZero(data.PositionAveragePrice);

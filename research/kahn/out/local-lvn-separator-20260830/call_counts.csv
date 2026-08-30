@@ -1,0 +1,9 @@
+case_id,separator_call,count
+es_20260827_1130_long_7728,no_corridor,2
+es_20260827_1130_long_7728,weak_local_separator,4
+es_20260827_1330_short_7748,local_lvn_separator,4
+es_20260827_1330_short_7748,no_corridor,1
+es_20260827_1330_short_7748,weak_local_separator,4
+es_20260828_1120_short_7780,local_lvn_separator,13
+es_20260828_1120_short_7780,no_lvn_separator,6
+es_20260828_1120_short_7780,weak_local_separator,3

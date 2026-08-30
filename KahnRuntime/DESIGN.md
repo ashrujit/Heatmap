@@ -29,10 +29,11 @@ write synthetic fills when `Shadow Fill Simulation=true`; this is useful for
 policy rehearsal and dry runs.
 
 `Trading Enabled=true` submits market entry/add orders, can work tagged
-reduce-only close-limit orders for configured passive harvest objectives, and
-uses Quantower `ClosePosition` for active reduce, flatten, and retire decisions.
-Runtime orders are tagged `KH:`. On stop, Kahn cancels only its own tagged
-working orders.
+reduce-only close-limit orders for configured passive harvest objectives, can
+maintain one tagged weighted-BE stop-market backstop after scale inventory
+exists, and uses Quantower `ClosePosition` for active reduce, flatten, and
+retire decisions. Runtime orders are tagged `KH:`. On stop, Kahn cancels only
+its own tagged working orders.
 
 Operator controls are not campaign evidence and do not depend on the campaign
 active window. A changed `Control Path` file with `kind=KAHN_CONTROL` and
@@ -51,9 +52,9 @@ because controls are delivered by path.
 
 Passive harvest is not a bracket/TP engine. It is a campaign objective that lets
 Kahn progressively lighten inside a declared paid area before waiting for full
-opposite-side proof. BE migration, protection stops, and bracket lifecycles still
-require a separate protection-order design because Kahn's risk can move by
-policy, waypoint, path stress, and sponsor lineage.
+opposite-side proof. Kahn's only routine protection order is the weighted-BE
+backstop after scale inventory exists. Sponsor/root risk still moves by policy,
+waypoint, path stress, and sponsor lineage rather than by broker stop migration.
 
 Kahn reconciles live position state from the configured execution
 `Symbol`/`Account`. It pauses and logs operator-action errors rather than
@@ -97,6 +98,33 @@ Campaign sizing is directive-local. `probe_quantity`, `add_quantity`, and
 change size for a new situation without restarting and losing live LL warmup.
 The strategy-level `Instance Max Quantity` remains a hard cap over any
 campaign request.
+
+`scale_mode` is the coarse scaling switch. `root_only` keeps the campaign at
+the probe/root position and ignores otherwise valid add evidence. `scale_allowed`
+removes manual add-price selection from the directive: Kahn may use same-side LL
+ownership/hold evidence inside the arena as the add candidate, unless a
+higher-priority no-add, evaluate, path-stress, target, harvest, reduce, flatten,
+or retire policy wins first. Explicit `press`/`build_trial`/`repair_hold`
+waypoints still label and gate evidence when supplied, but they are no longer
+required for scale participation.
+
+Scale sponsor promotion is intentionally one accepted add behind the newest
+child evidence. The first add after root queues a child anchor while active risk
+stays at root. When a later add fires farther in the favorable direction, Kahn
+promotes the previously queued child and queues the new child. If price reaches
+harvest before the next add, the pending child never has to become sponsor. This
+keeps hold-root protection from being blinded by fresh continuation evidence,
+but avoids EAR-style immediate leverage/sponsor promotion on the first worse
+price proof.
+
+Weighted BE is a separate account backstop. It is not armed at root/probe size.
+After the first accepted add, Kahn waits until the actual shadow/live position is
+larger than probe size and the executable quote is beyond weighted average. Only
+then does it place or maintain one `BE` stop-market order for the open quantity.
+If an armed BE is touched, or a live position disappears while BE is active, the
+campaign retires. If BE cannot be established while scaled, Kahn attempts an
+active retire/flatten because scaled inventory without the account backstop is
+outside the intended contract.
 
 `execution.max_retry` is also directive-local and defaults to `3`. It is a
 probe-attempt budget, not an evidence retry counter and not a broker-rejection
@@ -156,8 +184,9 @@ GexBotMCP service should own SQLite collection and freshness.
 
 - `TrapProbePolicy`: early, small entries at edges when counter-aggression or a
   same-side lean makes a trap plausible before full LL proof exists.
-- `PressPolicy`: in-between participation using LL/EAR-style same-side
-  ownership, bounded by runway and target-zone restrictions.
+- `PressPolicy`: scale participation using LL/EAR-style same-side ownership,
+  bounded by scale mode, favorable progression, arena/runway, and target-zone
+  restrictions.
 - `BuildTrialPolicy`: decides whether a managed-risk position has earned a new
   risk-owning sponsor, and flattens when the active sponsor fails.
 - `TargetZonePolicy`: suppresses adds near objective and trims/harvests when

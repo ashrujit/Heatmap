@@ -1,0 +1,4 @@
+case_id,day,side,entry_time,entry_ref,target_floor,window,high,low,mfe,mae,target_time,notes
+es_20260827_1130_long_7728,2026-08-27,long,11:40:17,7728.0,7743.0,11:30-12:45,7749.75,7725.25,21.75,2.75,12:34:28,Later 7728 long: scale question after root/probe exists.
+es_20260827_1330_short_7748,2026-08-27,short,13:39:03,7748.75,7729.5,13:30-14:40,7751.25,7723.75,25.0,2.5,14:26:35,Actual Kahn short: inspect missed scale while HoldRoot governed.
+es_20260828_1120_short_7780,2026-08-28,short,11:20:00,7780.0,7740.0,11:15-12:25,7781.5,7720.0,60.0,1.5,11:56:40,Hypothetical short: high rail scale-in and target harvest.

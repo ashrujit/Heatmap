@@ -1,0 +1,4 @@
+case_id,rows,receipt_minus_exchange_ms_median,receipt_minus_exchange_ms_p05,receipt_minus_exchange_ms_p95
+es_20260827_1130_long_7728,436639,-151.2,-181.8,-77.5
+es_20260827_1330_short_7748,714106,-281.0,-318.5,-207.8
+es_20260828_1120_short_7780,1508012,-928.5,-1008.0,-3.8

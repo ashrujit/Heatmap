@@ -1,0 +1,9 @@
+case_id,time,event,side,range,price,score,call
+es_20260827_1130_long_7728,12:34:28,target_floor_touch,long,7743-7743,7743.0,,start_or_continue_passive_harvest
+es_20260827_1330_short_7748,14:26:35,target_floor_touch,short,7728-7729.5,7729.5,,start_or_continue_passive_harvest
+es_20260827_1330_short_7748,14:32:23,CONSUMED,demand,724.25-727,7729.5,26.921,increase_harvest_or_retire
+es_20260828_1120_short_7780,11:56:40,target_floor_touch,short,7740-7740,7740.0,,start_or_continue_passive_harvest
+es_20260828_1120_short_7780,11:57:26,HOLD,demand,735.75-736.75,7739.25,11.382,increase_harvest_or_retire
+es_20260828_1120_short_7780,11:58:26,HOLD,demand,729.25-739,7741.5,38.491,increase_harvest_or_retire
+es_20260828_1120_short_7780,12:03:29,CONSUMED,demand,733.75-737.25,7740.5,33.405,increase_harvest_or_retire
+es_20260828_1120_short_7780,12:05:56,HOLD,demand,733.75-737.25,7740.0,33.405,increase_harvest_or_retire

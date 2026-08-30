@@ -8,6 +8,7 @@ namespace KahnRuntime
         {
             PlanParserAcceptsMinimalCampaign();
             PlanParserAcceptsPassiveHarvestObjective();
+            PlanParserAcceptsRootOnlyScaleMode();
             RetryExhaustionPausesCampaignInsteadOfRetiring();
             TrapProbeAllowsLeanAtEdge();
             ArmedProbeAllowsLaterInsideRail();
@@ -20,7 +21,11 @@ namespace KahnRuntime
             NoAddZoneSuppressesPressAdd();
             EvaluateZoneSuppressesAdd();
             PressAboveNoAddAllowsAdd();
+            RootOnlyScaleModeBlocksAdds();
+            EvidenceScaledAllowsArenaAddWithoutPressWaypoint();
             PreserveRiskAnchorOnAddUsesRoot();
+            DelayedSponsorPromotionLagsAcceptedAdds();
+            BreakevenBackstopArmsOnlyAfterFirstAdd();
             PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill();
             PassiveHarvestShadowFillReducesPosition();
             PassiveHarvestOppositeOwnershipOverridesTargetRetire();
@@ -101,6 +106,45 @@ namespace KahnRuntime
             Assert(plan.Side == CampaignSide.Short, "plan side");
             Assert(plan.Waypoints.Count == 1, "waypoint count");
             Assert(plan.Execution.MaxRetry == 3, "default max retry");
+            Assert(plan.Sizing.ScaleMode == CampaignScaleMode.EvidenceScaled,
+                "scale mode inferred from add headroom");
+        }
+
+        private static void PlanParserAcceptsRootOnlyScaleMode()
+        {
+            string json = """
+            {
+              "schema_version": 1,
+              "kind": "KAHN_CAMPAIGN",
+              "id": "selftest-root-only",
+              "status": "active",
+              "created_at": "2026-08-24T13:50:00Z",
+              "side": "long",
+              "window": {
+                "not_before": "2026-08-24T13:50:00Z",
+                "expires_at": "2026-08-24T14:20:00Z"
+              },
+              "arena": { "lower": 7670.0, "upper": 7690.0 },
+              "sizing": {
+                "scale_mode": "root_only",
+                "probe_quantity": 1,
+                "add_quantity": 0,
+                "max_position_quantity": 1
+              },
+              "waypoints": [
+                {
+                  "id": "trap-7674",
+                  "role": "trap_probe",
+                  "range": { "lower": 7673.75, "upper": 7675.25 }
+                }
+              ]
+            }
+            """;
+
+            CampaignPlan plan = CampaignPlanParser.Parse(json, "selftest");
+            Assert(plan.Sizing.ScaleMode == CampaignScaleMode.RootOnly,
+                "root-only scale mode parses");
+            Assert(plan.Sizing.AddQuantity == 0, "root-only add quantity may be zero");
         }
 
         private static void PlanParserAcceptsPassiveHarvestObjective()
@@ -353,7 +397,7 @@ namespace KahnRuntime
                 Policy = "selftest",
                 ReasonCode = "seed_position",
                 Quantity = 1,
-                RiskAnchor = new PriceRange { Lower = 7690.25, Upper = 7691.75 },
+                RiskAnchor = new PriceRange { Lower = 7692.75, Upper = 7693.25 },
             }, plan, simulateAcceptedDecisions: true);
 
             CampaignEvidence evidence = new()
@@ -464,6 +508,77 @@ namespace KahnRuntime
                 evidence);
             Assert(decision.Action == PolicyAction.AllowAdd, "press above no-add allows add");
         }
+
+        private static void RootOnlyScaleModeBlocksAdds()
+        {
+            CampaignPlan plan = LongRootOnlyPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_position",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 7671.0, Upper = 7672.0 },
+                EvidenceId = "seed-probe",
+            }, plan, simulateAcceptedDecisions: true);
+
+            CampaignEvidence evidence = new()
+            {
+                EventId = "root-only-demand",
+                Timestamp = DateTimeOffset.UtcNow,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 7675.0, Upper = 7676.0 },
+                WaypointId = "press-7676",
+            };
+
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
+                evidence);
+            Assert(decision.Action == PolicyAction.NoAction,
+                "root-only scale mode blocks press adds");
+        }
+
+        private static void EvidenceScaledAllowsArenaAddWithoutPressWaypoint()
+        {
+            CampaignPlan plan = LongEvaluatePlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_position",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
+                EvidenceId = "seed-probe",
+            }, plan, simulateAcceptedDecisions: true);
+
+            CampaignEvidence evidence = new()
+            {
+                EventId = "arena-demand",
+                Timestamp = DateTimeOffset.UtcNow,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 29100.0, Upper = 29108.0 },
+            };
+
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
+                evidence);
+            Assert(decision.Action == PolicyAction.AllowAdd,
+                "scale mode allows arena-discovered add");
+            Assert(decision.WaypointId == null,
+                "arena-discovered add does not require manual press waypoint");
+            Assert(decision.ChildRiskAnchor?.Lower == 29100.0
+                && decision.ChildRiskAnchor.Upper == 29108.0,
+                "arena-discovered add carries child anchor");
+            Assert(decision.DelayRiskAnchorPromotionOnAdd,
+                "arena-discovered add uses delayed sponsor promotion");
+        }
+
         private static void TargetOppositeOwnershipRetires()
         {
             CampaignPlan plan = LongNoAddPlan();
@@ -709,15 +824,6 @@ namespace KahnRuntime
                 RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
                 EvidenceId = "seed-probe",
             }, plan, simulateAcceptedDecisions: true);
-            state.ApplyDecision(new PolicyDecision
-            {
-                Action = PolicyAction.AllowAdd,
-                Policy = "selftest",
-                ReasonCode = "seed_child_anchor",
-                Quantity = 1,
-                RiskAnchor = new PriceRange { Lower = 29088.0, Upper = 29098.0 },
-                EvidenceId = "seed-child",
-            }, plan, simulateAcceptedDecisions: true);
 
             CampaignEvidence evidence = new()
             {
@@ -738,11 +844,173 @@ namespace KahnRuntime
                 "preserve risk reason");
             Assert(decision.RiskAnchor?.Lower == 29040.0 && decision.RiskAnchor.Upper == 29060.0,
                 "preserve risk uses root anchor");
+            Assert(decision.ChildRiskAnchor?.Lower == 29112.0
+                && decision.ChildRiskAnchor.Upper == 29135.0,
+                "preserve risk carries child anchor");
             state.ApplyDecision(decision, plan, simulateAcceptedDecisions: true);
             Assert(state.ActiveRiskAnchor?.Lower == 29040.0 && state.ActiveRiskAnchor.Upper == 29060.0,
                 "active risk remains root after preserve add");
             Assert(state.ActiveRiskAnchorEvidenceId == "seed-probe",
                 "active risk evidence remains root after preserve add");
+            Assert(state.PendingAddRiskAnchor?.Lower == 29112.0
+                && state.PendingAddRiskAnchor.Upper == 29135.0,
+                "preserve risk queues child anchor");
+        }
+
+        private static void DelayedSponsorPromotionLagsAcceptedAdds()
+        {
+            CampaignPlan plan = LongPreserveRiskPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_probe",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
+                RiskAnchorEvidenceId = "seed-probe",
+                EvidenceId = "seed-probe",
+            }, plan, simulateAcceptedDecisions: true);
+
+            PolicyDecision firstAdd = AddDecision(plan,
+                state,
+                "first-add",
+                29088.0,
+                29098.0,
+                "press-29080-29100");
+            state.ApplyDecision(firstAdd, plan, simulateAcceptedDecisions: true);
+            Assert(state.ActiveRiskAnchor?.Lower == 29040.0
+                && state.ActiveRiskAnchor.Upper == 29060.0,
+                "first add leaves active risk at root");
+            Assert(state.PendingAddRiskAnchor?.Lower == 29088.0
+                && state.PendingAddRiskAnchor.Upper == 29098.0,
+                "first add queues first child");
+
+            PolicyDecision secondAdd = AddDecision(plan,
+                state,
+                "second-add",
+                29112.0,
+                29135.0,
+                "press-29100-29145");
+            state.ApplyDecision(secondAdd, plan, simulateAcceptedDecisions: true);
+            Assert(state.ActiveRiskAnchor?.Lower == 29088.0
+                && state.ActiveRiskAnchor.Upper == 29098.0,
+                "second add promotes first child");
+            Assert(state.PendingAddRiskAnchor?.Lower == 29112.0
+                && state.PendingAddRiskAnchor.Upper == 29135.0,
+                "second add queues second child");
+
+            PolicyDecision thirdAdd = AddDecision(plan,
+                state,
+                "third-add",
+                29160.0,
+                29175.0);
+            state.ApplyDecision(thirdAdd, plan, simulateAcceptedDecisions: true);
+            Assert(state.ActiveRiskAnchor?.Lower == 29112.0
+                && state.ActiveRiskAnchor.Upper == 29135.0,
+                "third add promotes second child");
+            Assert(state.PendingAddRiskAnchor?.Lower == 29160.0
+                && state.PendingAddRiskAnchor.Upper == 29175.0,
+                "third add queues third child");
+        }
+
+        private static void BreakevenBackstopArmsOnlyAfterFirstAdd()
+        {
+            CampaignPlan plan = LongPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_probe",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 7670.0, Upper = 7671.0 },
+                EvidenceId = "seed-probe",
+            },
+                plan,
+                simulateAcceptedDecisions: true,
+                simulatedFillPrice: 7672.0);
+
+            Assert(!state.BreakevenBackstopEligible(plan),
+                "breakeven does not arm at root");
+            Assert(state.SimulatedAveragePrice == 7672.0,
+                "probe sets simulated average");
+
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowAdd,
+                Policy = "selftest",
+                ReasonCode = "seed_add",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 7670.0, Upper = 7671.0 },
+                ChildRiskAnchor = new PriceRange { Lower = 7676.0, Upper = 7677.0 },
+                EvidenceId = "seed-add",
+                DelayRiskAnchorPromotionOnAdd = true,
+            },
+                plan,
+                simulateAcceptedDecisions: true,
+                simulatedFillPrice: 7678.0);
+
+            Assert(state.AcceptedAddCount == 1,
+                "accepted add count increments");
+            Assert(Math.Abs(state.SimulatedAveragePrice.GetValueOrDefault() - 7675.0) < 0.0000001,
+                "add updates weighted simulated average");
+            Assert(state.BreakevenBackstopEligible(plan),
+                "first add makes breakeven eligible");
+
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.EnsureBreakeven,
+                Policy = "selftest",
+                ReasonCode = "arm_be",
+                Quantity = 2,
+                ProtectionPrice = 7675.0,
+                EvidenceId = "seed-be",
+            },
+                plan,
+                simulateAcceptedDecisions: false,
+                executionOrderId: "shadow-be");
+
+            Assert(state.BreakevenBackstopActive,
+                "breakeven backstop is active after ensure");
+            Assert(state.BreakevenBackstopPrice == 7675.0,
+                "breakeven backstop price stored");
+            Assert(state.BreakevenBackstopOrderId == "shadow-be",
+                "breakeven order id stored");
+
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.Reduce,
+                Policy = "selftest",
+                ReasonCode = "partial_reduce",
+                Quantity = 1,
+                EvidenceId = "seed-reduce",
+            },
+                plan,
+                simulateAcceptedDecisions: true);
+
+            Assert(state.SimulatedPositionQuantity == 1,
+                "partial reduce leaves root-sized runner");
+            Assert(state.BreakevenBackstopActive,
+                "breakeven remains active after partial reduce");
+
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.Retire,
+                Policy = "selftest",
+                ReasonCode = "retire",
+                Quantity = 1,
+                EvidenceId = "seed-retire",
+            },
+                plan,
+                simulateAcceptedDecisions: true);
+
+            Assert(!state.BreakevenBackstopActive,
+                "retire clears breakeven");
+            Assert(state.AcceptedAddCount == 0,
+                "retire clears accepted add count");
+            Assert(!state.SimulatedAveragePrice.HasValue,
+                "retire clears simulated average");
         }
 
         private static void PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill()
@@ -877,6 +1145,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 4,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -918,6 +1187,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 4,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -960,6 +1230,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 2,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1002,6 +1273,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 3,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1054,6 +1326,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 3,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1089,6 +1362,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 4,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1130,6 +1404,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 5,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1165,6 +1440,7 @@ namespace KahnRuntime
                     ProbeQuantity = 1,
                     AddQuantity = 1,
                     MaxPositionQuantity = 4,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
                 },
                 Risk = new CampaignRisk(),
                 Objective = new CampaignObjective
@@ -1186,6 +1462,42 @@ namespace KahnRuntime
                         Id = "target-7680",
                         Role = WaypointRole.Target,
                         Range = new PriceRange { Lower = 7680.0, Upper = 7685.0 },
+                    },
+                },
+            };
+
+        private static CampaignPlan LongRootOnlyPlan()
+            => new()
+            {
+                SchemaVersion = 1,
+                Kind = "KAHN_CAMPAIGN",
+                Id = "long-root-only-plan",
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                Side = CampaignSide.Long,
+                Window = Window(),
+                Arena = new PriceRange { Lower = 7660.0, Upper = 7690.0 },
+                Sizing = new CampaignSizing
+                {
+                    ProbeQuantity = 1,
+                    AddQuantity = 0,
+                    MaxPositionQuantity = 4,
+                    ScaleMode = CampaignScaleMode.RootOnly,
+                },
+                Risk = new CampaignRisk(),
+                Objective = new CampaignObjective
+                {
+                    TargetRange = new PriceRange { Lower = 7680.0, Upper = 7685.0 },
+                    TargetProximityTicks = 8,
+                },
+                Policies = new CampaignPolicyFlags(),
+                Waypoints = new[]
+                {
+                    new CampaignWaypoint
+                    {
+                        Id = "press-7676",
+                        Role = WaypointRole.Press,
+                        Range = new PriceRange { Lower = 7675.5, Upper = 7681.0 },
                     },
                 },
             };
@@ -1236,15 +1548,44 @@ namespace KahnRuntime
             CampaignPlan plan,
             int quantity)
         {
+            PriceRange riskAnchor = plan.Side == CampaignSide.Long
+                ? new PriceRange { Lower = 7671.0, Upper = 7672.0 }
+                : new PriceRange { Lower = 7688.0, Upper = 7692.0 };
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
                 Policy = "selftest",
                 ReasonCode = "seed_position",
                 Quantity = quantity,
-                RiskAnchor = new PriceRange { Lower = 7688.0, Upper = 7692.0 },
+                RiskAnchor = riskAnchor,
                 EvidenceId = "seed-position",
             }, plan, simulateAcceptedDecisions: true);
+        }
+
+        private static PolicyDecision AddDecision(CampaignPlan plan,
+            CampaignState state,
+            string eventId,
+            double lower,
+            double upper,
+            string waypointId = null)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CampaignEvidence evidence = new()
+            {
+                EventId = eventId,
+                Timestamp = now,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = lower, Upper = upper },
+                WaypointId = waypointId,
+            };
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, now),
+                evidence);
+            Assert(decision.Action == PolicyAction.AllowAdd,
+                eventId + " allows add");
+            return decision;
         }
     }
 }
