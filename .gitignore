@@ -25,6 +25,7 @@ skills/dost/uv.lock
 research/out/
 research/direct_conversion_execution/out/
 journal-out/
+.tmp/
 
 # Captures ────────────────────────────────────────────────────────────
 # Should never land in the repo (they live under Quantower's deploy

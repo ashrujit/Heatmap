@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "es-short-campaign-20260828-192306-7f9974",
+  "status": "draft",
+  "created_at": "2026-08-28T19:23:06.068428Z",
+  "side": "short",
+  "window": {
+    "not_before": "2026-08-28T19:23:06.068428Z",
+    "expires_at": "2026-08-28T20:03:06.068428Z"
+  },
+  "arena": {
+    "lower": 7665,
+    "upper": 7742
+  },
+  "sizing": {
+    "probe_quantity": 2,
+    "add_quantity": 2,
+    "max_position_quantity": 8
+  },
+  "execution": {
+    "max_retry": 2
+  },
+  "risk": {
+    "root_stop_ticks": 16,
+    "sponsor_failure_buffer_ticks": 2,
+    "allow_contest_beyond_risk_anchor": true
+  },
+  "objective": {
+    "target_range": {
+      "lower": 7708,
+      "upper": 7712
+    },
+    "target_proximity_ticks": 8,
+    "suppress_adds_in_target_zone": true,
+    "passive_harvest": {
+      "range": {
+        "lower": 7708,
+        "upper": 7712
+      },
+      "initial_clip_quantity": 1,
+      "follow_clip_quantity": 1,
+      "max_working_quantity": 1,
+      "floor_failure_ticks": 0
+    }
+  },
+  "waypoints": [
+    {
+      "id": "probe-7728-7734",
+      "role": "trap_probe",
+      "range": {
+        "lower": 7728,
+        "upper": 7734
+      },
+      "label": "Short trap probe in 7728-7734; require matching campaign evidence.",
+      "require_price_inside": true
+    },
+    {
+      "id": "press-7716-7728",
+      "role": "press",
+      "range": {
+        "lower": 7716,
+        "upper": 7728
+      },
+      "label": "Short press zone in 7716-7728; require same-side sponsorship.",
+      "require_price_inside": true,
+      "preserve_risk_anchor_on_add": true
+    },
+    {
+      "id": "build-7708-7725",
+      "role": "build_trial",
+      "range": {
+        "lower": 7708,
+        "upper": 7725
+      },
+      "label": "Short build trial in 7708-7725; sponsor must accept the move."
+    },
+    {
+      "id": "evaluate-7732-7742",
+      "role": "evaluate",
+      "range": {
+        "lower": 7732,
+        "upper": 7742
+      },
+      "label": "Evaluate campaign quality in 7732-7742; suppress leverage while reading."
+    },
+    {
+      "id": "no-add-7708-7714",
+      "role": "no_add",
+      "range": {
+        "lower": 7708,
+        "upper": 7714
+      },
+      "label": "No-add corridor in 7708-7714; hold is allowed but leverage is locked."
+    },
+    {
+      "id": "pathstress-7708-7714",
+      "role": "path_stress",
+      "range": {
+        "lower": 7708,
+        "upper": 7714
+      },
+      "label": "Mature path stress in 7708-7714; harvest or cut size if reward slows.",
+      "max_position_quantity": 4
+    },
+    {
+      "id": "target-7668-7672",
+      "role": "target",
+      "range": {
+        "lower": 7668,
+        "upper": 7672
+      },
+      "label": "Campaign objective in 7668-7672."
+    },
+    {
+      "id": "target-7708-7712",
+      "role": "target",
+      "range": {
+        "lower": 7708,
+        "upper": 7712
+      },
+      "label": "Campaign objective in 7708-7712."
+    },
+    {
+      "id": "wrong-7734-7742",
+      "role": "invalidation",
+      "range": {
+        "lower": 7734,
+        "upper": 7742
+      },
+      "label": "Campaign invalidation area in 7734-7742."
+    }
+  ],
+  "notes": "ES conditional PM failed-repair short from the 7730 area. Use only if NQ repair toward 29530 helps lift ES into 7728-7734 and sellers reappear; do not chase while ES is building 7717-7720. Zero gamma is context near 7733-7734 and call-side resistance is near 7741-7742, so sustained acceptance above 7734 into 7742 invalidates the short. Build only on renewed acceptance below 7725 toward 7710. Treat 7708-7714 as path-stress and first harvest; 7668-7672 is extension only if 7710 fails cleanly."
+}
