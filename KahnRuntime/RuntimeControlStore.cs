@@ -58,7 +58,21 @@ namespace KahnRuntime
             if (!File.Exists(_path))
                 return new RuntimeControlLoadResult { Changed = false };
 
-            string json = File.ReadAllText(_path);
+            string json;
+            try
+            {
+                json = File.ReadAllText(_path);
+            }
+            catch (Exception ex) when (ex is IOException
+                || ex is UnauthorizedAccessException)
+            {
+                return new RuntimeControlLoadResult
+                {
+                    Changed = false,
+                    Error = "control read failed: " + ex.Message,
+                };
+            }
+
             string digest = Sha256(json);
             if (string.Equals(digest, _lastDigest, StringComparison.Ordinal))
                 return new RuntimeControlLoadResult { Changed = false };
@@ -75,6 +89,7 @@ namespace KahnRuntime
             }
             catch (Exception ex)
             {
+                _lastDigest = digest;
                 return new RuntimeControlLoadResult
                 {
                     Changed = false,

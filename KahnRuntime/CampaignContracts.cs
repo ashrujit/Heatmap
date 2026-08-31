@@ -161,8 +161,10 @@ namespace KahnRuntime
         public DateTimeOffset NotBefore { get; init; }
         public DateTimeOffset ExpiresAt { get; init; }
 
+        public bool IsValid => ExpiresAt > NotBefore;
+
         public bool Contains(DateTimeOffset now)
-            => now >= NotBefore && now <= ExpiresAt;
+            => IsValid && now >= NotBefore && now <= ExpiresAt;
     }
 
     internal sealed class CampaignSizing
@@ -597,6 +599,7 @@ namespace KahnRuntime
                         int quantity = Math.Max(1, decision.Quantity ?? 1);
                         SimulatedPositionQuantity = Math.Max(0, SimulatedPositionQuantity - quantity);
                     }
+                    ClearBreakevenBackstop();
                     if (decision.ExpiresAt.HasValue)
                         SuppressAddsUntil = decision.ExpiresAt;
                     if (SimulatedPositionQuantity > 0)
@@ -707,8 +710,7 @@ namespace KahnRuntime
 
         public void ReconcileObservedPositionQuantity(int quantity, CampaignPlan plan)
         {
-            int max = plan?.Sizing?.MaxPositionQuantity ?? quantity;
-            SimulatedPositionQuantity = Math.Max(0, Math.Min(quantity, max));
+            SimulatedPositionQuantity = Math.Max(0, quantity);
             if (SimulatedPositionQuantity <= 0)
             {
                 ClearRiskAnchors();

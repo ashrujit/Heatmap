@@ -50,8 +50,8 @@ governor into a form-filled EAR directive dispatcher.
 - The live adapter is still narrow: market entry/add orders, reduce-only
   close-limit orders for configured passive harvest objectives, a weighted-BE
   stop-market backstop after scale inventory exists, and market close-position
-  reduce/flatten/retire. It does not manage a general bracket lifecycle or
-  EAR-style sponsor stop migration.
+  reduce/flatten/retire. It does not manage a general bracket lifecycle,
+  broker-side root stop, or EAR-style sponsor stop migration.
 - Passive harvest belongs to the campaign objective, not LL confirmation. A
   plan can declare a side-aware paid range; once price reaches the floor Kahn can
   work tagged `HARVEST` close limits at passive BBO, increase clip size near the
@@ -61,8 +61,9 @@ governor into a form-filled EAR directive dispatcher.
   own tagged working orders on stop or explicit operator `FLAT`/`CANCEL`
   control; it does not cancel unrelated account orders.
 - Operator controls are separate from campaign evidence. `Control Path` reads
-  `KAHN_CONTROL` JSON (`FLAT` or `CANCEL`) before active-window/evidence gates,
-  so `FLAT` can close bound exposure after campaign expiry. Existing
+  `KAHN_CONTROL` JSON (`FLAT` or `CANCEL`) before campaign reload and before
+  active-window/evidence gates, so `FLAT` can close bound exposure after
+  campaign expiry or while the campaign file is temporarily unreadable. Existing
   `control.json` contents are marked seen at startup to avoid replaying stale
   controls.
 - Runtime file paths are an instance boundary. When more than one KahnRuntime can
@@ -82,7 +83,19 @@ governor into a form-filled EAR directive dispatcher.
 - Weighted BE is account protection, not the root thesis stop. It is ineligible
   at root-only/probe-only size, becomes eligible only after Kahn has accepted an
   add and observed scaled inventory, and arms only when the executable quote is
-  already beyond the weighted average so the stop is broker-valid.
+  already beyond the weighted average so the stop is broker-valid. Active
+  `REDUCE` cancels and clears the current BE so maintenance can re-arm the
+  remaining scaled inventory at the correct quantity. A broker reject while
+  canceling/replacing BE or submitting the close gets one retry after refreshing
+  the bound position; the second failure is `RecoveryActionRequired` for manual
+  intervention.
+- Root/sponsor failure is policy evidence, not a broker stop. Kahn flattens only
+  when typed evidence such as `SponsorFailed` or same-side `RailFailed` near the
+  active risk anchor confirms failure; raw tick displacement alone is not enough.
+- External JSONL evidence must carry `ts_utc` or `timestamp` and must be fresh
+  under `Evidence Max Age (sec)`. Kahn consumes and discards evidence while no
+  campaign is eligible so stale backlogs cannot become current authority when a
+  new campaign arms.
 - `FLAT` cancels Kahn-owned working orders, submits Quantower close-position
   requests for all bound live positions, and retires campaign state after
   accepted submission. `CANCEL` retires only when the bound position is flat; if

@@ -30,10 +30,11 @@ policy rehearsal and dry runs.
 
 `Trading Enabled=true` submits market entry/add orders, can work tagged
 reduce-only close-limit orders for configured passive harvest objectives, can
-maintain one tagged weighted-BE stop-market backstop after scale inventory
-exists, and uses Quantower `ClosePosition` for active reduce, flatten, and
-retire decisions. Runtime orders are tagged `KH:`. On stop, Kahn cancels only
-its own tagged working orders.
+maintain a tagged weighted-BE stop-market backstop after scale inventory exists,
+and uses Quantower `ClosePosition` for active reduce, flatten, and retire
+decisions. Runtime orders are tagged `KH:`. On stop, Kahn cancels only its own
+tagged working orders and logs a warning if doing so would remove runtime BE
+protection while a bound live position remains open.
 
 Operator controls are not campaign evidence and do not depend on the campaign
 active window. A changed `Control Path` file with `kind=KAHN_CONTROL` and
@@ -52,9 +53,10 @@ because controls are delivered by path.
 
 Passive harvest is not a bracket/TP engine. It is a campaign objective that lets
 Kahn progressively lighten inside a declared paid area before waiting for full
-opposite-side proof. Kahn's only routine protection order is the weighted-BE
-backstop after scale inventory exists. Sponsor/root risk still moves by policy,
-waypoint, path stress, and sponsor lineage rather than by broker stop migration.
+opposite-side proof. Routine broker protection is limited to weighted BE after
+scale inventory exists. Sponsor/root failure still moves by typed policy
+evidence, waypoint, path stress, and sponsor lineage rather than by broker stop
+migration or raw tick-touch orders.
 
 Kahn reconciles live position state from the configured execution
 `Symbol`/`Account`. It pauses and logs operator-action errors rather than
@@ -125,6 +127,19 @@ If an armed BE is touched, or a live position disappears while BE is active, the
 campaign retires. If BE cannot be established while scaled, Kahn attempts an
 active retire/flatten because scaled inventory without the account backstop is
 outside the intended contract.
+An active `REDUCE` cancels the current BE first and clears BE state; after the
+reduce is accepted, normal backstop maintenance can place a fresh BE only if the
+remaining live position is still larger than probe size.
+Broker rejects during BE cancel/replace or close submission are treated as
+transient once: Kahn refreshes the bound live position and retries that path one
+time. If the retry also fails, runtime enters `RecoveryActionRequired`; that
+state is manual human intervention, not an automatic strategy branch.
+
+Root/sponsor failure is policy evidence, not a broker stop. Raw displacement
+beyond the anchor can be context, but campaign failure requires typed evidence
+such as `SponsorFailed` or same-side `RailFailed` near the active risk anchor.
+That keeps Kahn's root semantics aligned with LL time/repair/failure behavior
+instead of turning `risk.root_stop_ticks` into a touch-triggered stop order.
 
 `execution.max_retry` is also directive-local and defaults to `3`. It is a
 probe-attempt budget, not an evidence retry counter and not a broker-rejection
@@ -144,6 +159,11 @@ means probe, add, suppress, hold, reduce, or flatten.
 
 The JSONL evidence path remains active in live mode. This keeps manual/research
 evidence injection available without requiring a constantly waking agent.
+External evidence must include `ts_utc` or `timestamp`, and runtime processing
+rejects records older than `Evidence Max Age (sec)` or materially ahead of the
+runtime clock. Kahn still drains evidence while no campaign is eligible, so a
+temporary campaign parse failure or inactive window cannot leave a stale backlog
+to be treated as fresh authority later.
 
 ## GexBot Integration Plan
 

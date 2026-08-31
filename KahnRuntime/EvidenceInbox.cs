@@ -25,21 +25,57 @@ namespace KahnRuntime
             if (!File.Exists(_path))
                 return Array.Empty<CampaignEvidence>();
 
-            FileInfo info = new(_path);
-            if (info.Length < _offset)
-                _offset = 0;
+            byte[] bytes;
+            long startOffset;
+            int parseLength;
+            try
+            {
+                using FileStream stream = new(
+                    _path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite);
+                long length = stream.Length;
+                if (length < _offset)
+                    _offset = 0;
+                startOffset = _offset;
+                long available = Math.Max(0, length - startOffset);
+                if (available <= 0)
+                    return Array.Empty<CampaignEvidence>();
+                if (available > int.MaxValue)
+                {
+                    errorSink?.Invoke("Evidence read skipped: unread span is too large.");
+                    return Array.Empty<CampaignEvidence>();
+                }
+
+                bytes = new byte[available];
+                stream.Seek(startOffset, SeekOrigin.Begin);
+                int read = 0;
+                while (read < bytes.Length)
+                {
+                    int next = stream.Read(bytes, read, bytes.Length - read);
+                    if (next <= 0)
+                        break;
+                    read += next;
+                }
+
+                parseLength = LastCompleteLineLength(bytes, read);
+            }
+            catch (Exception ex) when (ex is IOException
+                || ex is UnauthorizedAccessException)
+            {
+                errorSink?.Invoke("Evidence read failed: " + ex.Message);
+                return Array.Empty<CampaignEvidence>();
+            }
+
+            if (parseLength <= 0)
+                return Array.Empty<CampaignEvidence>();
 
             List<CampaignEvidence> events = new();
-            using FileStream stream = new(
-                _path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite);
-            stream.Seek(_offset, SeekOrigin.Begin);
-            using StreamReader reader = new(stream, Encoding.UTF8, true, 64 * 1024);
-            string line;
-            while ((line = reader.ReadLine()) != null)
+            string text = Encoding.UTF8.GetString(bytes, 0, parseLength);
+            foreach (string rawLine in text.Split('\n'))
             {
+                string line = rawLine.TrimEnd('\r');
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
                 try
@@ -51,8 +87,18 @@ namespace KahnRuntime
                     errorSink?.Invoke($"Evidence parse failed: {ex.Message}");
                 }
             }
-            _offset = info.Length;
+            _offset = startOffset + parseLength;
             return events;
+        }
+
+        private static int LastCompleteLineLength(byte[] bytes, int length)
+        {
+            for (int index = Math.Max(0, length - 1); index >= 0; index--)
+            {
+                if (bytes[index] == (byte)'\n')
+                    return index + 1;
+            }
+            return 0;
         }
     }
 
@@ -69,14 +115,16 @@ namespace KahnRuntime
                 OptionalString(root, "kind")
                 ?? OptionalString(root, "event")
                 ?? "unknown");
+            DateTimeOffset? timestamp = OptionalTimestamp(root, "ts_utc")
+                ?? OptionalTimestamp(root, "timestamp");
+            if (!timestamp.HasValue)
+                throw CampaignPlanParser.Invalid("evidence.ts_utc or evidence.timestamp is required");
 
             return new CampaignEvidence
             {
                 SchemaVersion = OptionalInt(root, "schema_version", 1),
                 EventId = eventId,
-                Timestamp = OptionalTimestamp(root, "ts_utc")
-                    ?? OptionalTimestamp(root, "timestamp")
-                    ?? DateTimeOffset.UtcNow,
+                Timestamp = timestamp.Value,
                 Source = ParseEvidenceSource(OptionalString(root, "source") ?? "unknown"),
                 Kind = kind,
                 Side = ParseEvidenceSide(OptionalString(root, "side") ?? "none"),

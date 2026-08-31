@@ -20,6 +20,8 @@ namespace KahnRuntime
     public sealed class KahnRuntime : Strategy
     {
         private const int L1ToleranceTicks = 2;
+        private const int LiveSubmitSettleSeconds = 5;
+        private const int LiveCloseSettleSeconds = 30;
 
         [InputParameter("Symbol", sortIndex: 0)]
         public Symbol RuntimeSymbol;
@@ -74,43 +76,47 @@ namespace KahnRuntime
             minimum: 250, maximum: 10000, increment: 250, decimalPlaces: 0)]
         public int QuoteFreshnessMs = 2000;
 
-        [InputParameter("LL Book Lookback (sec)", sortIndex: 16,
+        [InputParameter("Evidence Max Age (sec)", sortIndex: 16,
+            minimum: 1, maximum: 300, increment: 1, decimalPlaces: 0)]
+        public int EvidenceMaxAgeSec = 30;
+
+        [InputParameter("LL Book Lookback (sec)", sortIndex: 17,
             minimum: 10, maximum: 300, increment: 5, decimalPlaces: 0)]
         public int BookLookbackSeconds = 30;
 
-        [InputParameter("LL Event |z|", sortIndex: 17,
+        [InputParameter("LL Event |z|", sortIndex: 18,
             minimum: 1.5, maximum: 8.0, increment: 0.1, decimalPlaces: 2)]
         public double EventZThreshold = 2.5;
 
-        [InputParameter("LL Cluster Min Events", sortIndex: 18,
+        [InputParameter("LL Cluster Min Events", sortIndex: 19,
             minimum: 2, maximum: 10, increment: 1, decimalPlaces: 0)]
         public int ClusterMinEvents = 3;
 
-        [InputParameter("LL Cluster Ticks", sortIndex: 19,
+        [InputParameter("LL Cluster Ticks", sortIndex: 20,
             minimum: 1, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int ClusterTicks = 10;
 
-        [InputParameter("LL Cluster Seconds", sortIndex: 20,
+        [InputParameter("LL Cluster Seconds", sortIndex: 21,
             minimum: 15, maximum: 600, increment: 15, decimalPlaces: 0)]
         public int ClusterSeconds = 90;
 
-        [InputParameter("LL Confirm Move (ticks)", sortIndex: 21,
+        [InputParameter("LL Confirm Move (ticks)", sortIndex: 22,
             minimum: 2, maximum: 80, increment: 1, decimalPlaces: 0)]
         public int ConfirmMoveTicks = 8;
 
-        [InputParameter("LL Confirm Seconds", sortIndex: 22,
+        [InputParameter("LL Confirm Seconds", sortIndex: 23,
             minimum: 0, maximum: 60, increment: 1, decimalPlaces: 0)]
         public int ConfirmSeconds = 10;
 
-        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 23,
+        [InputParameter("LL Failure Buffer (ticks)", sortIndex: 24,
             minimum: 0, maximum: 40, increment: 1, decimalPlaces: 0)]
         public int FailureBufferTicks = 2;
 
-        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 24,
+        [InputParameter("LL Failure Confirm (ticks)", sortIndex: 25,
             minimum: 2, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureConfirmTicks = 24;
 
-        [InputParameter("LL Failure Seconds", sortIndex: 25,
+        [InputParameter("LL Failure Seconds", sortIndex: 26,
             minimum: 0, maximum: 120, increment: 1, decimalPlaces: 0)]
         public int FailureSeconds = 20;
 
@@ -147,6 +153,7 @@ namespace KahnRuntime
         private DateTime _lastCheckpointUtc = DateTime.MinValue;
         private DateTime _evidenceEpochStartedUtc = DateTime.MinValue;
         private DateTime _liveSettleUntilUtc = DateTime.MinValue;
+        private DateTime _liveCloseSettleUntilUtc = DateTime.MinValue;
         private int _evidenceEpochSampleCount;
         private bool _evidenceWarmupComplete;
         private string _evidenceState = "AwaitingBook";
@@ -158,6 +165,8 @@ namespace KahnRuntime
         private string _lastControlError;
         private string _lastCheckpointErrorSignature;
         private DateTime _lastCheckpointErrorUtc = DateTime.MinValue;
+        private DateTime _lastInactiveEvidenceLogUtc = DateTime.MinValue;
+        private int _inactiveEvidenceDiscardCount;
         private string _lastControlId;
         private string _lastControlAction;
         private string _lastControlStatus;
@@ -252,6 +261,7 @@ namespace KahnRuntime
                     ("worker_poll_ms", Math.Max(100, WorkerPollMs)),
                     ("book_sample_ms", Math.Max(250, BookSampleMs)),
                     ("quote_freshness_ms", Math.Max(250, QuoteFreshnessMs)),
+                    ("evidence_max_age_seconds", Math.Max(1, EvidenceMaxAgeSec)),
                     ("ll_book_lookback_seconds", Math.Max(10, BookLookbackSeconds)),
                     ("ll_event_z_threshold", Math.Max(1.5, EventZThreshold)),
                     ("ll_cluster_min_events", Math.Max(2, ClusterMinEvents)),
@@ -288,13 +298,13 @@ namespace KahnRuntime
             {
                 DateTimeOffset now = DateTimeOffset.UtcNow;
                 DrainBrokerEvents();
-                LoadPlan();
                 if (ProcessControl(now))
                 {
                     ReconcileLivePosition(DateTime.UtcNow);
                     SaveCheckpoint(force: true, runtimeState: _running ? "Running" : "Stopped");
                     return;
                 }
+                LoadPlan();
 
                 if (!ReconcileLivePosition(now.UtcDateTime))
                 {
@@ -310,14 +320,21 @@ namespace KahnRuntime
 
                 ProcessBookSample(now.UtcDateTime);
 
+                IReadOnlyList<CampaignEvidence> marketEvents = DrainMarketEvents();
+                IReadOnlyList<CampaignEvidence> inboxEvents = _evidenceInbox?.ReadNewEvents(
+                    message => LogOperator("INFO", message)) ?? Array.Empty<CampaignEvidence>();
                 if (_plan != null
                     && _state != null
                     && _plan.ShouldEvaluateEvidenceAt(now, _state))
                 {
-                    foreach (CampaignEvidence evidence in DrainMarketEvents())
+                    foreach (CampaignEvidence evidence in marketEvents)
                         ProcessEvidence(evidence, now);
-                    foreach (CampaignEvidence evidence in _evidenceInbox.ReadNewEvents(message => LogOperator("INFO", message)))
+                    foreach (CampaignEvidence evidence in inboxEvents)
                         ProcessEvidence(evidence, now);
+                }
+                else
+                {
+                    LogEvidenceDiscardedWhileInactive(marketEvents.Count + inboxEvents.Count);
                 }
 
                 if (!ReconcileLivePosition(DateTime.UtcNow)
@@ -550,7 +567,11 @@ namespace KahnRuntime
             }
 
             if (_runTradingEnabled)
-                _liveSettleUntilUtc = DateTime.UtcNow.AddSeconds(5);
+            {
+                DateTime settleUntil = DateTime.UtcNow.AddSeconds(LiveCloseSettleSeconds);
+                _liveSettleUntilUtc = settleUntil;
+                _liveCloseSettleUntilUtc = settleUntil;
+            }
             RetireCurrentCampaign(command, now, "operator_flatten");
             _lastControlStatus = "accepted";
             _decisions.Write("control_flat_completed",
@@ -650,21 +671,22 @@ namespace KahnRuntime
                 return false;
             }
 
-            if (!_runTradingEnabled)
-                return true;
-
             if (_state != null && _state.HasPosition)
             {
                 _decisions.Write("campaign_rejected",
                     ("campaign_id", plan.Id),
-                    ("reason", "cannot_replace_live_campaign_with_position"),
+                    ("reason", "cannot_replace_campaign_with_position"),
                     ("active_campaign_id", _plan?.Id),
-                    ("position_quantity", _state.SimulatedPositionQuantity));
-                LogOperator("ERR", $"Campaign {plan.Id} rejected: existing live campaign "
+                    ("position_quantity", _state.SimulatedPositionQuantity),
+                    ("trading_enabled", _runTradingEnabled));
+                LogOperator("ERR", $"Campaign {plan.Id} rejected: existing campaign "
                     + $"{_plan?.Id ?? "unknown"} still has position state.",
                     error: true);
                 return false;
             }
+
+            if (!_runTradingEnabled)
+                return true;
 
             RuntimePosition position = LivePosition(out bool ambiguous);
             if (ambiguous || !position.IsFlat)
@@ -701,6 +723,21 @@ namespace KahnRuntime
                 || _state.IsRetired
                 || !_plan.ShouldEvaluateEvidenceAt(now, _state))
             {
+                return;
+            }
+
+            if (!EvidenceFreshEnough(evidence, now))
+            {
+                _decisions.Write("evidence_stale_ignored",
+                    ("campaign_id", _plan.Id),
+                    ("evidence_id", evidence?.EventId),
+                    ("evidence_source", evidence?.Source),
+                    ("evidence_kind", evidence?.Kind),
+                    ("evidence_ts_utc", evidence?.Timestamp.ToString("O", CultureInfo.InvariantCulture)),
+                    ("max_age_seconds", Math.Max(1, EvidenceMaxAgeSec)),
+                    ("age_seconds", evidence == null
+                        ? null
+                        : (double?)Math.Max(0, (now - evidence.Timestamp).TotalSeconds)));
                 return;
             }
 
@@ -834,6 +871,33 @@ namespace KahnRuntime
             SaveCheckpoint(force: true, runtimeState: "Running");
         }
 
+        private bool EvidenceFreshEnough(CampaignEvidence evidence, DateTimeOffset now)
+        {
+            if (evidence == null || evidence.Timestamp == default)
+                return false;
+            int maxAgeSeconds = Math.Max(1, EvidenceMaxAgeSec);
+            DateTimeOffset timestamp = evidence.Timestamp.ToUniversalTime();
+            if (timestamp > now.AddSeconds(2))
+                return false;
+            return now - timestamp <= TimeSpan.FromSeconds(maxAgeSeconds);
+        }
+
+        private void LogEvidenceDiscardedWhileInactive(int count)
+        {
+            if (count <= 0)
+                return;
+            _inactiveEvidenceDiscardCount += count;
+            DateTime now = DateTime.UtcNow;
+            if (now - _lastInactiveEvidenceLogUtc < TimeSpan.FromSeconds(30))
+                return;
+            _lastInactiveEvidenceLogUtc = now;
+            _decisions.Write("evidence_seen_inactive",
+                ("discarded_since_last_log", _inactiveEvidenceDiscardCount),
+                ("campaign_id", _plan?.Id),
+                ("phase", _state?.Phase.ToString()));
+            _inactiveEvidenceDiscardCount = 0;
+        }
+
         private bool MaintainBreakevenBackstop(DateTimeOffset now)
         {
             if (_plan == null
@@ -857,7 +921,7 @@ namespace KahnRuntime
                 return true;
 
             double trigger = BreakevenTriggerPrice(_plan, position);
-            if (BreakevenBackstopTouched(_plan.Side, trigger, market))
+            if (StopTouched(_plan.Side, trigger, market))
             {
                 if (!_state.BreakevenBackstopActive)
                     return true;
@@ -1011,7 +1075,7 @@ namespace KahnRuntime
                 : RoundDown(position.AveragePrice - offset);
         }
 
-        private static bool BreakevenBackstopTouched(CampaignSide side,
+        private static bool StopTouched(CampaignSide side,
             double trigger,
             ExecutableMarket market)
         {
@@ -1055,7 +1119,13 @@ namespace KahnRuntime
                 && result.Accepted
                 && decision.Action != PolicyAction.EnsureBreakeven)
             {
-                _liveSettleUntilUtc = DateTime.UtcNow.AddSeconds(5);
+                int settleSeconds = IsCloseAction(decision.Action)
+                    ? LiveCloseSettleSeconds
+                    : LiveSubmitSettleSeconds;
+                DateTime settleUntil = DateTime.UtcNow.AddSeconds(settleSeconds);
+                _liveSettleUntilUtc = settleUntil;
+                if (IsCloseAction(decision.Action))
+                    _liveCloseSettleUntilUtc = settleUntil;
             }
             return result;
         }
@@ -1066,6 +1136,11 @@ namespace KahnRuntime
                 or PolicyAction.EnsureBreakeven
                 or PolicyAction.PassiveHarvest
                 or PolicyAction.Reduce
+                or PolicyAction.Flatten
+                or PolicyAction.Retire;
+
+        private static bool IsCloseAction(PolicyAction action)
+            => action is PolicyAction.Reduce
                 or PolicyAction.Flatten
                 or PolicyAction.Retire;
 
@@ -1165,6 +1240,8 @@ namespace KahnRuntime
 
         private void MarkBookUnusable(string reason, BookSampleDiagnostic diagnostic)
         {
+            if (_evidenceState != "BookUnusable")
+                ResetEvidenceEpoch(reason ?? "book_unusable");
             _evidenceState = "BookUnusable";
             string signature = $"{reason}|{diagnostic?.L2AgeMs}|{diagnostic?.BidLevels}|{diagnostic?.AskLevels}";
             if (string.Equals(signature, _lastBookHealthSignature, StringComparison.Ordinal))
@@ -1182,6 +1259,17 @@ namespace KahnRuntime
                 ("dom_bid", diagnostic?.DomBid),
                 ("dom_ask", diagnostic?.DomAsk),
                 ("error", diagnostic?.Error));
+        }
+
+        private void ResetEvidenceEpoch(string reason)
+        {
+            _evidenceEpochStartedUtc = DateTime.MinValue;
+            _evidenceEpochSampleCount = 0;
+            _evidenceWarmupComplete = false;
+            _evidenceEpochReason = string.IsNullOrWhiteSpace(reason)
+                ? "book_unusable"
+                : reason;
+            _liveEvidence = NewEvidenceEngine();
         }
 
         private void StartEvidenceEpochIfNeeded(DateTime nowUtc)
@@ -1525,6 +1613,7 @@ namespace KahnRuntime
                 BookSampleMs = Math.Max(250, BookSampleMs),
                 BookFreshnessSec = Math.Max(1, BookFreshnessSec),
                 QuoteFreshnessMs = Math.Max(250, QuoteFreshnessMs),
+                EvidenceMaxAgeSec = Math.Max(1, EvidenceMaxAgeSec),
                 LlBookLookbackSeconds = Math.Max(10, BookLookbackSeconds),
                 LlEventZThreshold = Math.Max(1.5, EventZThreshold),
                 LlClusterMinEvents = Math.Max(2, ClusterMinEvents),
@@ -1579,6 +1668,8 @@ namespace KahnRuntime
                     ? null
                     : l2Utc.ToString("O", CultureInfo.InvariantCulture),
                 DroppedDecisionLogEvents = _decisions?.DroppedCount ?? 0,
+                DecisionLogWriterFaulted = _decisions?.WriterFaulted,
+                DecisionLogLastError = _decisions?.LastError,
             };
             TrySaveCheckpoint(checkpoint);
         }
@@ -1690,7 +1781,8 @@ namespace KahnRuntime
                     ReasonCode = "breakeven_backstop_filled",
                     Quantity = _state.SimulatedPositionQuantity,
                     ProtectionPrice = _state.BreakevenBackstopPrice,
-                    EvidenceId = "be-reconcile-" + nowUtc.Ticks.ToString(CultureInfo.InvariantCulture),
+                    EvidenceId = "be-reconcile-"
+                        + nowUtc.Ticks.ToString(CultureInfo.InvariantCulture),
                 },
                     _plan,
                     simulateAcceptedDecisions: true,
@@ -1703,8 +1795,15 @@ namespace KahnRuntime
                     ("campaign_id", _plan?.Id),
                     ("from_simulated_quantity", _state.SimulatedPositionQuantity),
                     ("to_live_quantity", observed),
-                    ("position_id", live.PositionId));
+                ("position_id", live.PositionId));
                 _state.ReconcileObservedPositionQuantity(observed, _plan);
+            }
+            if (observed > 0
+                && _plan?.Sizing != null
+                && observed > _plan.Sizing.MaxPositionQuantity)
+            {
+                LogRecoveryOnce(live, "bound_position_exceeds_plan_max");
+                return false;
             }
             return true;
         }
@@ -1805,7 +1904,23 @@ namespace KahnRuntime
             => _gateway?.RuntimeHarvestOrders() ?? Array.Empty<Order>();
 
         private IReadOnlyList<Order> BreakevenBackstopWorkingOrders()
-            => _gateway?.RuntimeBreakevenOrders() ?? Array.Empty<Order>();
+        {
+            if (_state?.BreakevenBackstopActive != true)
+                return Array.Empty<Order>();
+            IReadOnlyList<Order> orders = _gateway?.RuntimeProtectionOrders() ?? Array.Empty<Order>();
+            if (!string.IsNullOrWhiteSpace(_state?.BreakevenBackstopOrderId))
+            {
+                Order[] byId = orders
+                    .Where(order => string.Equals(
+                        order.Id,
+                        _state.BreakevenBackstopOrderId,
+                        StringComparison.Ordinal))
+                    .ToArray();
+                if (byId.Length > 0)
+                    return byId;
+            }
+            return _gateway?.RuntimeBreakevenOrders() ?? Array.Empty<Order>();
+        }
 
         private double BreakevenBackstopWorkingQuantity()
             => BreakevenBackstopWorkingOrders()
@@ -1934,7 +2049,23 @@ namespace KahnRuntime
                 catch { }
             }
 
-            try { _gateway?.CancelRuntimeOrdersOnStop(); } catch { }
+            try
+            {
+                RuntimePosition position = CurrentPosition();
+                double protectionQuantity = BreakevenBackstopWorkingQuantity();
+                if (_runTradingEnabled && position != null && !position.IsFlat && protectionQuantity > 0)
+                {
+                    _decisions?.Write("protection_cancel_on_stop_warning",
+                        ("campaign_id", _plan?.Id),
+                        ("position_id", position.PositionId),
+                        ("position_quantity", position.Quantity),
+                        ("protection_working_quantity", protectionQuantity));
+                    LogOperator("ERR", "Stopping Kahn will cancel runtime protection while the bound position remains open.",
+                        error: true);
+                }
+                _gateway?.CancelRuntimeOrdersOnStop();
+            }
+            catch { }
             Unsubscribe();
 
             try
@@ -1976,11 +2107,14 @@ namespace KahnRuntime
             _lastQuoteUtc = DateTime.MinValue;
             _lastL2Utc = DateTime.MinValue;
             _liveSettleUntilUtc = DateTime.MinValue;
+            _liveCloseSettleUntilUtc = DateTime.MinValue;
             _evidenceEpochStartedUtc = DateTime.MinValue;
             _evidenceEpochSampleCount = 0;
             _evidenceWarmupComplete = false;
             _evidenceState = "AwaitingBook";
             _evidenceEpochReason = "startup";
+            _lastInactiveEvidenceLogUtc = DateTime.MinValue;
+            _inactiveEvidenceDiscardCount = 0;
             while (_marketEvents.TryDequeue(out _))
             {
             }
@@ -2035,6 +2169,7 @@ namespace KahnRuntime
             AddMetric(metrics, "Risk", _state?.ActiveRiskAnchor?.ToString() ?? "-");
             AddMetric(metrics, "Pending Risk", _state?.PendingAddRiskAnchor?.ToString() ?? "-");
             AddMetric(metrics, "BE", BreakevenMetricText());
+            AddMetric(metrics, "Audit", AuditMetricText());
             return metrics;
         }
 
@@ -2045,6 +2180,16 @@ namespace KahnRuntime
             return _state.BreakevenBackstopPrice.HasValue
                 ? _state.BreakevenBackstopPrice.Value.ToString("0.########", CultureInfo.InvariantCulture)
                 : "armed";
+        }
+
+        private string AuditMetricText()
+        {
+            if (_decisions?.WriterFaulted == true)
+                return "faulted";
+            long dropped = _decisions?.DroppedCount ?? 0;
+            return dropped > 0
+                ? "dropped=" + dropped.ToString(CultureInfo.InvariantCulture)
+                : "ok";
         }
 
         private string HarvestMetricText()

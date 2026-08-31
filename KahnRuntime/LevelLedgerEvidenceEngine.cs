@@ -188,7 +188,7 @@ namespace KahnRuntime.LiveEvidence
             _samples.AddLast(sample);
             EvictSamples(nowUtc, Math.Max(10, _settings.BookLookbackSeconds * 2));
 
-            if (_samples.Count >= 5)
+            if (InWindowSampleCount(nowUtc) >= 5)
             {
                 (double mBi, double sBi) = MeanStd(s => s.BidInner, nowUtc);
                 (double mAi, double sAi) = MeanStd(s => s.AskInner, nowUtc);
@@ -772,6 +772,18 @@ namespace KahnRuntime.LiveEvidence
             return (mean, variance > 0 ? Math.Sqrt(variance) : 0);
         }
 
+        private int InWindowSampleCount(DateTime nowUtc)
+        {
+            DateTime cutoff = nowUtc.AddSeconds(-Math.Max(10, _settings.BookLookbackSeconds));
+            int count = 0;
+            foreach (BookSample sample in _samples)
+            {
+                if (sample.TimeUtc >= cutoff)
+                    count++;
+            }
+            return count;
+        }
+
         private void Prune(DateTime nowUtc)
         {
             DateTime eventCutoff = nowUtc.AddSeconds(-Math.Max(1, _settings.ClusterSeconds));
@@ -779,6 +791,24 @@ namespace KahnRuntime.LiveEvidence
                 _pendingEvents.RemoveFirst();
             DateTime candidateCutoff = nowUtc.AddSeconds(-Math.Max(1, _settings.ClusterSeconds * 2));
             _candidates.RemoveAll(c => c.LastUpdateUtc < candidateCutoff);
+            DateTime greyCutoff = nowUtc.AddSeconds(-OwnershipContestedSec);
+            DateTime failedRailCutoff = nowUtc.AddSeconds(-FailureZoneGreyTtlSec);
+            for (LinkedListNode<Band> node = _bands.First; node != null;)
+            {
+                LinkedListNode<Band> next = node.Next;
+                Band band = node.Value;
+                bool staleGrey = band.Role is EvidenceRole.NoOwner or EvidenceRole.Contested
+                    && band.LastStateUtc < greyCutoff;
+                bool staleFailedRail = band.Role == EvidenceRole.Rail
+                    && band.State == EvidenceState.Failed
+                    && band.FailedUtc.HasValue
+                    && band.FailedUtc.Value < failedRailCutoff;
+                bool removed = band.State == EvidenceState.Removed
+                    && band.LastStateUtc < failedRailCutoff;
+                if (staleGrey || staleFailedRail || removed)
+                    _bands.Remove(node);
+                node = next;
+            }
         }
 
         private void EvictSamples(DateTime nowUtc, int seconds)

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace KahnRuntime
 {
@@ -26,6 +27,11 @@ namespace KahnRuntime
             PreserveRiskAnchorOnAddUsesRoot();
             DelayedSponsorPromotionLagsAcceptedAdds();
             BreakevenBackstopArmsOnlyAfterFirstAdd();
+            ReconcileObservedQuantityDoesNotClampToPlanMax();
+            DecisionResolverTiePrefersRiskDown();
+            EvidenceParserRequiresTimestamp();
+            EvidenceInboxKeepsPartialTrailingLine();
+            PlanParserRejectsAdverseHarvestRange();
             PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill();
             PassiveHarvestShadowFillReducesPosition();
             PassiveHarvestOppositeOwnershipOverridesTargetRetire();
@@ -54,12 +60,26 @@ namespace KahnRuntime
                     TickSize = double.NaN,
                     LatestBid = null,
                     LatestAsk = null,
+                    ActiveRiskAnchor = new PriceRange
+                    {
+                        Lower = double.NegativeInfinity,
+                        Upper = 7672.0,
+                    },
+                    PassiveHarvestRange = new PriceRange
+                    {
+                        Lower = 7680.0,
+                        Upper = double.PositiveInfinity,
+                    },
                     EvidenceWarmupRemainingSeconds = 0,
                     PositionQuantity = 0,
                     PositionAveragePrice = 0,
                 });
                 string json = System.IO.File.ReadAllText(path);
                 Assert(json.Contains("latest_bid"), "checkpoint writes latest bid field");
+                Assert(json.Contains("\"active_risk_anchor\": null"),
+                    "checkpoint sanitizes invalid active risk range");
+                Assert(json.Contains("\"passive_harvest_range\": null"),
+                    "checkpoint sanitizes invalid passive harvest range");
             }
             finally
             {
@@ -991,8 +1011,8 @@ namespace KahnRuntime
 
             Assert(state.SimulatedPositionQuantity == 1,
                 "partial reduce leaves root-sized runner");
-            Assert(state.BreakevenBackstopActive,
-                "breakeven remains active after partial reduce");
+            Assert(!state.BreakevenBackstopActive,
+                "partial reduce clears stale breakeven");
 
             state.ApplyDecision(new PolicyDecision
             {
@@ -1011,6 +1031,172 @@ namespace KahnRuntime
                 "retire clears accepted add count");
             Assert(!state.SimulatedAveragePrice.HasValue,
                 "retire clears simulated average");
+        }
+
+        private static void ReconcileObservedQuantityDoesNotClampToPlanMax()
+        {
+            CampaignPlan plan = LongPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            SeedPosition(state, plan, quantity: 1);
+            int observed = plan.Sizing.MaxPositionQuantity + 2;
+            state.ReconcileObservedPositionQuantity(observed, plan);
+            Assert(state.SimulatedPositionQuantity == observed,
+                "reconcile records observed quantity above plan max");
+        }
+
+        private static void DecisionResolverTiePrefersRiskDown()
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            CampaignEvidence evidence = new()
+            {
+                EventId = "tie-event",
+                Timestamp = now,
+                Source = EvidenceSource.Replay,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+            };
+            PolicyDecision decision = DecisionResolver.Resolve(new[]
+            {
+                new PolicyDecision
+                {
+                    Action = PolicyAction.AllowAdd,
+                    Policy = "selftest",
+                    ReasonCode = "tie_add",
+                    Priority = 500,
+                    EvidenceId = "tie-add",
+                },
+                new PolicyDecision
+                {
+                    Action = PolicyAction.Reduce,
+                    Policy = "selftest",
+                    ReasonCode = "tie_reduce",
+                    Priority = 500,
+                    EvidenceId = "tie-reduce",
+                },
+            },
+                evidence);
+            Assert(decision.Action == PolicyAction.Reduce,
+                "resolver priority tie prefers risk-down action");
+        }
+
+        private static void EvidenceParserRequiresTimestamp()
+        {
+            bool rejected = false;
+            try
+            {
+                CampaignEvidenceParser.Parse("""
+                {"schema_version":1,"event_id":"missing-ts","source":"levelledger","kind":"rail_owned","side":"demand","range":{"lower":7670.0,"upper":7671.0}}
+                """);
+            }
+            catch
+            {
+                rejected = true;
+            }
+            Assert(rejected, "evidence parser rejects missing timestamp");
+        }
+
+        private static void EvidenceInboxKeepsPartialTrailingLine()
+        {
+            string path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "kahn-evidence-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            try
+            {
+                string first = "{\"schema_version\":1,\"event_id\":\"complete-1\",\"ts_utc\":\"2026-08-30T14:00:00Z\",\"source\":\"levelledger\",\"kind\":\"rail_owned\",\"side\":\"demand\",\"range\":{\"lower\":7670.0,\"upper\":7671.0}}\n";
+                string partial = "{\"schema_version\":1,\"event_id\":\"complete-2\",\"ts_utc\":\"2026-08-30T14:00:01Z\",\"source\":\"levelledger\",\"kind\":\"rail_owned\",\"side\":\"demand\",\"range\":{\"lower\":7672.0,\"upper\":7673.0}}";
+                System.IO.File.WriteAllText(path, first + partial);
+                EvidenceInbox inbox = new(path);
+                IReadOnlyList<CampaignEvidence> firstRead = inbox.ReadNewEvents();
+                Assert(firstRead.Count == 1 && firstRead[0].EventId == "complete-1",
+                    "inbox reads only complete trailing line");
+
+                System.IO.File.AppendAllText(path, "\n");
+                IReadOnlyList<CampaignEvidence> secondRead = inbox.ReadNewEvents();
+                Assert(secondRead.Count == 1 && secondRead[0].EventId == "complete-2",
+                    "inbox re-reads partial line after newline arrives");
+            }
+            finally
+            {
+                try { System.IO.File.Delete(path); } catch { }
+            }
+        }
+
+        private static void PlanParserRejectsAdverseHarvestRange()
+        {
+            bool rejected = false;
+            try
+            {
+                CampaignPlanParser.Parse("""
+                {
+                  "schema_version": 1,
+                  "kind": "KAHN_CAMPAIGN",
+                  "id": "selftest-bad-harvest",
+                  "status": "active",
+                  "created_at": "2026-08-24T13:50:00Z",
+                  "side": "long",
+                  "window": {
+                    "not_before": "2026-08-24T13:50:00Z",
+                    "expires_at": "2026-08-24T14:20:00Z"
+                  },
+                  "arena": { "lower": 7670.0, "upper": 7690.0 },
+                  "objective": {
+                    "target_range": { "lower": 7680.0, "upper": 7685.0 },
+                    "passive_harvest": {
+                      "range": { "lower": 7650.0, "upper": 7655.0 },
+                      "initial_clip_quantity": 1,
+                      "follow_clip_quantity": 1,
+                      "max_working_quantity": 1
+                    }
+                  },
+                  "waypoints": [
+                    {
+                      "id": "trap-7674",
+                      "role": "trap_probe",
+                      "range": { "lower": 7673.75, "upper": 7675.25 }
+                    }
+                  ]
+                }
+                """);
+            }
+            catch
+            {
+                rejected = true;
+            }
+            Assert(rejected, "parser rejects passive harvest range adverse to arena");
+
+            CampaignPlan accepted = CampaignPlanParser.Parse("""
+            {
+              "schema_version": 1,
+              "kind": "KAHN_CAMPAIGN",
+              "id": "selftest-lower-half-harvest",
+              "status": "active",
+              "created_at": "2026-08-24T13:50:00Z",
+              "side": "long",
+              "window": {
+                "not_before": "2026-08-24T13:50:00Z",
+                "expires_at": "2026-08-24T14:20:00Z"
+              },
+              "arena": { "lower": 7670.0, "upper": 7690.0 },
+              "objective": {
+                "target_range": { "lower": 7671.0, "upper": 7673.0 },
+                "passive_harvest": {
+                  "range": { "lower": 7671.0, "upper": 7673.0 },
+                  "initial_clip_quantity": 1,
+                  "follow_clip_quantity": 1,
+                  "max_working_quantity": 1
+                }
+              },
+              "waypoints": [
+                {
+                  "id": "trap-7674",
+                  "role": "trap_probe",
+                  "range": { "lower": 7673.75, "upper": 7675.25 }
+                }
+              ]
+            }
+            """);
+            Assert(accepted.Objective.PassiveHarvest.Range.Upper == 7673.0,
+                "parser accepts lower-half objective range inside arena");
         }
 
         private static void PassiveHarvestFloorTouchStagesLimitWithoutAssumedFill()

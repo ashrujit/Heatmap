@@ -34,7 +34,21 @@ namespace KahnRuntime
             if (!File.Exists(_path))
                 return new CampaignPlanLoadResult { Changed = false };
 
-            string json = File.ReadAllText(_path);
+            string json;
+            try
+            {
+                json = File.ReadAllText(_path);
+            }
+            catch (Exception ex) when (ex is IOException
+                || ex is UnauthorizedAccessException)
+            {
+                return new CampaignPlanLoadResult
+                {
+                    Changed = false,
+                    Error = "campaign read failed: " + ex.Message,
+                };
+            }
+
             string digest = Sha256(json);
             if (string.Equals(digest, _lastDigest, StringComparison.Ordinal))
                 return new CampaignPlanLoadResult { Changed = false };
@@ -51,6 +65,7 @@ namespace KahnRuntime
             }
             catch (Exception ex)
             {
+                _lastDigest = digest;
                 return new CampaignPlanLoadResult
                 {
                     Changed = false,
@@ -110,7 +125,7 @@ namespace KahnRuntime
             {
                 throw Invalid("campaign.status must be active or draft");
             }
-            if (plan.Window.ExpiresAt <= plan.Window.NotBefore)
+            if (!plan.Window.IsValid)
                 throw Invalid("campaign.window.expires_at must be after not_before");
             if (!plan.Arena.IsValid)
                 throw Invalid("campaign.arena must be a valid range");
@@ -128,6 +143,7 @@ namespace KahnRuntime
             {
                 throw Invalid("sizing.add_quantity must be positive when scale_mode is scale_allowed");
             }
+            ValidateObjectiveRanges(plan);
 
             foreach (CampaignWaypoint waypoint in plan.Waypoints)
             {
@@ -138,6 +154,31 @@ namespace KahnRuntime
             }
 
             return plan;
+        }
+
+        private static void ValidateObjectiveRanges(CampaignPlan plan)
+        {
+            PriceRange target = plan.Objective?.TargetRange;
+            if (target != null && !ObjectiveRangeIsFavorable(plan.Side, plan.Arena, target))
+                throw Invalid("objective.target_range must not sit wholly adverse to campaign.arena");
+
+            PassiveHarvestObjective harvest = plan.Objective?.PassiveHarvest;
+            if (harvest?.Range != null
+                && !ObjectiveRangeIsFavorable(plan.Side, plan.Arena, harvest.Range))
+            {
+                throw Invalid("objective.passive_harvest.range must not sit wholly adverse to campaign.arena");
+            }
+        }
+
+        private static bool ObjectiveRangeIsFavorable(CampaignSide side,
+            PriceRange arena,
+            PriceRange range)
+        {
+            if (arena?.IsValid != true || range?.IsValid != true)
+                return false;
+            return side == CampaignSide.Long
+                ? range.Upper >= arena.Lower
+                : range.Lower <= arena.Upper;
         }
 
         private static CampaignWindow ParseWindow(JsonElement element)

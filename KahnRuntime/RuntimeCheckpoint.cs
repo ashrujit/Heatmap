@@ -59,6 +59,7 @@ namespace KahnRuntime
         public int? BookSampleMs { get; set; }
         public int? BookFreshnessSec { get; set; }
         public int? QuoteFreshnessMs { get; set; }
+        public int? EvidenceMaxAgeSec { get; set; }
         public int? LlBookLookbackSeconds { get; set; }
         public double? LlEventZThreshold { get; set; }
         public int? LlClusterMinEvents { get; set; }
@@ -105,6 +106,8 @@ namespace KahnRuntime
         public string LastPassiveHarvestAtUtc { get; set; }
         public int? PassiveHarvestSignalCount { get; set; }
         public long DroppedDecisionLogEvents { get; set; }
+        public bool? DecisionLogWriterFaulted { get; set; }
+        public string DecisionLogLastError { get; set; }
     }
 
     internal sealed class RuntimeCheckpointStore
@@ -147,7 +150,16 @@ namespace KahnRuntime
             data.PositionQuantity = FiniteOrZero(data.PositionQuantity);
             data.PositionAveragePrice = FiniteOrZero(data.PositionAveragePrice);
             data.PassiveHarvestWorkingQuantity = FiniteOrZero(data.PassiveHarvestWorkingQuantity);
+            data.PassiveHarvestRange = SanitizeRange(data.PassiveHarvestRange);
+            data.ActiveRiskAnchor = SanitizeRange(data.ActiveRiskAnchor);
+            data.RootRiskAnchor = SanitizeRange(data.RootRiskAnchor);
+            data.PendingAddRiskAnchor = SanitizeRange(data.PendingAddRiskAnchor);
         }
+
+        private static PriceRange SanitizeRange(PriceRange range)
+            => range?.IsValid == true
+                ? range
+                : null;
 
         private static double? NullableFinite(double? value)
             => value.HasValue && double.IsFinite(value.Value) ? value.Value : null;

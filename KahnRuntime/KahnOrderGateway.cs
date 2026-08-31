@@ -113,6 +113,9 @@ namespace KahnRuntime
                 .Where(order => IsWorkingOrder(order) && IsRole(order, "BE"))
                 .ToArray();
 
+        public IReadOnlyList<Order> RuntimeProtectionOrders()
+            => RuntimeBreakevenOrders();
+
         public IReadOnlyList<Order> BoundWorkingOrders()
             => Core.Instance.Orders
                 .Where(o => SameBoundPair(o.Symbol, o.Account) && IsWorkingOrder(o))
@@ -122,6 +125,15 @@ namespace KahnRuntime
             => CancelRuntimeOrders("order_cancel_on_stop");
 
         public bool CancelRuntimeOrders(string eventType)
+            => CancelRuntimeOrders(eventType, _ => true);
+
+        public bool CancelRuntimeHarvestOrders(string eventType)
+            => CancelRuntimeOrders(eventType, order => IsRole(order, "HARVEST"));
+
+        public bool CancelRuntimeProtectionOrders(string eventType)
+            => CancelRuntimeOrders(eventType, order => IsRole(order, "BE"));
+
+        private bool CancelRuntimeOrders(string eventType, Func<Order, bool> include)
         {
             if (!_tradingEnabled)
                 return true;
@@ -129,7 +141,7 @@ namespace KahnRuntime
                 ? "order_cancel"
                 : eventType;
             bool allAccepted = true;
-            foreach (Order order in RuntimeOrders().Where(IsWorkingOrder))
+            foreach (Order order in RuntimeOrders().Where(IsWorkingOrder).Where(include))
             {
                 try
                 {
@@ -297,14 +309,13 @@ namespace KahnRuntime
             if (market == null || !market.IsValid)
                 return Failure("no fresh executable quote");
 
-            double limitPrice = HarvestLimitPrice(plan.Side, market);
+            double limitPrice = RoundPrice(HarvestLimitPrice(plan.Side, market));
             PassiveHarvestObjective harvest = plan.Objective?.PassiveHarvest;
             if (harvest?.IsUsable == true
                 && !HarvestQuoteSatisfiesFloor(plan.Side, limitPrice, harvest))
             {
                 return Failure("quote is outside passive harvest floor");
             }
-            limitPrice = RoundPrice(limitPrice);
 
             int positionQuantity = Math.Max(0, (int)Math.Round(position.Quantity));
             int requested = Math.Max(1, decision.Quantity
@@ -436,9 +447,16 @@ namespace KahnRuntime
             CampaignPlan plan,
             RuntimePosition position,
             ExecutableMarket market)
+            => EnsureProtectionStop(decision, plan, position, market);
+
+        private GatewayResult EnsureProtectionStop(PolicyDecision decision,
+            CampaignPlan plan,
+            RuntimePosition position,
+            ExecutableMarket market,
+            bool allowRetry = true)
         {
             if (position == null || position.IsFlat || market == null || !market.IsValid)
-                return Failure("cannot establish breakeven without position and quote",
+                return Failure("cannot establish breakeven stop without position and quote",
                     requiresOperatorAction: true);
 
             if (position.Direction != plan.Side)
@@ -447,21 +465,38 @@ namespace KahnRuntime
                     requiresOperatorAction: true);
             }
 
-            double basis = decision.ProtectionPrice ?? position.AveragePrice;
-            if (!double.IsFinite(basis) || basis <= 0)
-                return Failure("cannot establish breakeven without average price",
+            double trigger;
+            if (decision.ProtectionPrice.HasValue
+                && double.IsFinite(decision.ProtectionPrice.Value)
+                && decision.ProtectionPrice.Value > 0)
+            {
+                trigger = plan.Side == CampaignSide.Long
+                    ? RoundUp(decision.ProtectionPrice.Value)
+                    : RoundDown(decision.ProtectionPrice.Value);
+            }
+            else
+            {
+                double basis = position.AveragePrice;
+                if (!double.IsFinite(basis) || basis <= 0)
+                    return Failure("cannot establish breakeven stop without average price",
+                        requiresOperatorAction: true);
+
+                int offsetTicks = Math.Max(0, plan.Risk?.BreakevenBackstopOffsetTicks ?? 0);
+                double offset = offsetTicks * _tickSize;
+                trigger = plan.Side == CampaignSide.Long
+                    ? RoundDown(basis - offset)
+                    : RoundUp(basis + offset);
+            }
+
+            if (!double.IsFinite(trigger) || trigger <= 0)
+                return Failure("cannot establish breakeven stop without trigger price",
                     requiresOperatorAction: true);
 
-            int offsetTicks = Math.Max(0, plan.Risk?.BreakevenBackstopOffsetTicks ?? 0);
-            double offset = offsetTicks * _tickSize;
-            double trigger = plan.Side == CampaignSide.Long
-                ? RoundUp(basis + offset)
-                : RoundDown(basis - offset);
             bool valid = plan.Side == CampaignSide.Long
                 ? trigger < market.Bid
                 : trigger > market.Ask;
             if (!valid)
-                return Failure("breakeven trigger is no longer valid relative to market",
+                return Failure("breakeven stop trigger is no longer valid relative to market",
                     requiresOperatorAction: true);
 
             double quantity = Math.Max(1, decision.Quantity ?? (int)Math.Ceiling(position.Quantity));
@@ -498,7 +533,7 @@ namespace KahnRuntime
                     if (NearlyEqual(existing.TriggerPrice, trigger)
                         && NearlyEqual(existing.RemainingQuantity, quantity))
                     {
-                        return Success(existing.Id, "breakeven already correct");
+                        return Success(existing.Id, "breakeven stop already correct");
                     }
 
                     TradingOperationResult modify = Core.Instance.ModifyOrder(
@@ -515,6 +550,16 @@ namespace KahnRuntime
                         quantity,
                         modifyAccepted,
                         modify.Message);
+                    if (!modifyAccepted && allowRetry)
+                    {
+                        return RetryBreakevenAfterPositionRefresh(
+                            decision,
+                            plan,
+                            market,
+                            "modify",
+                            existing.Id,
+                            modify.Message);
+                    }
                     return new GatewayResult
                     {
                         Accepted = modifyAccepted,
@@ -581,6 +626,16 @@ namespace KahnRuntime
                     placeAccepted,
                     result.Message,
                     elapsedMs);
+                if (!placeAccepted && allowRetry)
+                {
+                    return RetryBreakevenAfterPositionRefresh(
+                        decision,
+                        plan,
+                        market,
+                        "place",
+                        result.OrderId,
+                        result.Message);
+                }
                 return new GatewayResult
                 {
                     Accepted = placeAccepted,
@@ -602,7 +657,8 @@ namespace KahnRuntime
         private GatewayResult ClosePosition(PolicyDecision decision,
             CampaignPlan plan,
             RuntimePosition position,
-            string role)
+            string role,
+            bool allowRetry = true)
         {
             if (position == null || position.IsFlat)
                 return Success(null, "already flat");
@@ -636,10 +692,36 @@ namespace KahnRuntime
                 return Failure("live position handle is unavailable",
                     requiresOperatorAction: true);
 
-            if (!CancelRuntimeOrders("order_cancel_before_" + role.ToLowerInvariant()))
+            bool cancelAccepted = role == "REDUCE"
+                ? CancelRuntimeHarvestOrders("order_cancel_before_" + role.ToLowerInvariant())
+                    & CancelRuntimeProtectionOrders("protection_cancel_before_" + role.ToLowerInvariant())
+                : CancelRuntimeOrders("order_cancel_before_" + role.ToLowerInvariant());
+            if (!cancelAccepted)
             {
-                return Failure("failed to cancel Kahn working orders before close",
-                    requiresOperatorAction: true);
+                _events.Write(role == "REDUCE"
+                        ? "close_cancel_incomplete"
+                        : "close_cancel_incomplete_proceeding",
+                    ("campaign_id", plan.Id),
+                    ("decision_action", decision.Action.ToString()),
+                    ("policy", decision.Policy),
+                    ("reason_code", decision.ReasonCode),
+                    ("role", role),
+                    ("position_id", position.PositionId),
+                    ("quantity", quantity));
+                if (role == "REDUCE")
+                {
+                    if (allowRetry)
+                    {
+                        return RetryCloseAfterPositionRefresh(
+                            decision,
+                            plan,
+                            role,
+                            "cancel_runtime_orders",
+                            "runtime order cancel incomplete before reduce");
+                    }
+                    return Failure("runtime order cancel incomplete before reduce",
+                        requiresOperatorAction: true);
+                }
             }
 
             string tag = BuildTag(plan.Id, role, decision.EvidenceId);
@@ -683,6 +765,15 @@ namespace KahnRuntime
                 ("accepted", accepted),
                 ("order_id", result.OrderId),
                 ("message", result.Message));
+            if (!accepted && allowRetry)
+            {
+                return RetryCloseAfterPositionRefresh(
+                    decision,
+                    plan,
+                    role,
+                    "close_submit",
+                    result.Message);
+            }
             return new GatewayResult
             {
                 Accepted = accepted,
@@ -691,6 +782,105 @@ namespace KahnRuntime
                 RequiresOperatorAction = !accepted,
             };
         }
+
+        private GatewayResult RetryBreakevenAfterPositionRefresh(PolicyDecision decision,
+            CampaignPlan plan,
+            ExecutableMarket market,
+            string stage,
+            string orderId,
+            string message)
+        {
+            RuntimePosition refreshed = FreshBoundPosition(plan, out string refreshReason);
+            _events.Write("breakeven_retry_after_position_refresh",
+                ("campaign_id", plan.Id),
+                ("stage", stage),
+                ("order_id", orderId),
+                ("message", message),
+                ("refresh_reason", refreshReason),
+                ("position_id", refreshed?.PositionId),
+                ("position_quantity", refreshed?.Quantity ?? 0),
+                ("position_average_price", refreshed?.AveragePrice ?? 0));
+            if (refreshed == null || refreshed.IsFlat)
+            {
+                return Failure("cannot retry breakeven after position refresh: " + refreshReason,
+                    requiresOperatorAction: true);
+            }
+            return EnsureProtectionStop(
+                decision,
+                plan,
+                refreshed,
+                market,
+                allowRetry: false);
+        }
+
+        private GatewayResult RetryCloseAfterPositionRefresh(PolicyDecision decision,
+            CampaignPlan plan,
+            string role,
+            string stage,
+            string message)
+        {
+            RuntimePosition refreshed = FreshBoundPosition(plan, out string refreshReason);
+            _events.Write("close_retry_after_position_refresh",
+                ("campaign_id", plan.Id),
+                ("stage", stage),
+                ("message", message),
+                ("role", role),
+                ("refresh_reason", refreshReason),
+                ("position_id", refreshed?.PositionId),
+                ("position_quantity", refreshed?.Quantity ?? 0),
+                ("position_average_price", refreshed?.AveragePrice ?? 0));
+            if (refreshed == null || refreshed.IsFlat)
+            {
+                return Failure("cannot retry close after position refresh: " + refreshReason,
+                    requiresOperatorAction: true);
+            }
+            return ClosePosition(
+                decision,
+                plan,
+                refreshed,
+                role,
+                allowRetry: false);
+        }
+
+        private RuntimePosition FreshBoundPosition(CampaignPlan plan, out string reason)
+        {
+            RuntimePosition[] positions = Core.Instance.Positions
+                .Where(p => SameBoundPair(p.Symbol, p.Account))
+                .Select(ToRuntimePosition)
+                .ToArray();
+            if (positions.Length == 0)
+            {
+                reason = "flat";
+                return RuntimePosition.Flat;
+            }
+            if (positions.Length > 1)
+            {
+                reason = "ambiguous_bound_positions";
+                return null;
+            }
+
+            RuntimePosition position = positions[0];
+            if (plan != null && position.Direction != plan.Side)
+            {
+                reason = "opposite_bound_position";
+                return null;
+            }
+
+            reason = "ok";
+            return position;
+        }
+
+        private static RuntimePosition ToRuntimePosition(Position position)
+            => new()
+            {
+                PositionId = position.Id,
+                Direction = position.Side == Side.Buy
+                    ? CampaignSide.Long
+                    : CampaignSide.Short,
+                Quantity = position.Quantity,
+                AveragePrice = position.OpenPrice,
+                LivePosition = position,
+            };
 
         private bool SameBoundPair(Symbol symbol, Account account)
             => symbol != null && account != null && _account != null
@@ -836,9 +1026,12 @@ namespace KahnRuntime
                 EventType = "trade_fill",
                 OrderId = trade?.OrderId,
                 PositionId = trade?.PositionId,
-                Side = trade?.Side == TradingPlatform.BusinessLayer.Side.Buy ? "Long" : "Short",
+                Side = trade == null
+                    ? null
+                    : trade.Side == TradingPlatform.BusinessLayer.Side.Buy ? "Long" : "Short",
                 Quantity = trade?.Quantity ?? 0,
                 Price = trade?.Price ?? double.NaN,
+                AverageFillPrice = double.NaN,
                 BrokerUtc = trade?.DateTime ?? DateTime.UtcNow,
             };
     }

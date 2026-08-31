@@ -77,7 +77,7 @@ namespace KahnRuntime
                 .Where(candidate => candidate.Action != PolicyAction.NoAction)
                 .Select(WithDefaultPriority)
                 .OrderByDescending(candidate => candidate.Priority)
-                .ThenBy(candidate => candidate.Action)
+                .ThenByDescending(candidate => RiskDownTieRank(candidate.Action))
                 .FirstOrDefault();
 
             return decision ?? PolicyDecision.None("resolver", evidence);
@@ -85,6 +85,22 @@ namespace KahnRuntime
 
         public static int PriorityFor(PolicyAction action)
             => ActionPriority.TryGetValue(action, out int priority) ? priority : 0;
+
+        private static int RiskDownTieRank(PolicyAction action)
+            => action switch
+            {
+                PolicyAction.Flatten => 100,
+                PolicyAction.Retire => 90,
+                PolicyAction.Reduce => 80,
+                PolicyAction.PassiveHarvest => 70,
+                PolicyAction.SuppressAdd => 60,
+                PolicyAction.TightenRisk => 50,
+                PolicyAction.HoldRoot => 40,
+                PolicyAction.EnsureBreakeven => 30,
+                PolicyAction.AllowProbe => 20,
+                PolicyAction.AllowAdd => 10,
+                _ => 0,
+            };
 
         private static PolicyDecision WithDefaultPriority(PolicyDecision decision)
             => decision.Priority > 0
