@@ -103,21 +103,24 @@ campaign request.
 
 `scale_mode` is the coarse scaling switch. `root_only` keeps the campaign at
 the probe/root position and ignores otherwise valid add evidence. `scale_allowed`
-removes manual add-price selection from the directive: Kahn may use same-side LL
-ownership/hold evidence inside the arena as the add candidate, unless a
+removes manual add-price selection from the directive: Kahn may track same-side
+LL ownership/hold evidence inside the arena as a scale candidate, unless a
 higher-priority no-add, evaluate, path-stress, target, harvest, reduce, flatten,
-or retire policy wins first. Explicit `press`/`build_trial`/`repair_hold`
-waypoints still label and gate evidence when supplied, but they are no longer
-required for scale participation.
+or retire policy wins first. That first worse-price same-side rail is not an add
+by itself. A repair/counter-claim must appear, fail as typed evidence, and then
+fresh same-side continuation must reassert at or beyond the failed repair before
+`AllowAdd` can fire. There is no fixed wall-clock continuation window; stale
+context is reset structurally when a new candidate is tracked, a fresh repair
+claim appears, scale inventory is reduced/harvested, or the campaign flattens.
+Explicit `press`/`build_trial`/`repair_hold` waypoints still label and gate
+evidence when supplied, but they are no longer required for scale participation.
 
-Scale sponsor promotion is intentionally one accepted add behind the newest
-child evidence. The first add after root queues a child anchor while active risk
-stays at root. When a later add fires farther in the favorable direction, Kahn
-promotes the previously queued child and queues the new child. If price reaches
-harvest before the next add, the pending child never has to become sponsor. This
-keeps hold-root protection from being blinded by fresh continuation evidence,
-but avoids EAR-style immediate leverage/sponsor promotion on the first worse
-price proof.
+Scale sponsor promotion is one accepted add behind the newest child evidence.
+The first add after root queues a pending sponsor while active risk stays at the
+older/root sponsor and weighted BE is the account backstop. When a later add
+fires farther in the favorable direction, Kahn promotes the previously queued
+child and queues the new child. If price reaches harvest before the next add,
+the pending child never has to become sponsor.
 
 Weighted BE is a separate account backstop. It is not armed at root/probe size.
 After the first accepted add, Kahn waits until the actual shadow/live position is
@@ -204,9 +207,10 @@ GexBotMCP service should own SQLite collection and freshness.
 
 - `TrapProbePolicy`: early, small entries at edges when counter-aggression or a
   same-side lean makes a trap plausible before full LL proof exists.
-- `PressPolicy`: scale participation using LL/EAR-style same-side ownership,
+- `PressPolicy`: scale participation using repaired-continuation LL ownership,
   bounded by scale mode, favorable progression, arena/runway, and target-zone
-  restrictions.
+  restrictions. First same-side ownership tracks a scale candidate; the add
+  requires a failed repair/counter-claim and renewed same-side continuation.
 - `BuildTrialPolicy`: decides whether a managed-risk position has earned a new
   risk-owning sponsor, and flattens when the active sponsor fails.
 - `TargetZonePolicy`: suppresses adds near objective and trims/harvests when
@@ -219,7 +223,8 @@ GexBotMCP service should own SQLite collection and freshness.
   target by suppressing adds, reducing to a waypoint cap, or trimming when
   same-side effort is absorbed in the watch zone.
 - `RepairHoldPolicy`: allows contest against non-causal adverse claims while the
-  active sponsor still holds.
+  active sponsor still holds, and marks qualifying adverse repair claims so
+  `PressPolicy` can recognize their later failure as add context.
 
 ## First Replay Target
 

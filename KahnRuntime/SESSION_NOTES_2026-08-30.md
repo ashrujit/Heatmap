@@ -4,12 +4,21 @@
 
 - Directive semantics should stay coarse: `root_only` versus `scale_allowed`.
   Manual add-price selection is intentionally removed from the directive path.
+- Tooling should emit `sizing.scale_mode` explicitly. `root_only` is the safe
+  default and requires `max_position_quantity == probe_quantity`;
+  `scale_allowed` requires capacity above the probe size and lets Kahn find add
+  locations from repaired-continuation evidence.
 - `scale_allowed` does not mean add on first worse-price evidence. Adds should
   come from evidence that survives repair/counter-attack and then continues in
   the campaign direction.
-- The active sponsor should lag new scale evidence. The first add after root
-  queues a child anchor while root remains active risk. A later accepted add can
-  promote the previous child and queue the newest child.
+- First worse-price same-side ownership is tracked as a candidate, not taken.
+  A repair/counter-claim must appear, fail as typed evidence, and then fresh
+  same-side continuation at or beyond the failed repair can fire `AllowAdd`.
+  There is no fixed continuation window; the sequence resets structurally on a
+  new candidate, fresh repair claim, reduce/harvest, or flatten.
+- Accepted adds use one-behind sponsor semantics: the first scale add queues a
+  pending sponsor while older/root risk remains active and weighted BE is the
+  account backstop. A later add can promote the prior pending sponsor.
 - Local LVN separation can support a read, but it is not a required rule. The
   rule belongs to repaired continuation and ownership/sponsorship quality.
 

@@ -90,6 +90,7 @@ namespace KahnRuntime
         ArmProbe,
         AllowProbe,
         AllowAdd,
+        TrackScaleCandidate,
         EnsureBreakeven,
         SuppressAdd,
         HoldRoot,
@@ -433,10 +434,21 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; private set; }
         public PriceRange RootRiskAnchor { get; private set; }
         public string RootRiskAnchorEvidenceId { get; private set; }
-        public PriceRange PendingAddRiskAnchor { get; private set; }
-        public string PendingAddRiskAnchorEvidenceId { get; private set; }
-        public DateTimeOffset? PendingAddRiskAnchorQueuedAt { get; private set; }
+        public PriceRange PendingSponsorAnchor { get; private set; }
+        public string PendingSponsorEvidenceId { get; private set; }
+        public DateTimeOffset? PendingSponsorQueuedAt { get; private set; }
+        public PriceRange ScaleCandidateAnchor { get; private set; }
+        public string ScaleCandidateEvidenceId { get; private set; }
+        public DateTimeOffset? ScaleCandidateTrackedAt { get; private set; }
+        public PriceRange ScaleRepairAnchor { get; private set; }
+        public string ScaleRepairEvidenceId { get; private set; }
+        public DateTimeOffset? ScaleRepairTrackedAt { get; private set; }
+        public bool ScaleRepairFailed { get; private set; }
+        public string ScaleRepairFailureEvidenceId { get; private set; }
+        public DateTimeOffset? ScaleRepairFailedAt { get; private set; }
         public DateTimeOffset? SuppressAddsUntil { get; private set; }
+        public string SuppressAddsPolicy { get; private set; }
+        public string SuppressAddsReasonCode { get; private set; }
         public DateTimeOffset LastDecisionUtc { get; private set; }
         public int ExecutionAttemptCount { get; private set; }
         public int AcceptedAddCount { get; private set; }
@@ -539,14 +551,18 @@ namespace KahnRuntime
                     Phase = CampaignPhase.Pressing;
                     if (decision.DelayRiskAnchorPromotionOnAdd)
                     {
-                        PromotePendingAddRiskAnchor(plan, decision);
-                        QueuePendingAddRiskAnchor(decision, plan, now);
+                        PromotePendingSponsor(plan, decision);
+                        QueuePendingSponsor(decision, plan, now);
                     }
                     else
                     {
                         SetRiskAnchor(decision);
-                        ClearPendingAddRiskAnchor();
+                        ClearPendingSponsor();
                     }
+                    ClearScaleTracking();
+                    break;
+                case PolicyAction.TrackScaleCandidate:
+                    ApplyScaleTracking(decision, plan, now);
                     break;
                 case PolicyAction.EnsureBreakeven:
                     ArmBreakevenBackstop(
@@ -555,8 +571,10 @@ namespace KahnRuntime
                         executionOrderId);
                     break;
                 case PolicyAction.SuppressAdd:
-                    SuppressAddsUntil = decision.ExpiresAt
-                        ?? now.AddSeconds(30);
+                    SetSuppressAddsUntil(decision.ExpiresAt
+                        ?? now.AddSeconds(30), decision);
+                    if (decision.ChildRiskAnchor != null)
+                        TrackScaleRepairObserved(decision, plan, now);
                     if (Phase != CampaignPhase.Retired)
                     {
                         if (string.Equals(decision.Policy, "target_zone", StringComparison.Ordinal))
@@ -574,8 +592,10 @@ namespace KahnRuntime
                     break;
                 case PolicyAction.PassiveHarvest:
                     ActivatePassiveHarvest(now);
+                    ClearScaleTracking();
+                    ClearPendingSponsor();
                     if (decision.ExpiresAt.HasValue)
-                        SuppressAddsUntil = decision.ExpiresAt;
+                        SetSuppressAddsUntil(decision.ExpiresAt, decision);
                     if (simulateAcceptedDecisions
                         && passiveHarvestFilledQuantity.GetValueOrDefault() > 0)
                     {
@@ -600,8 +620,10 @@ namespace KahnRuntime
                         SimulatedPositionQuantity = Math.Max(0, SimulatedPositionQuantity - quantity);
                     }
                     ClearBreakevenBackstop();
+                    ClearScaleTracking();
+                    ClearPendingSponsor();
                     if (decision.ExpiresAt.HasValue)
-                        SuppressAddsUntil = decision.ExpiresAt;
+                        SetSuppressAddsUntil(decision.ExpiresAt, decision);
                     if (SimulatedPositionQuantity > 0)
                     {
                         Phase = string.Equals(decision.Policy, "target_zone", StringComparison.Ordinal)
@@ -638,8 +660,8 @@ namespace KahnRuntime
                     Phase = CampaignPhase.Retired;
                     break;
                 case PolicyAction.Cooldown:
-                    SuppressAddsUntil = decision.ExpiresAt
-                        ?? now.AddSeconds(60);
+                    SetSuppressAddsUntil(decision.ExpiresAt
+                        ?? now.AddSeconds(60), decision);
                     break;
             }
         }
@@ -664,26 +686,52 @@ namespace KahnRuntime
             ActiveRiskAnchorEvidenceId = decision.RiskAnchorEvidenceId ?? decision.EvidenceId;
         }
 
-        private void PromotePendingAddRiskAnchor(CampaignPlan plan, PolicyDecision decision)
+        private void ApplyScaleTracking(PolicyDecision decision,
+            CampaignPlan plan,
+            DateTimeOffset now)
         {
-            if (plan == null || PendingAddRiskAnchor == null)
+            string reason = decision.ReasonCode ?? string.Empty;
+            if (string.Equals(reason, "scale_repair_observed",
+                    StringComparison.Ordinal))
+            {
+                TrackScaleRepairObserved(decision, plan, now);
+                return;
+            }
+            if (string.Equals(reason, "scale_repair_failed",
+                    StringComparison.Ordinal))
+            {
+                MarkScaleRepairFailed(decision, plan, now);
+                return;
+            }
+            if (reason.StartsWith("scale_candidate_tracked",
+                    StringComparison.Ordinal))
+            {
+                ClearScaleRepair();
+            }
+
+            TrackScaleCandidate(decision, plan, now);
+        }
+
+        private void PromotePendingSponsor(CampaignPlan plan,
+            PolicyDecision decision)
+        {
+            if (plan == null || PendingSponsorAnchor == null)
                 return;
 
             PriceRange child = decision.ChildRiskAnchor ?? decision.RiskAnchor;
             PriceRange reference = ActiveRiskAnchor ?? RootRiskAnchor;
             bool childValidatesPending = child != null
-                && CampaignSideMath.IsFavorableBeyond(plan.Side, child, PendingAddRiskAnchor);
+                && CampaignSideMath.IsFavorableBeyond(plan.Side, child, PendingSponsorAnchor);
             bool pendingImprovesRisk = reference == null
-                || CampaignSideMath.IsFavorableBeyond(plan.Side, PendingAddRiskAnchor, reference);
+                || CampaignSideMath.IsFavorableBeyond(plan.Side, PendingSponsorAnchor, reference);
             if (childValidatesPending && pendingImprovesRisk)
             {
-                ActiveRiskAnchor = PendingAddRiskAnchor;
-                ActiveRiskAnchorEvidenceId = PendingAddRiskAnchorEvidenceId;
+                ActiveRiskAnchor = PendingSponsorAnchor;
+                ActiveRiskAnchorEvidenceId = PendingSponsorEvidenceId;
             }
-            ClearPendingAddRiskAnchor();
         }
 
-        private void QueuePendingAddRiskAnchor(PolicyDecision decision,
+        private void QueuePendingSponsor(PolicyDecision decision,
             CampaignPlan plan,
             DateTimeOffset now)
         {
@@ -694,18 +742,87 @@ namespace KahnRuntime
             if (child == null)
                 return;
 
-            PriceRange reference = PendingAddRiskAnchor ?? ActiveRiskAnchor ?? RootRiskAnchor;
+            PriceRange reference = PendingSponsorAnchor ?? ActiveRiskAnchor ?? RootRiskAnchor;
             if (reference != null
                 && !CampaignSideMath.IsFavorableBeyond(plan.Side, child, reference))
             {
                 return;
             }
 
-            PendingAddRiskAnchor = child;
-            PendingAddRiskAnchorEvidenceId = decision.ChildRiskAnchorEvidenceId
+            PendingSponsorAnchor = child;
+            PendingSponsorEvidenceId = decision.ChildRiskAnchorEvidenceId
                 ?? decision.RiskAnchorEvidenceId
                 ?? decision.EvidenceId;
-            PendingAddRiskAnchorQueuedAt = now;
+            PendingSponsorQueuedAt = now;
+        }
+
+        private void TrackScaleCandidate(PolicyDecision decision,
+            CampaignPlan plan,
+            DateTimeOffset now)
+        {
+            if (plan == null)
+                return;
+
+            PriceRange child = decision.ChildRiskAnchor ?? decision.RiskAnchor;
+            if (child == null)
+                return;
+
+            PriceRange reference = ScaleCandidateAnchor
+                ?? PendingSponsorAnchor
+                ?? ActiveRiskAnchor
+                ?? RootRiskAnchor;
+            if (reference != null
+                && !CampaignSideMath.IsFavorableBeyond(plan.Side, child, reference))
+            {
+                return;
+            }
+
+            ScaleCandidateAnchor = child;
+            ScaleCandidateEvidenceId = decision.ChildRiskAnchorEvidenceId
+                ?? decision.RiskAnchorEvidenceId
+                ?? decision.EvidenceId;
+            ScaleCandidateTrackedAt = now;
+        }
+
+        private void TrackScaleRepairObserved(PolicyDecision decision,
+            CampaignPlan plan,
+            DateTimeOffset now)
+        {
+            if (plan == null)
+                return;
+            PriceRange repair = decision.ChildRiskAnchor ?? decision.RiskAnchor;
+            if (repair == null)
+                return;
+
+            ScaleRepairAnchor = repair;
+            ScaleRepairEvidenceId = decision.ChildRiskAnchorEvidenceId
+                ?? decision.RiskAnchorEvidenceId
+                ?? decision.EvidenceId;
+            ScaleRepairTrackedAt = now;
+            ScaleRepairFailed = false;
+            ScaleRepairFailureEvidenceId = null;
+            ScaleRepairFailedAt = null;
+        }
+
+        private void MarkScaleRepairFailed(PolicyDecision decision,
+            CampaignPlan plan,
+            DateTimeOffset now)
+        {
+            if (plan == null || ScaleRepairAnchor == null)
+                return;
+
+            ScaleRepairFailed = true;
+            ScaleRepairFailureEvidenceId = decision.ChildRiskAnchorEvidenceId
+                ?? decision.RiskAnchorEvidenceId
+                ?? decision.EvidenceId;
+            ScaleRepairFailedAt = now;
+            if (string.Equals(SuppressAddsPolicy, "repair_hold",
+                    StringComparison.Ordinal)
+                && string.Equals(SuppressAddsReasonCode, "non_causal_adverse_claim",
+                    StringComparison.Ordinal))
+            {
+                ClearSuppressAdds();
+            }
         }
 
         public void ReconcileObservedPositionQuantity(int quantity, CampaignPlan plan)
@@ -751,6 +868,21 @@ namespace KahnRuntime
             ExecutionPausedAt = null;
         }
 
+        private void SetSuppressAddsUntil(DateTimeOffset? until,
+            PolicyDecision decision)
+        {
+            SuppressAddsUntil = until;
+            SuppressAddsPolicy = decision?.Policy;
+            SuppressAddsReasonCode = decision?.ReasonCode;
+        }
+
+        private void ClearSuppressAdds()
+        {
+            SuppressAddsUntil = null;
+            SuppressAddsPolicy = null;
+            SuppressAddsReasonCode = null;
+        }
+
         private void ActivatePassiveHarvest(DateTimeOffset now)
         {
             PassiveHarvestActive = true;
@@ -791,11 +923,29 @@ namespace KahnRuntime
                 / totalQuantity;
         }
 
-        private void ClearPendingAddRiskAnchor()
+        private void ClearScaleTracking()
         {
-            PendingAddRiskAnchor = null;
-            PendingAddRiskAnchorEvidenceId = null;
-            PendingAddRiskAnchorQueuedAt = null;
+            ScaleCandidateAnchor = null;
+            ScaleCandidateEvidenceId = null;
+            ScaleCandidateTrackedAt = null;
+            ClearScaleRepair();
+        }
+
+        private void ClearScaleRepair()
+        {
+            ScaleRepairAnchor = null;
+            ScaleRepairEvidenceId = null;
+            ScaleRepairTrackedAt = null;
+            ScaleRepairFailed = false;
+            ScaleRepairFailureEvidenceId = null;
+            ScaleRepairFailedAt = null;
+        }
+
+        private void ClearPendingSponsor()
+        {
+            PendingSponsorAnchor = null;
+            PendingSponsorEvidenceId = null;
+            PendingSponsorQueuedAt = null;
         }
 
         private void ClearBreakevenBackstop()
@@ -818,7 +968,9 @@ namespace KahnRuntime
             SimulatedAveragePrice = null;
             AcceptedAddCount = 0;
             ClearBreakevenBackstop();
-            ClearPendingAddRiskAnchor();
+            ClearScaleTracking();
+            ClearPendingSponsor();
+            ClearSuppressAdds();
         }
     }
 

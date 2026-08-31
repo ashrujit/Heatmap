@@ -43,6 +43,19 @@ ROLE_ALIASES = {
     "invalidation": "invalidation",
 }
 
+SCALE_MODE_ALIASES = {
+    "scaleallowed": "scale_allowed",
+    "scalingallowed": "scale_allowed",
+    "evidencescaled": "scale_allowed",
+    "evidence": "scale_allowed",
+    "allowed": "scale_allowed",
+    "rootonly": "root_only",
+    "noscaling": "root_only",
+    "noadd": "root_only",
+    "disabled": "root_only",
+    "off": "root_only",
+}
+
 ROLE_ORDER = (
     "trap_probe",
     "press",
@@ -98,6 +111,14 @@ def canonical_role(value: str) -> str:
         known = ", ".join(ROLE_ORDER)
         raise CampaignAssemblyError(f"unsupported waypoint role {value!r}; use one of {known}")
     return role
+
+
+def canonical_scale_mode(value: str | None) -> str:
+    key = normalize_role(value or "")
+    mode = SCALE_MODE_ALIASES.get(key)
+    if not mode:
+        raise CampaignAssemblyError("--scale-mode must be root_only or scale_allowed")
+    return mode
 
 
 def parse_range_spec(value: str, field: str = "range") -> dict[str, float]:
@@ -299,6 +320,7 @@ def build_campaign(
     target_range: str | None,
     include_target_waypoint: bool,
     passive_harvest_range: str | None,
+    scale_mode: str,
     probe_quantity: int,
     add_quantity: int,
     max_position_quantity: int,
@@ -345,6 +367,11 @@ def build_campaign(
         raise CampaignAssemblyError("--path-stress-max-qty must be a positive integer")
     if probe_quantity > max_position_quantity:
         raise CampaignAssemblyError("--probe-qty must not exceed --max-qty")
+    scale_mode_text = canonical_scale_mode(scale_mode)
+    if scale_mode_text == "root_only" and max_position_quantity != probe_quantity:
+        raise CampaignAssemblyError("--max-qty must equal --probe-qty when --scale-mode root_only")
+    if scale_mode_text == "scale_allowed" and max_position_quantity <= probe_quantity:
+        raise CampaignAssemblyError("--max-qty must exceed --probe-qty when --scale-mode scale_allowed")
 
     campaign = {
         "schema_version": 1,
@@ -360,6 +387,7 @@ def build_campaign(
         },
         "arena": parse_range_spec(arena, "--arena"),
         "sizing": {
+            "scale_mode": scale_mode_text,
             "probe_quantity": probe_quantity,
             "add_quantity": add_quantity,
             "max_position_quantity": max_position_quantity,

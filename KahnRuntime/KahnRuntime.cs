@@ -843,9 +843,18 @@ namespace KahnRuntime
                 ("active_risk_anchor_evidence_id", _state.ActiveRiskAnchorEvidenceId),
                 ("root_risk_anchor", _state.RootRiskAnchor),
                 ("root_risk_anchor_evidence_id", _state.RootRiskAnchorEvidenceId),
-                ("pending_add_risk_anchor", _state.PendingAddRiskAnchor),
-                ("pending_add_risk_anchor_evidence_id", _state.PendingAddRiskAnchorEvidenceId),
-                ("pending_add_risk_anchor_queued_at", _state.PendingAddRiskAnchorQueuedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("pending_sponsor_anchor", _state.PendingSponsorAnchor),
+                ("pending_sponsor_evidence_id", _state.PendingSponsorEvidenceId),
+                ("pending_sponsor_queued_at", _state.PendingSponsorQueuedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("scale_candidate_anchor", _state.ScaleCandidateAnchor),
+                ("scale_candidate_evidence_id", _state.ScaleCandidateEvidenceId),
+                ("scale_candidate_tracked_at", _state.ScaleCandidateTrackedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("scale_repair_anchor", _state.ScaleRepairAnchor),
+                ("scale_repair_evidence_id", _state.ScaleRepairEvidenceId),
+                ("scale_repair_tracked_at", _state.ScaleRepairTrackedAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("scale_repair_failed", _state.ScaleRepairFailed),
+                ("scale_repair_failure_evidence_id", _state.ScaleRepairFailureEvidenceId),
+                ("scale_repair_failed_at", _state.ScaleRepairFailedAt?.ToString("O", CultureInfo.InvariantCulture)),
                 ("accepted_add_count", _state.AcceptedAddCount),
                 ("simulated_average_price", _state.SimulatedAveragePrice),
                 ("breakeven_backstop_active", _state.BreakevenBackstopActive),
@@ -1648,9 +1657,18 @@ namespace KahnRuntime
                 ActiveRiskAnchorEvidenceId = _state?.ActiveRiskAnchorEvidenceId,
                 RootRiskAnchor = _state?.RootRiskAnchor,
                 RootRiskAnchorEvidenceId = _state?.RootRiskAnchorEvidenceId,
-                PendingAddRiskAnchor = _state?.PendingAddRiskAnchor,
-                PendingAddRiskAnchorEvidenceId = _state?.PendingAddRiskAnchorEvidenceId,
-                PendingAddRiskAnchorQueuedAtUtc = _state?.PendingAddRiskAnchorQueuedAt?.ToString("O", CultureInfo.InvariantCulture),
+                PendingSponsorAnchor = _state?.PendingSponsorAnchor,
+                PendingSponsorEvidenceId = _state?.PendingSponsorEvidenceId,
+                PendingSponsorQueuedAtUtc = _state?.PendingSponsorQueuedAt?.ToString("O", CultureInfo.InvariantCulture),
+                ScaleCandidateAnchor = _state?.ScaleCandidateAnchor,
+                ScaleCandidateEvidenceId = _state?.ScaleCandidateEvidenceId,
+                ScaleCandidateTrackedAtUtc = _state?.ScaleCandidateTrackedAt?.ToString("O", CultureInfo.InvariantCulture),
+                ScaleRepairAnchor = _state?.ScaleRepairAnchor,
+                ScaleRepairEvidenceId = _state?.ScaleRepairEvidenceId,
+                ScaleRepairTrackedAtUtc = _state?.ScaleRepairTrackedAt?.ToString("O", CultureInfo.InvariantCulture),
+                ScaleRepairFailed = _state?.ScaleRepairFailed,
+                ScaleRepairFailureEvidenceId = _state?.ScaleRepairFailureEvidenceId,
+                ScaleRepairFailedAtUtc = _state?.ScaleRepairFailedAt?.ToString("O", CultureInfo.InvariantCulture),
                 SuppressAddsUntilUtc = _state?.SuppressAddsUntil?.ToString("O", CultureInfo.InvariantCulture),
                 PassiveHarvestActive = _state?.PassiveHarvestActive,
                 PassiveHarvestStartedAtUtc = _state?.PassiveHarvestStartedAt?.ToString("O", CultureInfo.InvariantCulture),
@@ -2167,10 +2185,20 @@ namespace KahnRuntime
             AddMetric(metrics, "Live Qty", position.Quantity.ToString(CultureInfo.InvariantCulture));
             AddMetric(metrics, "Harvest", HarvestMetricText());
             AddMetric(metrics, "Risk", _state?.ActiveRiskAnchor?.ToString() ?? "-");
-            AddMetric(metrics, "Pending Risk", _state?.PendingAddRiskAnchor?.ToString() ?? "-");
+            AddMetric(metrics, "Pending Sponsor", _state?.PendingSponsorAnchor?.ToString() ?? "-");
+            AddMetric(metrics, "Scale Cand", _state?.ScaleCandidateAnchor?.ToString() ?? "-");
+            AddMetric(metrics, "Scale Repair", ScaleRepairMetricText());
             AddMetric(metrics, "BE", BreakevenMetricText());
             AddMetric(metrics, "Audit", AuditMetricText());
             return metrics;
+        }
+
+        private string ScaleRepairMetricText()
+        {
+            if (_state?.ScaleRepairAnchor == null)
+                return "-";
+            return _state.ScaleRepairAnchor.ToString()
+                + (_state.ScaleRepairFailed ? " failed" : " live");
         }
 
         private string BreakevenMetricText()

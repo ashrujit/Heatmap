@@ -34,9 +34,9 @@ governor into a form-filled EAR directive dispatcher.
   `add_quantity`, `max_position_quantity`) so size can change by situation
   without restarting the strategy. `scale_mode` is the operator's scaling
   intent: `root_only` blocks leverage even when same-side ownership appears,
-  while `scale_allowed` lets Kahn discover add locations from fresh evidence
-  inside the campaign arena. `Instance Max Quantity` is only a runtime safety
-  cap and campaign admission guard.
+  while `scale_allowed` lets Kahn discover add locations from repaired
+  continuation evidence inside the campaign arena. `Instance Max Quantity` is
+  only a runtime safety cap and campaign admission guard.
 - `execution.max_retry` is directive-local and defaults to `3`. It counts accepted
   probe attempts that later flatten/scratch; quote staleness or broker submit
   rejection is logged but does not spend the campaign retry budget. Once the
@@ -75,11 +75,13 @@ governor into a form-filled EAR directive dispatcher.
   inventory from a pre-expiry fill, evidence evaluation continues after
   `window.expires_at` so add, suppress, reduce, flatten, and retire decisions
   still manage the campaign.
-- In `scale_allowed`, an add's same-side rail is a child anchor first, not the
-  active sponsor. The active sponsor can promote only the prior pending child
-  when the next accepted add arrives farther in the favorable direction. This
-  intentionally keeps root/older sponsor protection through the first add and
-  prevents immediate sponsor elevation on untested worse-price evidence.
+- In `scale_allowed`, first worse-price same-side ownership is tracked as a
+  scale candidate, not taken immediately. Kahn needs a repair/counter-claim to
+  appear, fail as typed evidence, and then fresh same-side continuation at or
+  beyond that repair before `AllowAdd` can fire. The first accepted add queues a
+  pending sponsor while the older/root sponsor remains active and weighted BE is
+  the account backstop. A later accepted add can promote the prior pending
+  sponsor and queue the newest child.
 - Weighted BE is account protection, not the root thesis stop. It is ineligible
   at root-only/probe-only size, becomes eligible only after Kahn has accepted an
   add and observed scaled inventory, and arms only when the executable quote is

@@ -23,9 +23,10 @@ namespace KahnRuntime
             EvaluateZoneSuppressesAdd();
             PressAboveNoAddAllowsAdd();
             RootOnlyScaleModeBlocksAdds();
-            EvidenceScaledAllowsArenaAddWithoutPressWaypoint();
+            EvidenceScaledRequiresRepairBeforeArenaAdd();
+            NewScaleCandidateResetsPriorRepairFailure();
             PreserveRiskAnchorOnAddUsesRoot();
-            DelayedSponsorPromotionLagsAcceptedAdds();
+            LaterAddPromotesPriorPendingSponsor();
             BreakevenBackstopArmsOnlyAfterFirstAdd();
             ReconcileObservedQuantityDoesNotClampToPlanMax();
             DecisionResolverTiePrefersRiskDown();
@@ -330,11 +331,16 @@ namespace KahnRuntime
             SeedPosition(state, plan, 1);
             CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
             DateTimeOffset now = DateTimeOffset.UtcNow;
+            ApplyScaleRepairFailure(engine,
+                plan,
+                state,
+                now,
+                new PriceRange { Lower = 7674.0, Upper = 7674.5 });
 
             CampaignEvidence pressEvidence = new()
             {
                 EventId = "expired-position-press",
-                Timestamp = now,
+                Timestamp = now.AddSeconds(2),
                 Source = EvidenceSource.LevelLedger,
                 Kind = EvidenceKind.RailOwned,
                 Side = EvidenceSide.Demand,
@@ -343,7 +349,7 @@ namespace KahnRuntime
             Assert(plan.ShouldEvaluateEvidenceAt(now, state),
                 "expired positioned campaign keeps evaluating evidence");
             PolicyDecision add = engine.Evaluate(
-                new CampaignContext(plan, state, 0.25, now),
+                new CampaignContext(plan, state, 0.25, pressEvidence.Timestamp),
                 pressEvidence);
             Assert(add.Action == PolicyAction.AllowAdd,
                 "expired positioned campaign still allows campaign add");
@@ -351,7 +357,7 @@ namespace KahnRuntime
             CampaignEvidence sponsorFailure = new()
             {
                 EventId = "expired-position-sponsor-fail",
-                Timestamp = now.AddSeconds(1),
+                Timestamp = now.AddSeconds(3),
                 Source = EvidenceSource.LevelLedger,
                 Kind = EvidenceKind.SponsorFailed,
                 Side = EvidenceSide.Demand,
@@ -470,6 +476,8 @@ namespace KahnRuntime
         {
             CampaignPlan plan = LongNoAddPlan();
             CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
@@ -503,6 +511,8 @@ namespace KahnRuntime
         {
             CampaignPlan plan = LongNoAddPlan();
             CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
@@ -510,12 +520,17 @@ namespace KahnRuntime
                 ReasonCode = "seed_position",
                 Quantity = 1,
                 RiskAnchor = new PriceRange { Lower = 7658.0, Upper = 7660.0 },
-            }, plan, simulateAcceptedDecisions: true);
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
+            ApplyScaleRepairFailure(engine,
+                plan,
+                state,
+                now.AddSeconds(1),
+                new PriceRange { Lower = 7668.5, Upper = 7670.0 });
 
             CampaignEvidence evidence = new()
             {
                 EventId = "press-demand",
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = now.AddSeconds(4),
                 Source = EvidenceSource.LevelLedger,
                 Kind = EvidenceKind.RailOwned,
                 Side = EvidenceSide.Demand,
@@ -523,8 +538,8 @@ namespace KahnRuntime
                 WaypointId = "press-7667-7677",
             };
 
-            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
-                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
+            PolicyDecision decision = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, evidence.Timestamp),
                 evidence);
             Assert(decision.Action == PolicyAction.AllowAdd, "press above no-add allows add");
         }
@@ -561,10 +576,12 @@ namespace KahnRuntime
                 "root-only scale mode blocks press adds");
         }
 
-        private static void EvidenceScaledAllowsArenaAddWithoutPressWaypoint()
+        private static void EvidenceScaledRequiresRepairBeforeArenaAdd()
         {
             CampaignPlan plan = LongEvaluatePlan();
             CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
@@ -573,30 +590,106 @@ namespace KahnRuntime
                 Quantity = 1,
                 RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
                 EvidenceId = "seed-probe",
-            }, plan, simulateAcceptedDecisions: true);
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
 
-            CampaignEvidence evidence = new()
+            CampaignEvidence firstCandidate = new()
             {
                 EventId = "arena-demand",
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = now.AddSeconds(1),
                 Source = EvidenceSource.LevelLedger,
                 Kind = EvidenceKind.RailOwned,
                 Side = EvidenceSide.Demand,
                 Range = new PriceRange { Lower = 29100.0, Upper = 29108.0 },
             };
 
-            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
-                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
-                evidence);
-            Assert(decision.Action == PolicyAction.AllowAdd,
-                "scale mode allows arena-discovered add");
-            Assert(decision.WaypointId == null,
+            PolicyDecision tracked = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, firstCandidate.Timestamp),
+                firstCandidate);
+            Assert(tracked.Action == PolicyAction.TrackScaleCandidate,
+                "first arena-discovered rail is tracked, not added");
+            state.ApplyDecision(tracked, plan, simulateAcceptedDecisions: true,
+                appliedAt: firstCandidate.Timestamp);
+            Assert(state.ScaleCandidateAnchor?.Lower == 29100.0
+                && state.ScaleCandidateAnchor.Upper == 29108.0,
+                "first candidate is retained for repair context");
+
+            ApplyScaleRepairFailure(engine,
+                plan,
+                state,
+                now.AddSeconds(2),
+                new PriceRange { Lower = 29101.0, Upper = 29104.0 });
+
+            CampaignEvidence continuation = new()
+            {
+                EventId = "arena-continuation-demand",
+                Timestamp = now.AddSeconds(5),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 29110.0, Upper = 29118.0 },
+            };
+
+            PolicyDecision add = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, continuation.Timestamp),
+                continuation);
+            Assert(add.Action == PolicyAction.AllowAdd,
+                "repaired continuation allows arena-discovered add");
+            Assert(add.WaypointId == null,
                 "arena-discovered add does not require manual press waypoint");
-            Assert(decision.ChildRiskAnchor?.Lower == 29100.0
-                && decision.ChildRiskAnchor.Upper == 29108.0,
-                "arena-discovered add carries child anchor");
-            Assert(decision.DelayRiskAnchorPromotionOnAdd,
-                "arena-discovered add uses delayed sponsor promotion");
+            Assert(add.RiskAnchor?.Lower == 29040.0
+                && add.RiskAnchor.Upper == 29060.0,
+                "first add keeps older sponsor active");
+            Assert(add.ChildRiskAnchor?.Lower == 29110.0
+                && add.ChildRiskAnchor.Upper == 29118.0,
+                "arena-discovered add carries pending sponsor candidate");
+            Assert(add.DelayRiskAnchorPromotionOnAdd,
+                "arena-discovered add uses one-behind sponsor promotion");
+        }
+
+        private static void NewScaleCandidateResetsPriorRepairFailure()
+        {
+            CampaignPlan plan = LongEvaluatePlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_position",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
+                EvidenceId = "seed-probe",
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
+
+            ApplyScaleRepairFailure(engine,
+                plan,
+                state,
+                now.AddSeconds(1),
+                new PriceRange { Lower = 29100.0, Upper = 29105.0 });
+
+            CampaignEvidence newCandidate = new()
+            {
+                EventId = "new-candidate-demand",
+                Timestamp = now.AddSeconds(4),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 29080.0, Upper = 29090.0 },
+            };
+
+            PolicyDecision decision = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, newCandidate.Timestamp),
+                newCandidate);
+            Assert(decision.Action == PolicyAction.TrackScaleCandidate,
+                "same-side evidence before failed repair boundary tracks candidate");
+            state.ApplyDecision(decision, plan, simulateAcceptedDecisions: true,
+                appliedAt: newCandidate.Timestamp);
+            Assert(state.ScaleCandidateAnchor?.Lower == 29080.0
+                && state.ScaleCandidateAnchor.Upper == 29090.0,
+                "new candidate is tracked");
+            Assert(state.ScaleRepairAnchor == null && !state.ScaleRepairFailed,
+                "new candidate structurally resets prior repair failure");
         }
 
         private static void TargetOppositeOwnershipRetires()
@@ -835,6 +928,8 @@ namespace KahnRuntime
         {
             CampaignPlan plan = LongPreserveRiskPlan();
             CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
@@ -843,12 +938,17 @@ namespace KahnRuntime
                 Quantity = 1,
                 RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
                 EvidenceId = "seed-probe",
-            }, plan, simulateAcceptedDecisions: true);
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
+            ApplyScaleRepairFailure(engine,
+                plan,
+                state,
+                now.AddSeconds(1),
+                new PriceRange { Lower = 29100.0, Upper = 29105.0 });
 
             CampaignEvidence evidence = new()
             {
                 EventId = "preserve-root-add",
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = now.AddSeconds(4),
                 Source = EvidenceSource.LevelLedger,
                 Kind = EvidenceKind.RailOwned,
                 Side = EvidenceSide.Demand,
@@ -856,8 +956,8 @@ namespace KahnRuntime
                 WaypointId = "press-29100-29145",
             };
 
-            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
-                new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
+            PolicyDecision decision = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, evidence.Timestamp),
                 evidence);
             Assert(decision.Action == PolicyAction.AllowAdd, "preserve risk add allowed");
             Assert(decision.ReasonCode == "same_side_ownership_add_preserve_root_risk",
@@ -872,15 +972,19 @@ namespace KahnRuntime
                 "active risk remains root after preserve add");
             Assert(state.ActiveRiskAnchorEvidenceId == "seed-probe",
                 "active risk evidence remains root after preserve add");
-            Assert(state.PendingAddRiskAnchor?.Lower == 29112.0
-                && state.PendingAddRiskAnchor.Upper == 29135.0,
-                "preserve risk queues child anchor");
+            Assert(state.ScaleCandidateAnchor == null && state.ScaleRepairAnchor == null,
+                "preserve risk add clears repaired-continuation tracking");
+            Assert(state.PendingSponsorAnchor?.Lower == 29112.0
+                && state.PendingSponsorAnchor.Upper == 29135.0,
+                "preserve risk add queues pending sponsor");
         }
 
-        private static void DelayedSponsorPromotionLagsAcceptedAdds()
+        private static void LaterAddPromotesPriorPendingSponsor()
         {
-            CampaignPlan plan = LongPreserveRiskPlan();
+            CampaignPlan plan = LongEvaluatePlan();
             CampaignState state = CampaignState.ForPlan(plan);
+            CampaignPolicyEngine engine = CampaignPolicyEngine.CreateDefault();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             state.ApplyDecision(new PolicyDecision
             {
                 Action = PolicyAction.AllowProbe,
@@ -890,48 +994,71 @@ namespace KahnRuntime
                 RiskAnchor = new PriceRange { Lower = 29040.0, Upper = 29060.0 },
                 RiskAnchorEvidenceId = "seed-probe",
                 EvidenceId = "seed-probe",
-            }, plan, simulateAcceptedDecisions: true);
-
-            PolicyDecision firstAdd = AddDecision(plan,
+            }, plan, simulateAcceptedDecisions: true, appliedAt: now);
+            ApplyScaleRepairFailure(engine,
+                plan,
                 state,
-                "first-add",
-                29088.0,
-                29098.0,
-                "press-29080-29100");
+                now.AddSeconds(1),
+                new PriceRange { Lower = 29100.0, Upper = 29105.0 });
+
+            CampaignEvidence continuation = new()
+            {
+                EventId = "first-add",
+                Timestamp = now.AddSeconds(4),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 29112.0, Upper = 29135.0 },
+            };
+            PolicyDecision firstAdd = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, continuation.Timestamp),
+                continuation);
+            Assert(firstAdd.Action == PolicyAction.AllowAdd,
+                "repaired continuation allows first add");
+            Assert(firstAdd.RiskAnchor?.Lower == 29040.0
+                && firstAdd.RiskAnchor.Upper == 29060.0,
+                "first add keeps root sponsor active");
+            Assert(firstAdd.DelayRiskAnchorPromotionOnAdd,
+                "first add queues child sponsor");
             state.ApplyDecision(firstAdd, plan, simulateAcceptedDecisions: true);
             Assert(state.ActiveRiskAnchor?.Lower == 29040.0
                 && state.ActiveRiskAnchor.Upper == 29060.0,
-                "first add leaves active risk at root");
-            Assert(state.PendingAddRiskAnchor?.Lower == 29088.0
-                && state.PendingAddRiskAnchor.Upper == 29098.0,
-                "first add queues first child");
+                "root remains active after first add");
+            Assert(state.PendingSponsorAnchor?.Lower == 29112.0
+                && state.PendingSponsorAnchor.Upper == 29135.0,
+                "first add is queued as pending sponsor");
 
-            PolicyDecision secondAdd = AddDecision(plan,
+            ApplyScaleRepairFailure(engine,
+                plan,
                 state,
-                "second-add",
-                29112.0,
-                29135.0,
-                "press-29100-29145");
+                now.AddSeconds(6),
+                new PriceRange { Lower = 29136.0, Upper = 29140.0 });
+
+            CampaignEvidence secondContinuation = new()
+            {
+                EventId = "second-add",
+                Timestamp = now.AddSeconds(9),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = EvidenceSide.Demand,
+                Range = new PriceRange { Lower = 29142.0, Upper = 29148.0 },
+            };
+            PolicyDecision secondAdd = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, secondContinuation.Timestamp),
+                secondContinuation);
+            Assert(secondAdd.Action == PolicyAction.AllowAdd,
+                "second repaired continuation allows next add");
             state.ApplyDecision(secondAdd, plan, simulateAcceptedDecisions: true);
-            Assert(state.ActiveRiskAnchor?.Lower == 29088.0
-                && state.ActiveRiskAnchor.Upper == 29098.0,
-                "second add promotes first child");
-            Assert(state.PendingAddRiskAnchor?.Lower == 29112.0
-                && state.PendingAddRiskAnchor.Upper == 29135.0,
-                "second add queues second child");
-
-            PolicyDecision thirdAdd = AddDecision(plan,
-                state,
-                "third-add",
-                29160.0,
-                29175.0);
-            state.ApplyDecision(thirdAdd, plan, simulateAcceptedDecisions: true);
             Assert(state.ActiveRiskAnchor?.Lower == 29112.0
                 && state.ActiveRiskAnchor.Upper == 29135.0,
-                "third add promotes second child");
-            Assert(state.PendingAddRiskAnchor?.Lower == 29160.0
-                && state.PendingAddRiskAnchor.Upper == 29175.0,
-                "third add queues third child");
+                "later add promotes prior pending sponsor");
+            Assert(state.ActiveRiskAnchorEvidenceId == "first-add",
+                "prior pending sponsor carries first add evidence id");
+            Assert(state.PendingSponsorAnchor?.Lower == 29142.0
+                && state.PendingSponsorAnchor.Upper == 29148.0,
+                "latest add is queued as pending sponsor");
+            Assert(state.ScaleCandidateAnchor == null && state.ScaleRepairAnchor == null,
+                "accepted add clears repaired-continuation tracking");
         }
 
         private static void BreakevenBackstopArmsOnlyAfterFirstAdd()
@@ -963,7 +1090,9 @@ namespace KahnRuntime
                 ReasonCode = "seed_add",
                 Quantity = 1,
                 RiskAnchor = new PriceRange { Lower = 7670.0, Upper = 7671.0 },
+                RiskAnchorEvidenceId = "seed-probe",
                 ChildRiskAnchor = new PriceRange { Lower = 7676.0, Upper = 7677.0 },
+                ChildRiskAnchorEvidenceId = "seed-add",
                 EvidenceId = "seed-add",
                 DelayRiskAnchorPromotionOnAdd = true,
             },
@@ -975,6 +1104,12 @@ namespace KahnRuntime
                 "accepted add count increments");
             Assert(Math.Abs(state.SimulatedAveragePrice.GetValueOrDefault() - 7675.0) < 0.0000001,
                 "add updates weighted simulated average");
+            Assert(state.ActiveRiskAnchor?.Lower == 7670.0
+                && state.ActiveRiskAnchor.Upper == 7671.0,
+                "first add leaves root sponsor active");
+            Assert(state.PendingSponsorAnchor?.Lower == 7676.0
+                && state.PendingSponsorAnchor.Upper == 7677.0,
+                "first add queues pending sponsor");
             Assert(state.BreakevenBackstopEligible(plan),
                 "first add makes breakeven eligible");
 
@@ -1013,6 +1148,8 @@ namespace KahnRuntime
                 "partial reduce leaves root-sized runner");
             Assert(!state.BreakevenBackstopActive,
                 "partial reduce clears stale breakeven");
+            Assert(state.PendingSponsorAnchor == null,
+                "partial reduce clears pending sponsor");
 
             state.ApplyDecision(new PolicyDecision
             {
@@ -1730,6 +1867,66 @@ namespace KahnRuntime
             }, plan, simulateAcceptedDecisions: true);
         }
 
+        private static void ApplyScaleRepairFailure(CampaignPolicyEngine engine,
+            CampaignPlan plan,
+            CampaignState state,
+            DateTimeOffset now,
+            PriceRange repairRange)
+        {
+            CampaignEvidence repairClaim = new()
+            {
+                EventId = "scale-repair-claim-" + now.Ticks.ToString(),
+                Timestamp = now,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailOwned,
+                Side = plan.Side == CampaignSide.Long
+                    ? EvidenceSide.Supply
+                    : EvidenceSide.Demand,
+                Range = repairRange,
+            };
+            PolicyDecision suppress = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, repairClaim.Timestamp),
+                repairClaim);
+            Assert(suppress.Action == PolicyAction.SuppressAdd,
+                "scale repair claim suppresses leverage");
+            Assert(suppress.ChildRiskAnchor != null,
+                "scale repair claim carries repair anchor");
+            state.ApplyDecision(suppress,
+                plan,
+                simulateAcceptedDecisions: true,
+                appliedAt: repairClaim.Timestamp);
+            Assert(state.ScaleRepairAnchor?.Lower == repairRange.Lower
+                && state.ScaleRepairAnchor.Upper == repairRange.Upper,
+                "scale repair claim is tracked");
+            Assert(state.AddsSuppressed(now.AddSeconds(1)),
+                "live repair claim suppresses adds");
+
+            CampaignEvidence repairFailure = new()
+            {
+                EventId = "scale-repair-fail-" + now.Ticks.ToString(),
+                Timestamp = now.AddSeconds(1),
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailFailed,
+                Side = repairClaim.Side,
+                Range = repairRange,
+            };
+            PolicyDecision failure = engine.Evaluate(
+                new CampaignContext(plan, state, 0.25, repairFailure.Timestamp),
+                repairFailure);
+            Assert(failure.Action == PolicyAction.TrackScaleCandidate,
+                "scale repair failure is tracked");
+            Assert(failure.ReasonCode == "scale_repair_failed",
+                "scale repair failure reason");
+            state.ApplyDecision(failure,
+                plan,
+                simulateAcceptedDecisions: true,
+                appliedAt: repairFailure.Timestamp);
+            Assert(state.ScaleRepairFailed,
+                "scale repair failed flag set");
+            Assert(!state.AddsSuppressed(repairFailure.Timestamp),
+                "failed repair clears repair-specific suppression");
+        }
+
         private static void SeedPosition(CampaignState state,
             CampaignPlan plan,
             int quantity)
@@ -1748,30 +1945,5 @@ namespace KahnRuntime
             }, plan, simulateAcceptedDecisions: true);
         }
 
-        private static PolicyDecision AddDecision(CampaignPlan plan,
-            CampaignState state,
-            string eventId,
-            double lower,
-            double upper,
-            string waypointId = null)
-        {
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            CampaignEvidence evidence = new()
-            {
-                EventId = eventId,
-                Timestamp = now,
-                Source = EvidenceSource.LevelLedger,
-                Kind = EvidenceKind.RailOwned,
-                Side = EvidenceSide.Demand,
-                Range = new PriceRange { Lower = lower, Upper = upper },
-                WaypointId = waypointId,
-            };
-            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
-                new CampaignContext(plan, state, 0.25, now),
-                evidence);
-            Assert(decision.Action == PolicyAction.AllowAdd,
-                eventId + " allows add");
-            return decision;
-        }
     }
 }

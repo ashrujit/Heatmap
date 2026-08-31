@@ -72,16 +72,27 @@ Treat each KahnRuntime instance as symbol/account/path scoped, not global.
 
 Do not hand-assemble routine Kahn campaign JSON when `scripts/kahnctl.py
 new-draft` can express the shape. Saavik owns the auction judgment and supplies
-side, arena, waypoint ranges, objective, passive harvest range, sizing, retry,
-risk ticks, and notes; the assembler owns schema version, kind, ids, timestamps,
-window shape, role order, generated waypoint ids, default role flags, validation,
-and optional file/dispatch writes.
+side, arena, scale intent, waypoint ranges, objective, passive harvest range,
+sizing, retry, risk ticks, and notes; the assembler owns schema version, kind,
+ids, timestamps, window shape, role order, generated waypoint ids, default role
+flags, validation, and optional file/dispatch writes.
 
 Use the shortest sufficient command first, usually with `--dry-run`:
 
 ```powershell
-python .\skills\saavik\scripts\kahnctl.py new-draft ES --side short --arena 7724:7762 --probe 7748:7756 --press 7746:7754 --target 7728:7729.5 --passive-harvest 7728:7729.5 --probe-qty 2 --add-qty 2 --max-qty 6 --max-retry 3 --ttl-minutes 45 --dry-run
+python .\skills\saavik\scripts\kahnctl.py new-draft ES --side short --arena 7724:7762 --probe 7748:7756 --scale-mode scale_allowed --target 7728:7729.5 --passive-harvest 7728:7729.5 --probe-qty 2 --add-qty 2 --max-qty 6 --max-retry 3 --ttl-minutes 45 --dry-run
 ```
+
+Treat `--scale-mode` as the directive-level choice. Use `root_only` when Kahn
+must keep only the initial probe/root inventory; in that mode `--max-qty` must
+equal `--probe-qty`. Use `scale_allowed` when Kahn may discover add locations
+from repaired continuation evidence inside the campaign arena; in that mode
+`--max-qty` must exceed `--probe-qty`. Do not invent `--press` or `--build`
+zones just to unlock leverage. `--press`, `--build`, `--evaluate`,
+`--repair-hold`, and `--path-stress` are optional semantic waypoints when the
+auction actually has those landmarks. Normal scale risk is already one sponsor
+behind the newest add; avoid `--press-preserves-root` unless reviewing or
+labeling a legacy/manual press waypoint that intentionally carries that field.
 
 Then either write a draft with `--out <path>` for review, dispatch an existing
 reviewed draft with `dispatch-draft`, or use `new-draft --dispatch` only after
@@ -151,7 +162,8 @@ Use evidence with its proper scope:
 
 Start by identifying the trigger:
 
-- Add review: a new add happened or was offered.
+- Add review: scale is allowed and a fresh repaired-continuation add happened
+  or was offered.
 - Waypoint review: price reached a probe, add, watchout, period, or target zone.
 - Path stress: the campaign is mature, full size, target is still far, or the
   auction is approaching a risky boundary.
@@ -167,21 +179,29 @@ Start by identifying the trigger:
 Then make the smallest sufficient audit:
 
 1. Establish current campaign state: symbol, side, entry/root, current size,
-   runtime paths, add history, active risk anchor, target, waypoints, period
-   clock, and whether this is root, runner, or full inventory.
+   scale mode, runtime paths, add history, active risk anchor, target, waypoints,
+   period clock, and whether this is root, runner, or full inventory.
 2. Pull only the evidence needed for the trigger. Avoid broad replay when a local
    checkpoint read is enough.
 3. Decide posture: hold, suppress adds, allow add, tighten risk, reduce/harvest,
    flatten/retire, or prepare a fresh campaign after repair.
-4. Map the decision to Kahn terms: `TrapProbe`, `Press`, `BuildTrial`,
-   `EvaluateZone`, `PathStress`, root-risk preservation, suppress-add window,
-   reduce size, flatten, or retire.
+4. Map the decision to Kahn terms: `RootOnly`, `ScaleAllowed`, `TrapProbe`,
+   `Press`, `BuildTrial`, `EvaluateZone`, `PathStress`, root-risk preservation,
+   suppress-add window, reduce size, flatten, or retire.
 5. State the falsifier and the next checkpoint that should wake Saavik again.
 
 ## Policy Guidance
 
-- Preserve the root risk anchor across adds unless the campaign explicitly earns a
-  new risk owner. Adds are not permission to forget the root thesis.
+- In `scale_allowed`, do not treat the first farther same-side rail as add
+  permission. Kahn tracks it as a candidate; the add needs a repair/counter-claim
+  that fails and then renewed same-side continuation. There is no fixed
+  continuation window; new candidates, fresh repairs, reduce/harvest, or flatten
+  reset the sequence.
+- Once the repaired-continuation gate permits an add, the first scale add queues
+  a pending sponsor while older/root risk remains active and weighted BE becomes
+  the account backstop. A later add can promote the prior pending sponsor.
+- Do not use waypoint labels as a manual add ladder. Coarse scale permission
+  comes from `scale_allowed`; actual adds still need Kahn evidence and policy.
 - Prefer `TrapProbe` for ambitious edge entries where full LL proof would arrive
   too late.
 - Prefer `Press` or `BuildTrial` for in-between participation where LL/Kahn math

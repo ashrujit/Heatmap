@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from kahn_campaign_assembler import CampaignAssemblyError, build_campaign
+from kahn_campaign_assembler import CampaignAssemblyError, build_campaign, canonical_scale_mode
 
 
 DEFAULT_RUNTIME_DIR = Path.home() / "Documents" / "KahnRuntime"
@@ -519,6 +519,22 @@ def normalize_role(value: str) -> str:
     return (value or "").replace("-", "").replace("_", "").replace(" ", "").lower()
 
 
+def scale_mode_arg(value: str) -> str:
+    try:
+        return canonical_scale_mode(value)
+    except CampaignAssemblyError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def require_scale_mode(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise KahnctlError(f"{field} must be root_only or scale_allowed")
+    try:
+        return canonical_scale_mode(value)
+    except CampaignAssemblyError as exc:
+        raise KahnctlError(f"{field} must be root_only or scale_allowed") from exc
+
+
 def require_obj(data: Any, field: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise KahnctlError(f"{field} must be an object")
@@ -615,6 +631,18 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
     max_qty = positive_int(sizing, "max_position_quantity", 1, "sizing.max_position_quantity")
     if probe_qty > max_qty:
         raise KahnctlError("sizing.probe_quantity must not exceed max_position_quantity")
+    if "scale_mode" in sizing:
+        scale_mode = require_scale_mode(sizing.get("scale_mode"), "sizing.scale_mode")
+    else:
+        scale_mode = "scale_allowed" if max_qty > probe_qty else "root_only"
+    if scale_mode == "root_only" and max_qty != probe_qty:
+        raise KahnctlError(
+            "sizing.max_position_quantity must equal probe_quantity when scale_mode is root_only"
+        )
+    if scale_mode == "scale_allowed" and max_qty <= probe_qty:
+        raise KahnctlError(
+            "sizing.max_position_quantity must exceed probe_quantity when scale_mode is scale_allowed"
+        )
 
     execution = require_obj(campaign.get("execution", {}), "campaign.execution")
     max_retry = positive_int(execution, "max_retry", 3, "execution.max_retry")
@@ -667,6 +695,7 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
         "side": side,
         "not_before": iso_utc(not_before),
         "expires_at": iso_utc(expires_at),
+        "scale_mode": scale_mode,
         "probe_quantity": probe_qty,
         "add_quantity": add_qty,
         "max_position_quantity": max_qty,
@@ -726,6 +755,8 @@ def stamp_campaign(args: argparse.Namespace, source: dict[str, Any]) -> dict[str
         sizing["add_quantity"] = args.add_qty
     if args.max_qty is not None:
         sizing["max_position_quantity"] = args.max_qty
+    if args.scale_mode is not None:
+        sizing["scale_mode"] = args.scale_mode
 
     execution = require_obj(campaign.setdefault("execution", {}), "campaign.execution")
     if args.max_retry is not None:
@@ -1018,6 +1049,7 @@ def command_new_draft(args: argparse.Namespace) -> int:
         target_range=args.target,
         include_target_waypoint=not args.no_target_waypoint,
         passive_harvest_range=args.passive_harvest,
+        scale_mode=args.scale_mode,
         probe_quantity=args.probe_qty,
         add_quantity=args.add_qty,
         max_position_quantity=args.max_qty,
@@ -1103,6 +1135,12 @@ def add_stamp_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--expires-at", default=None, help="Override window.expires_at.")
     parser.add_argument("--ttl-minutes", type=int, default=None, help="Set expires_at from not_before.")
+    parser.add_argument(
+        "--scale-mode",
+        type=scale_mode_arg,
+        default=None,
+        help="Set sizing.scale_mode to root_only or scale_allowed.",
+    )
     parser.add_argument("--probe-qty", type=int, default=None)
     parser.add_argument("--add-qty", type=int, default=None)
     parser.add_argument("--max-qty", type=int, default=None)
@@ -1212,6 +1250,12 @@ def parser() -> argparse.ArgumentParser:
     new_draft.add_argument("--not-before", default=None, help="Override window.not_before; defaults to now.")
     new_draft.add_argument("--expires-at", default=None, help="Override window.expires_at.")
     new_draft.add_argument("--ttl-minutes", type=int, default=30, help="Expiry offset when --expires-at is omitted.")
+    new_draft.add_argument(
+        "--scale-mode",
+        type=scale_mode_arg,
+        default="root_only",
+        help="Scaling intent: root_only blocks leverage; scale_allowed discovers adds from repaired-continuation evidence.",
+    )
     new_draft.add_argument("--probe-qty", type=int, default=1)
     new_draft.add_argument("--add-qty", type=int, default=1)
     new_draft.add_argument("--max-qty", type=int, default=1)
@@ -1284,7 +1328,7 @@ def parser() -> argparse.ArgumentParser:
     new_draft.add_argument(
         "--press-preserves-root",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     new_draft.add_argument("--notes", default=None)
     new_draft.add_argument("--notes-file", default=None)

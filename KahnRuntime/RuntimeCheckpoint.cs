@@ -78,9 +78,18 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; set; }
         public PriceRange RootRiskAnchor { get; set; }
         public string RootRiskAnchorEvidenceId { get; set; }
-        public PriceRange PendingAddRiskAnchor { get; set; }
-        public string PendingAddRiskAnchorEvidenceId { get; set; }
-        public string PendingAddRiskAnchorQueuedAtUtc { get; set; }
+        public PriceRange PendingSponsorAnchor { get; set; }
+        public string PendingSponsorEvidenceId { get; set; }
+        public string PendingSponsorQueuedAtUtc { get; set; }
+        public PriceRange ScaleCandidateAnchor { get; set; }
+        public string ScaleCandidateEvidenceId { get; set; }
+        public string ScaleCandidateTrackedAtUtc { get; set; }
+        public PriceRange ScaleRepairAnchor { get; set; }
+        public string ScaleRepairEvidenceId { get; set; }
+        public string ScaleRepairTrackedAtUtc { get; set; }
+        public bool? ScaleRepairFailed { get; set; }
+        public string ScaleRepairFailureEvidenceId { get; set; }
+        public string ScaleRepairFailedAtUtc { get; set; }
         public string SuppressAddsUntilUtc { get; set; }
         public string LastDecisionUtc { get; set; }
         public double? LatestBid { get; set; }
@@ -153,7 +162,9 @@ namespace KahnRuntime
             data.PassiveHarvestRange = SanitizeRange(data.PassiveHarvestRange);
             data.ActiveRiskAnchor = SanitizeRange(data.ActiveRiskAnchor);
             data.RootRiskAnchor = SanitizeRange(data.RootRiskAnchor);
-            data.PendingAddRiskAnchor = SanitizeRange(data.PendingAddRiskAnchor);
+            data.PendingSponsorAnchor = SanitizeRange(data.PendingSponsorAnchor);
+            data.ScaleCandidateAnchor = SanitizeRange(data.ScaleCandidateAnchor);
+            data.ScaleRepairAnchor = SanitizeRange(data.ScaleRepairAnchor);
         }
 
         private static PriceRange SanitizeRange(PriceRange range)

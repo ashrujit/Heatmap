@@ -64,6 +64,7 @@ namespace KahnRuntime
             [PolicyAction.HoldRoot] = 500,
             [PolicyAction.AllowProbe] = 420,
             [PolicyAction.AllowAdd] = 320,
+            [PolicyAction.TrackScaleCandidate] = 315,
             [PolicyAction.EnsureBreakeven] = 300,
             [PolicyAction.ArmProbe] = 260,
             [PolicyAction.Cooldown] = 200,
@@ -99,6 +100,7 @@ namespace KahnRuntime
                 PolicyAction.EnsureBreakeven => 30,
                 PolicyAction.AllowProbe => 20,
                 PolicyAction.AllowAdd => 10,
+                PolicyAction.TrackScaleCandidate => 5,
                 _ => 0,
             };
 
@@ -286,30 +288,47 @@ namespace KahnRuntime
                 || context.State.IsRetired
                 || context.State.ExecutionPaused
                 || !context.State.HasPosition
-                || context.State.AddsSuppressed(context.Now)
                 || context.Plan.Sizing.ScaleMode != CampaignScaleMode.EvidenceScaled
                 || context.State.SimulatedPositionQuantity >= context.Plan.Sizing.MaxPositionQuantity)
             {
                 yield break;
             }
 
-            bool sameSideRail = evidence.Kind is EvidenceKind.RailOwned or EvidenceKind.RailHeld
-                && CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side);
-            if (!sameSideRail)
-                yield break;
-
-            PriceRange childAnchor = EvidenceAnchor(evidence, context.TickSize);
-            if (childAnchor == null)
+            PriceRange evidenceAnchor = EvidenceAnchor(evidence, context.TickSize);
+            if (evidenceAnchor == null)
                 yield break;
 
             PriceRange activeAnchor = context.State.ActiveRiskAnchor ?? context.State.RootRiskAnchor;
             if (activeAnchor == null)
                 yield break;
+            PriceRange progressionReference = context.State.PendingSponsorAnchor
+                ?? activeAnchor;
 
-            PriceRange progressionReference = context.State.PendingAddRiskAnchor ?? activeAnchor;
+            if (IsOppositeRepairFailure(context, evidence, evidenceAnchor))
+            {
+                yield return Decision(
+                    PolicyAction.TrackScaleCandidate,
+                    Name,
+                    "scale_repair_failed",
+                    evidence,
+                    childRiskAnchor: evidenceAnchor,
+                    childRiskAnchorEvidenceId: evidence.EventId,
+                    detail: "Opposite repair claim failed; next same-side continuation can participate.",
+                    priority: DecisionResolver.PriorityFor(PolicyAction.AllowAdd) + 1);
+                yield break;
+            }
+
+            if (context.State.AddsSuppressed(context.Now))
+                yield break;
+
+            bool sameSideRail = evidence.Kind is EvidenceKind.RailOwned or EvidenceKind.RailHeld
+                && CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side);
+            if (!sameSideRail)
+                yield break;
+
             if (!CampaignSideMath.IsFavorableBeyond(
                     context.Plan.Side,
-                    childAnchor,
+                    evidenceAnchor,
                     progressionReference))
             {
                 yield break;
@@ -322,11 +341,27 @@ namespace KahnRuntime
             if (press == null && explicitWaypoint != null)
                 yield break;
 
-            bool insideArena = context.Plan.Arena?.Intersects(childAnchor) == true;
+            bool insideArena = context.Plan.Arena?.Intersects(evidenceAnchor) == true;
             if (press == null && !insideArena)
                 yield break;
             if (!PriceGateAllows(press, evidence))
                 yield break;
+
+            if (!RepairFailureAllowsContinuation(context, evidenceAnchor))
+            {
+                yield return Decision(
+                    PolicyAction.TrackScaleCandidate,
+                    Name,
+                    press != null
+                        ? "scale_candidate_tracked_at_waypoint"
+                        : "scale_candidate_tracked_in_arena",
+                    evidence,
+                    press?.Id,
+                    childRiskAnchor: evidenceAnchor,
+                    childRiskAnchorEvidenceId: evidence.EventId,
+                    detail: "Favorable same-side ownership is tracked as a scale candidate; add requires a repaired-continuation sequence first.");
+                yield break;
+            }
 
             int remaining = Math.Max(0,
                 context.Plan.Sizing.MaxPositionQuantity - context.State.SimulatedPositionQuantity);
@@ -346,18 +381,51 @@ namespace KahnRuntime
                 preserveRootLabel
                     ? "same_side_ownership_add_preserve_root_risk"
                     : hasManualPressWaypoint
-                        ? "evidence_scaled_same_side_ownership_inside_press_window"
-                        : "evidence_scaled_same_side_ownership_inside_arena",
+                        ? "repair_continuation_add_inside_press_window"
+                        : "repair_continuation_add_inside_arena",
                 evidence,
                 press?.Id,
                 quantity,
                 riskAnchor,
-                detail: "Add is allowed by scale mode; child rail is queued and only the prior child can become sponsor.",
+                detail: preserveRootLabel
+                    ? "Repaired continuation permits the add; explicit waypoint preserves the current risk anchor."
+                    : "Repaired continuation permits the add; the child rail is queued as the next sponsor candidate while older risk remains active.",
                 priority: DecisionResolver.PriorityFor(PolicyAction.HoldRoot) + 25,
                 riskAnchorEvidenceId: riskAnchorEvidenceId,
-                childRiskAnchor: childAnchor,
+                childRiskAnchor: evidenceAnchor,
                 childRiskAnchorEvidenceId: evidence.EventId,
                 delayRiskAnchorPromotionOnAdd: true);
+        }
+
+        private static bool IsOppositeRepairFailure(CampaignContext context,
+            CampaignEvidence evidence,
+            PriceRange evidenceAnchor)
+        {
+            if (evidence.Kind != EvidenceKind.RailFailed
+                || !CampaignSideMath.IsOppositeSide(context.Plan.Side, evidence.Side)
+                || context.State.ScaleRepairAnchor == null)
+            {
+                return false;
+            }
+
+            int toleranceTicks = Math.Max(2, context.Plan.Risk.SponsorFailureBufferTicks);
+            return evidenceAnchor.DistanceTicksTo(
+                    context.State.ScaleRepairAnchor,
+                    context.TickSize)
+                <= toleranceTicks;
+        }
+
+        private static bool RepairFailureAllowsContinuation(CampaignContext context,
+            PriceRange sameSideAnchor)
+        {
+            PriceRange repairAnchor = context.State.ScaleRepairAnchor;
+            return context.State.ScaleRepairFailed
+                && repairAnchor != null
+                && (sameSideAnchor.Intersects(repairAnchor)
+                    || CampaignSideMath.IsFavorableBeyond(
+                        context.Plan.Side,
+                        sameSideAnchor,
+                        repairAnchor));
         }
     }
 
@@ -784,7 +852,8 @@ namespace KahnRuntime
                     riskAnchor: EvidenceAnchor(evidence, context.TickSize));
             }
 
-            if (evidence.Kind == EvidenceKind.RailOwned && oppositeSide)
+            if (evidence.Kind is EvidenceKind.RailOwned or EvidenceKind.RailHeld
+                && oppositeSide)
             {
                 PriceRange evidenceAnchor = EvidenceAnchor(evidence, context.TickSize);
                 bool hitsRiskAnchor = context.State.ActiveRiskAnchor != null
@@ -794,6 +863,7 @@ namespace KahnRuntime
                         context.TickSize) <= context.Plan.Risk.SponsorFailureBufferTicks;
                 if (!hitsRiskAnchor && context.Plan.Risk.AllowContestBeyondRiskAnchor)
                 {
+                    bool scaleRepair = IsScaleRepairClaim(context, evidenceAnchor);
                     yield return Decision(
                         PolicyAction.SuppressAdd,
                         Name,
@@ -801,9 +871,45 @@ namespace KahnRuntime
                         evidence,
                         repairHold?.Id,
                         expiresAt: context.Now.AddSeconds(45),
-                        detail: "Adverse claim is not the active risk anchor; suppress leverage but do not flatten.");
+                        detail: scaleRepair
+                            ? "Opposite repair claim is alive; suppress leverage until it fails or expires."
+                            : "Adverse claim is not the active risk anchor; suppress leverage but do not flatten.",
+                        childRiskAnchor: scaleRepair ? evidenceAnchor : null,
+                        childRiskAnchorEvidenceId: scaleRepair ? evidence.EventId : null);
                 }
             }
+        }
+
+        private static bool IsScaleRepairClaim(CampaignContext context,
+            PriceRange evidenceAnchor)
+        {
+            if (context.Plan.Sizing.ScaleMode != CampaignScaleMode.EvidenceScaled
+                || evidenceAnchor == null
+                || context.Plan.Arena?.Intersects(evidenceAnchor) != true)
+            {
+                return false;
+            }
+
+            PriceRange reference = context.State.PendingSponsorAnchor
+                ?? context.State.ActiveRiskAnchor
+                ?? context.State.RootRiskAnchor;
+            if (reference == null)
+                return false;
+
+            if (CampaignSideMath.IsFavorableBeyond(
+                    context.Plan.Side,
+                    evidenceAnchor,
+                    reference))
+            {
+                return true;
+            }
+
+            PriceRange candidate = context.State.ScaleCandidateAnchor;
+            return candidate != null
+                && evidenceAnchor.DistanceTicksTo(
+                    candidate,
+                    context.TickSize)
+                <= Math.Max(4, context.Plan.Risk.RootStopTicks);
         }
     }
 }

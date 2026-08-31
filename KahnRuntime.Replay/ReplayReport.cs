@@ -34,7 +34,9 @@ namespace KahnRuntime.Replay
             ReportDecision pendingDecision = null;
             string priorActiveRisk = null;
             string priorRootRisk = null;
-            string priorPendingAddRisk = null;
+            string priorPendingSponsor = null;
+            string priorScaleCandidate = null;
+            string priorScaleRepair = null;
             int lineNumber = 0;
 
             foreach (string line in File.ReadLines(path))
@@ -73,7 +75,9 @@ namespace KahnRuntime.Replay
                             pendingDecision.PhaseAfter = state.Phase;
                             pendingDecision.ActiveRiskAfter = state.ActiveRiskAnchor;
                             pendingDecision.RootRiskAfter = state.RootRiskAnchor;
-                            pendingDecision.PendingAddRiskAfter = state.PendingAddRiskAnchor;
+                            pendingDecision.PendingSponsorAfter = state.PendingSponsorAnchor;
+                            pendingDecision.ScaleCandidateAfter = state.ScaleCandidateAnchor;
+                            pendingDecision.ScaleRepairAfter = state.ScaleRepairAnchor;
 
                             if (!string.Equals(priorActiveRisk, state.ActiveRiskAnchor,
                                     StringComparison.Ordinal))
@@ -91,13 +95,29 @@ namespace KahnRuntime.Replay
                                     + EvidenceSuffix(state.RootRiskAnchorEvidenceId));
                                 priorRootRisk = state.RootRiskAnchor;
                             }
-                            if (!string.Equals(priorPendingAddRisk, state.PendingAddRiskAnchor,
+                            if (!string.Equals(priorPendingSponsor, state.PendingSponsorAnchor,
                                     StringComparison.Ordinal))
                             {
-                                model.StateNotes.Add($"{pendingDecision.TimeEt}: pending add risk "
-                                    + $"{Dash(priorPendingAddRisk)} -> {Dash(state.PendingAddRiskAnchor)}"
-                                    + EvidenceSuffix(state.PendingAddRiskAnchorEvidenceId));
-                                priorPendingAddRisk = state.PendingAddRiskAnchor;
+                                model.StateNotes.Add($"{pendingDecision.TimeEt}: pending sponsor "
+                                    + $"{Dash(priorPendingSponsor)} -> {Dash(state.PendingSponsorAnchor)}"
+                                    + EvidenceSuffix(state.PendingSponsorEvidenceId));
+                                priorPendingSponsor = state.PendingSponsorAnchor;
+                            }
+                            if (!string.Equals(priorScaleCandidate, state.ScaleCandidateAnchor,
+                                    StringComparison.Ordinal))
+                            {
+                                model.StateNotes.Add($"{pendingDecision.TimeEt}: scale candidate "
+                                    + $"{Dash(priorScaleCandidate)} -> {Dash(state.ScaleCandidateAnchor)}"
+                                    + EvidenceSuffix(state.ScaleCandidateEvidenceId));
+                                priorScaleCandidate = state.ScaleCandidateAnchor;
+                            }
+                            string repairText = ScaleRepairState(state);
+                            if (!string.Equals(priorScaleRepair, repairText,
+                                    StringComparison.Ordinal))
+                            {
+                                model.StateNotes.Add($"{pendingDecision.TimeEt}: scale repair "
+                                    + $"{Dash(priorScaleRepair)} -> {Dash(repairText)}");
+                                priorScaleRepair = repairText;
                             }
                         }
                         break;
@@ -148,9 +168,18 @@ namespace KahnRuntime.Replay
                 ActiveRiskAnchorEvidenceId = String(root, "active_risk_anchor_evidence_id"),
                 RootRiskAnchor = Range(root, "root_risk_anchor"),
                 RootRiskAnchorEvidenceId = String(root, "root_risk_anchor_evidence_id"),
-                PendingAddRiskAnchor = Range(root, "pending_add_risk_anchor"),
-                PendingAddRiskAnchorEvidenceId = String(root, "pending_add_risk_anchor_evidence_id"),
-                PendingAddRiskAnchorQueuedAtEt = TimeEt(String(root, "pending_add_risk_anchor_queued_at")),
+                PendingSponsorAnchor = Range(root, "pending_sponsor_anchor"),
+                PendingSponsorEvidenceId = String(root, "pending_sponsor_evidence_id"),
+                PendingSponsorQueuedAtEt = TimeEt(String(root, "pending_sponsor_queued_at")),
+                ScaleCandidateAnchor = Range(root, "scale_candidate_anchor"),
+                ScaleCandidateEvidenceId = String(root, "scale_candidate_evidence_id"),
+                ScaleCandidateTrackedAtEt = TimeEt(String(root, "scale_candidate_tracked_at")),
+                ScaleRepairAnchor = Range(root, "scale_repair_anchor"),
+                ScaleRepairEvidenceId = String(root, "scale_repair_evidence_id"),
+                ScaleRepairTrackedAtEt = TimeEt(String(root, "scale_repair_tracked_at")),
+                ScaleRepairFailed = NullableString(root, "scale_repair_failed"),
+                ScaleRepairFailureEvidenceId = String(root, "scale_repair_failure_evidence_id"),
+                ScaleRepairFailedAtEt = TimeEt(String(root, "scale_repair_failed_at")),
                 AcceptedAddCount = NullableString(root, "accepted_add_count"),
                 SimulatedAveragePrice = NullableString(root, "simulated_average_price"),
                 BreakevenBackstopActive = NullableString(root, "breakeven_backstop_active"),
@@ -229,8 +258,11 @@ namespace KahnRuntime.Replay
                     + EvidenceSuffix(model.FinalState.ActiveRiskAnchorEvidenceId));
                 builder.AppendLine($"- Root risk: `{Escape(Dash(model.FinalState.RootRiskAnchor))}`"
                     + EvidenceSuffix(model.FinalState.RootRiskAnchorEvidenceId));
-                builder.AppendLine($"- Pending add risk: `{Escape(Dash(model.FinalState.PendingAddRiskAnchor))}`"
-                    + EvidenceSuffix(model.FinalState.PendingAddRiskAnchorEvidenceId));
+                builder.AppendLine($"- Pending sponsor: `{Escape(Dash(model.FinalState.PendingSponsorAnchor))}`"
+                    + EvidenceSuffix(model.FinalState.PendingSponsorEvidenceId));
+                builder.AppendLine($"- Scale candidate: `{Escape(Dash(model.FinalState.ScaleCandidateAnchor))}`"
+                    + EvidenceSuffix(model.FinalState.ScaleCandidateEvidenceId));
+                builder.AppendLine($"- Scale repair: `{Escape(Dash(ScaleRepairState(model.FinalState)))}`");
                 builder.AppendLine($"- Accepted adds: `{Escape(Dash(model.FinalState.AcceptedAddCount))}`");
                 builder.AppendLine($"- Sim avg: `{Escape(Dash(model.FinalState.SimulatedAveragePrice))}`");
                 builder.AppendLine($"- BE backstop: `{Escape(BreakevenState(model.FinalState))}`");
@@ -285,6 +317,21 @@ namespace KahnRuntime.Replay
                 + (string.IsNullOrWhiteSpace(state.BreakevenBackstopOrderId)
                     ? string.Empty
                     : " order=" + state.BreakevenBackstopOrderId);
+        }
+
+        private static string ScaleRepairState(ReportState state)
+        {
+            if (state == null || string.IsNullOrWhiteSpace(state.ScaleRepairAnchor))
+                return null;
+            string suffix = string.Equals(state.ScaleRepairFailed, "True",
+                    StringComparison.OrdinalIgnoreCase)
+                ? " failed"
+                : " live";
+            string evidence = string.Equals(state.ScaleRepairFailed, "True",
+                    StringComparison.OrdinalIgnoreCase)
+                ? state.ScaleRepairFailureEvidenceId
+                : state.ScaleRepairEvidenceId;
+            return state.ScaleRepairAnchor + suffix + EvidenceSuffix(evidence);
         }
 
         private static string Evidence(ReportDecision decision)
@@ -435,7 +482,9 @@ namespace KahnRuntime.Replay
         public string EvidenceScore { get; init; }
         public string ActiveRiskAfter { get; set; }
         public string RootRiskAfter { get; set; }
-        public string PendingAddRiskAfter { get; set; }
+        public string PendingSponsorAfter { get; set; }
+        public string ScaleCandidateAfter { get; set; }
+        public string ScaleRepairAfter { get; set; }
     }
 
     internal sealed class ReportState
@@ -447,9 +496,18 @@ namespace KahnRuntime.Replay
         public string ActiveRiskAnchorEvidenceId { get; init; }
         public string RootRiskAnchor { get; init; }
         public string RootRiskAnchorEvidenceId { get; init; }
-        public string PendingAddRiskAnchor { get; init; }
-        public string PendingAddRiskAnchorEvidenceId { get; init; }
-        public string PendingAddRiskAnchorQueuedAtEt { get; init; }
+        public string PendingSponsorAnchor { get; init; }
+        public string PendingSponsorEvidenceId { get; init; }
+        public string PendingSponsorQueuedAtEt { get; init; }
+        public string ScaleCandidateAnchor { get; init; }
+        public string ScaleCandidateEvidenceId { get; init; }
+        public string ScaleCandidateTrackedAtEt { get; init; }
+        public string ScaleRepairAnchor { get; init; }
+        public string ScaleRepairEvidenceId { get; init; }
+        public string ScaleRepairTrackedAtEt { get; init; }
+        public string ScaleRepairFailed { get; init; }
+        public string ScaleRepairFailureEvidenceId { get; init; }
+        public string ScaleRepairFailedAtEt { get; init; }
         public string AcceptedAddCount { get; init; }
         public string SimulatedAveragePrice { get; init; }
         public string BreakevenBackstopActive { get; init; }
