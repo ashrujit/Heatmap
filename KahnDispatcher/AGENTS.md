@@ -19,7 +19,7 @@ campaign handoff less error-prone.
 - Use the same compact terminal-style operator surface as EAR: `Cascadia Mono`,
   dense text fields, and a build-embedded icon. This console is for repeated
   dispatch work, not broad form exposition.
-- Keep the runtime state tile in the spare Root/Harvest row space. It is a
+- Keep the runtime state tile compact and near the profile selector. It is a
   fast operator read, not a second status panel: green `READY` means flat/Ready,
   yellow `ARMED` means active but flat, red `IN POS` means the bound runtime
   has exposure, and gray/orange states mean stopped, stale, path, or control
@@ -27,12 +27,14 @@ campaign handoff less error-prone.
 - Runtime profiles bind the Kahn runtime directory and its passive
   `saavik-probe.json` path together so sketch import and dispatch cannot point
   at different ES/NQ profiles by accident.
-- `SaavikProbe` import is form-fill only. It may set side, root range, and
-  harvest range; it must not change sizing, scale mode, TTL, retry, notes, or
-  dispatch state.
-- The dispatcher derives `arena` from the root plus harvest/target envelope.
-  Arena is intentionally not a primary operator input because current Kahn
-  campaigns use the root and harvest geometry as the practical bounded area.
+- `SaavikProbe` import is form-fill only. It may set side, root/probe range,
+  middle scale corridor, and harvest range; it must not change sizing, scale
+  mode, TTL, retry, notes, or dispatch state.
+- The dispatcher derives `arena` from the probe + middle + harvest envelope.
+  The middle range keeps passive harvest from starting at the probe edge while
+  still giving `scale_allowed` a bounded arena for repaired-continuation adds.
+  Do not emit it as a Kahn `evaluate` waypoint from this UI: that role locks
+  leverage, while the operator intent here is a non-harvest scale corridor.
 - `new-draft --dispatch --activate` is the direct Kahn campaign handoff used
   here. Do not borrow `dispatch-draft` timestamp/id aliases unless `new-draft`
   exposes them; it already defaults created/not-before timestamps to now.

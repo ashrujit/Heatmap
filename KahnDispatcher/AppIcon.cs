@@ -19,23 +19,25 @@ internal static class AppIcon
         g.DrawRectangle(rim, 3, 3, 26, 26);
 
         using var root = new Pen(Color.FromArgb(74, 170, 132), 2.0f);
-        using var harvest = new Pen(Color.FromArgb(224, 178, 72), 2.0f);
+        using var middle = new Pen(Color.FromArgb(224, 178, 72), 2.0f);
+        using var harvest = new Pen(Color.FromArgb(72, 142, 238), 2.0f);
         using var route = new Pen(Color.FromArgb(232, 232, 232), 2.0f)
         {
             StartCap = LineCap.Round,
             EndCap = LineCap.Round,
         };
 
-        g.DrawRectangle(root, 7, 8, 10, 8);
-        g.DrawRectangle(harvest, 15, 16, 10, 7);
-        g.DrawLine(route, 17, 14, 22, 18);
+        g.DrawRectangle(root, 7, 8, 8, 6);
+        g.DrawRectangle(middle, 12, 14, 8, 6);
+        g.DrawRectangle(harvest, 17, 20, 8, 5);
+        g.DrawLine(route, 15, 13, 22, 21);
         g.FillPolygon(
             Brushes.White,
             new[]
             {
-                new Point(23, 19),
-                new Point(20, 18),
-                new Point(22, 16),
+                new Point(23, 22),
+                new Point(20, 21),
+                new Point(22, 19),
             });
 
         using var kBrush = new SolidBrush(Color.FromArgb(232, 232, 232));

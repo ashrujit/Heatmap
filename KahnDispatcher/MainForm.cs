@@ -17,6 +17,7 @@ internal sealed class MainForm : Form
     private RadioButton _probeOnlyMode = null!;
     private RadioButton _scaleMode = null!;
     private TextBox _rootRange = null!;
+    private TextBox _middleRange = null!;
     private TextBox _harvestRange = null!;
     private Label _runtimeStateTile = null!;
     private Label _preview = null!;
@@ -111,12 +112,30 @@ internal sealed class MainForm : Form
         profileRow.Controls.Add(_runtimeProfile);
         _runtimeProfileDetail = new Label
         {
-            AutoSize = true,
+            AutoSize = false,
+            Width = 330,
+            Height = 24,
             ForeColor = Palette.Muted,
             BackColor = Palette.Back,
             Padding = new Padding(0, 3, 0, 0),
+            TextAlign = ContentAlignment.MiddleLeft,
         };
         profileRow.Controls.Add(_runtimeProfileDetail);
+
+        _runtimeStateTile = new Label
+        {
+            Text = "NO STATUS",
+            AutoSize = false,
+            Width = 124,
+            Height = 24,
+            BackColor = Palette.Unknown,
+            ForeColor = Palette.Fore,
+            BorderStyle = BorderStyle.FixedSingle,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Margin = new Padding(0, 0, 0, 0),
+        };
+        profileRow.Controls.Add(_runtimeStateTile);
+        _toolTip.SetToolTip(_runtimeStateTile, "Runtime state has not been read yet.");
 
         var form = new TableLayoutPanel
         {
@@ -131,8 +150,8 @@ internal sealed class MainForm : Form
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
         form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50));
-        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 124));
         root.Controls.Add(form, 0, 1);
 
         AddLabel(form, "Side", 0, 0);
@@ -148,31 +167,20 @@ internal sealed class MainForm : Form
         form.Controls.Add(modePanel, 3, 0);
         form.SetColumnSpan(modePanel, 3);
 
-        AddLabel(form, "Root", 0, 1);
+        AddLabel(form, "Probe", 0, 1);
         _rootRange = Box("", 112);
         _rootRange.PlaceholderText = "7748-7756";
         form.Controls.Add(_rootRange, 1, 1);
 
-        AddLabel(form, "Harvest", 2, 1);
-        _harvestRange = Box("", 112);
-        _harvestRange.PlaceholderText = "7728-7729.5";
-        form.Controls.Add(_harvestRange, 3, 1);
+        AddLabel(form, "Mid", 2, 1);
+        _middleRange = Box("", 112);
+        _middleRange.PlaceholderText = "7756.25-7772";
+        form.Controls.Add(_middleRange, 3, 1);
 
-        _runtimeStateTile = new Label
-        {
-            Text = "NO STATUS",
-            AutoSize = false,
-            Width = 128,
-            Height = 24,
-            BackColor = Palette.Unknown,
-            ForeColor = Palette.Fore,
-            BorderStyle = BorderStyle.FixedSingle,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Margin = new Padding(0, 2, 8, 2),
-        };
-        form.Controls.Add(_runtimeStateTile, 4, 1);
-        form.SetColumnSpan(_runtimeStateTile, 2);
-        _toolTip.SetToolTip(_runtimeStateTile, "Runtime state has not been read yet.");
+        AddLabel(form, "Harvest", 4, 1);
+        _harvestRange = Box("", 112);
+        _harvestRange.PlaceholderText = "7772.25-7776";
+        form.Controls.Add(_harvestRange, 5, 1);
 
         AddLabel(form, "Base", 0, 2);
         _baseQuantity = Box("2", 44);
@@ -281,6 +289,7 @@ internal sealed class MainForm : Form
         _probeOnlyMode.CheckedChanged += (_, _) => UpdatePreview();
         _scaleMode.CheckedChanged += (_, _) => UpdatePreview();
         _rootRange.TextChanged += (_, _) => UpdatePreview();
+        _middleRange.TextChanged += (_, _) => UpdatePreview();
         _harvestRange.TextChanged += (_, _) => UpdatePreview();
         _baseQuantity.TextChanged += (_, _) => UpdatePreview();
         _scaleQuantity.TextChanged += (_, _) => UpdatePreview();
@@ -443,11 +452,12 @@ internal sealed class MainForm : Form
     private KahnCommand BuildKahnCommand(bool dryRun)
     {
         ResolvedRange root = ParseRange(_rootRange.Text, "root");
+        ResolvedRange middle = ParseRange(_middleRange.Text, "middle");
         ResolvedRange harvest = ParseRange(_harvestRange.Text, "harvest");
         string side = _shortSide.Checked ? "short" : "long";
-        ValidateDirectionalGeometry(side, root, harvest);
+        ValidateDirectionalGeometry(side, root, middle, harvest);
 
-        ResolvedRange arena = Envelope(root, harvest);
+        ResolvedRange arena = Envelope(Envelope(root, middle), harvest);
         bool scaleAllowed = _scaleMode.Checked;
         int baseQty = ParseIntBox(_baseQuantity, "base", 1, 100);
         int scaleQty = ParseIntBox(_scaleQuantity, "scale", 1, 100);
@@ -504,6 +514,7 @@ internal sealed class MainForm : Form
             args,
             side,
             root,
+            middle,
             harvest,
             arena,
             scaleAllowed ? "scale_allowed" : "root_only",
@@ -552,7 +563,7 @@ internal sealed class MainForm : Form
                 ? $"{command.OutgoingMax} sent, {command.VisibleMax} visible"
                 : command.OutgoingMax.ToString(CultureInfo.InvariantCulture);
             _preview.Text =
-                $"{command.Side.ToUpperInvariant()} root {command.Root} -> harvest {command.Harvest} | "
+                $"{command.Side.ToUpperInvariant()} probe {command.Root} -> mid {command.Middle} -> harvest {command.Harvest} | "
                 + $"arena {command.Arena} | {command.Mode} | "
                 + $"base {command.BaseQty} scale {command.ScaleQty} max {maxText}";
         }
@@ -562,12 +573,25 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static void ValidateDirectionalGeometry(string side, ResolvedRange root, ResolvedRange harvest)
+    private static void ValidateDirectionalGeometry(
+        string side,
+        ResolvedRange root,
+        ResolvedRange middle,
+        ResolvedRange harvest)
     {
-        if (side == "long" && harvest.Lower < root.Upper)
-            throw new InputException("long harvest must be at or above the root range");
-        if (side == "short" && harvest.Upper > root.Lower)
-            throw new InputException("short harvest must be at or below the root range");
+        if (side == "long")
+        {
+            if (middle.Lower < root.Upper)
+                throw new InputException("long middle must be at or above the probe range");
+            if (harvest.Lower < middle.Upper)
+                throw new InputException("long harvest must be at or above the middle range");
+            return;
+        }
+
+        if (middle.Upper > root.Lower)
+            throw new InputException("short middle must be at or below the probe range");
+        if (harvest.Upper > middle.Lower)
+            throw new InputException("short harvest must be at or below the middle range");
     }
 
     private static string CommandSummary(KahnCommand command)
@@ -577,7 +601,9 @@ internal sealed class MainForm : Form
             : command.OutgoingMax.ToString(CultureInfo.InvariantCulture);
         return $"{command.Side.ToUpperInvariant()} {command.Mode}"
             + Environment.NewLine
-            + $"Root: {command.Root}"
+            + $"Probe: {command.Root}"
+            + Environment.NewLine
+            + $"Middle: {command.Middle}"
             + Environment.NewLine
             + $"Harvest: {command.Harvest}"
             + Environment.NewLine
@@ -760,6 +786,7 @@ internal sealed class MainForm : Form
         UpdateRuntimeProfileChrome();
 
         _rootRange.Text = _settings.RootRange;
+        _middleRange.Text = _settings.MiddleRange;
         _harvestRange.Text = _settings.HarvestRange;
         _baseQuantity.Text = Clamp(_settings.BaseQuantity, 1, 100).ToString(CultureInfo.InvariantCulture);
         _scaleQuantity.Text = Clamp(_settings.ScaleQuantity, 1, 100).ToString(CultureInfo.InvariantCulture);
@@ -788,6 +815,7 @@ internal sealed class MainForm : Form
         _settings.Side = _shortSide.Checked ? "short" : "long";
         _settings.ScaleMode = _scaleMode.Checked ? "scale_allowed" : "root_only";
         _settings.RootRange = _rootRange.Text;
+        _settings.MiddleRange = _middleRange.Text;
         _settings.HarvestRange = _harvestRange.Text;
         _settings.BaseQuantity = ReadIntOr(_baseQuantity, _settings.BaseQuantity, 1, 100);
         _settings.ScaleQuantity = ReadIntOr(_scaleQuantity, _settings.ScaleQuantity, 1, 100);
@@ -932,14 +960,15 @@ internal sealed class MainForm : Form
             _longSide.Checked = true;
 
         _rootRange.Text = $"{FormatArg(import.Root.Lower)}-{FormatArg(import.Root.Upper)}";
+        _middleRange.Text = $"{FormatArg(import.Middle.Lower)}-{FormatArg(import.Middle.Upper)}";
         _harvestRange.Text = $"{FormatArg(import.Harvest.Lower)}-{FormatArg(import.Harvest.Upper)}";
         UpdatePreview();
-        SetStatusText($"sketch {import.Side.ToUpperInvariant()} root {import.Root} harvest {import.Harvest}");
+        SetStatusText($"sketch {import.Side.ToUpperInvariant()} probe {import.Root} mid {import.Middle} harvest {import.Harvest}");
     }
 
     private static bool TryParseSketchImport(string text, out SketchImport import)
     {
-        import = new SketchImport("", default, default, "");
+        import = new SketchImport("", default, default, default, "");
         try
         {
             using JsonDocument document = JsonDocument.Parse(text);
@@ -962,22 +991,30 @@ internal sealed class MainForm : Form
             {
                 return false;
             }
+            if (!TryGetRange(draft, "middle_range", out ResolvedRange middleRange)
+                && !TryGetRange(draft, "scale_range", out middleRange)
+                && !TryGetRange(draft, "evaluate_range", out middleRange))
+            {
+                return false;
+            }
             if (!TryGetRange(draft, "harvest_range", out ResolvedRange harvestRange)
                 && !TryGetRange(draft, "target_range", out harvestRange))
             {
                 return false;
             }
 
-            ValidateDirectionalGeometry(side, rootRange, harvestRange);
+            ValidateDirectionalGeometry(side, rootRange, middleRange, harvestRange);
             string generatedAt = TryGetString(root, "generated_at_utc", out string value) ? value : "";
             string signature = string.Join("|",
                 generatedAt,
                 side,
                 rootRange.Lower.ToString("R", CultureInfo.InvariantCulture),
                 rootRange.Upper.ToString("R", CultureInfo.InvariantCulture),
+                middleRange.Lower.ToString("R", CultureInfo.InvariantCulture),
+                middleRange.Upper.ToString("R", CultureInfo.InvariantCulture),
                 harvestRange.Lower.ToString("R", CultureInfo.InvariantCulture),
                 harvestRange.Upper.ToString("R", CultureInfo.InvariantCulture));
-            import = new SketchImport(side, rootRange, harvestRange, signature);
+            import = new SketchImport(side, rootRange, middleRange, harvestRange, signature);
             return true;
         }
         catch (JsonException)
@@ -993,6 +1030,7 @@ internal sealed class MainForm : Form
     private void ClearEntryFields()
     {
         _rootRange.Clear();
+        _middleRange.Clear();
         _harvestRange.Clear();
         _notes.Clear();
         UpdatePreview();
@@ -1459,6 +1497,7 @@ internal sealed class MainForm : Form
         IReadOnlyList<string> Arguments,
         string Side,
         ResolvedRange Root,
+        ResolvedRange Middle,
         ResolvedRange Harvest,
         ResolvedRange Arena,
         string Mode,
@@ -1470,6 +1509,7 @@ internal sealed class MainForm : Form
     private sealed record SketchImport(
         string Side,
         ResolvedRange Root,
+        ResolvedRange Middle,
         ResolvedRange Harvest,
         string Signature);
 }
@@ -1589,6 +1629,7 @@ internal sealed class DispatcherSettings
     public string Side { get; set; } = "long";
     public string ScaleMode { get; set; } = "scale_allowed";
     public string RootRange { get; set; } = "";
+    public string MiddleRange { get; set; } = "";
     public string HarvestRange { get; set; } = "";
     public int BaseQuantity { get; set; } = 2;
     public int ScaleQuantity { get; set; } = 2;
