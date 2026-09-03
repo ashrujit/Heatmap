@@ -31,10 +31,12 @@ campaign handoff less error-prone.
   middle scale corridor, and harvest range; it must not change sizing, scale
   mode, TTL, retry, notes, or dispatch state.
 - The dispatcher derives `arena` from the probe + middle + harvest envelope.
-  The middle range keeps passive harvest from starting at the probe edge while
-  still giving `scale_allowed` a bounded arena for repaired-continuation adds.
-  Do not emit it as a Kahn `evaluate` waypoint from this UI: that role locks
-  leverage, while the operator intent here is a non-harvest scale corridor.
+  In scale mode it also emits the probe/root range as `no_add` and the middle
+  range as `press`. Otherwise Kahn's arena fallback can legally scale inside the
+  root probe after a repaired-continuation sequence, which is not the operator
+  intent for the three-box sketch. Do not emit the middle range as a Kahn
+  `evaluate` waypoint from this UI: that role locks leverage, while the operator
+  intent here is a non-harvest scale corridor.
 - `new-draft --dispatch --activate` is the direct Kahn campaign handoff used
   here. Do not borrow `dispatch-draft` timestamp/id aliases unless `new-draft`
   exposes them; it already defaults created/not-before timestamps to now.

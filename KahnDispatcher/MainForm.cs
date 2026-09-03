@@ -473,6 +473,13 @@ internal sealed class MainForm : Form
         args.Add(FormatRangeArg(arena));
         args.Add("--probe");
         args.Add(FormatRangeArg(root));
+        if (scaleAllowed)
+        {
+            args.Add("--no-add");
+            args.Add(FormatRangeArg(root));
+            args.Add("--press");
+            args.Add(FormatRangeArg(middle));
+        }
         args.Add("--target");
         args.Add(FormatRangeArg(harvest));
         args.Add("--passive-harvest");
