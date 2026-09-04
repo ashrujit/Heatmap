@@ -12,6 +12,7 @@ namespace KahnRuntime
             PlanParserAcceptsRootOnlyScaleMode();
             RetryExhaustionPausesCampaignInsteadOfRetiring();
             TrapProbeAllowsLeanAtEdge();
+            CounterClaimProbeUsesEvidenceAnchor();
             ArmedProbeAllowsLaterInsideRail();
             ExpiredFlatCampaignBlocksProbeAdmission();
             ExpiredPositionedCampaignStillManagesAddsAndRisk();
@@ -27,6 +28,8 @@ namespace KahnRuntime
             NewScaleCandidateResetsPriorRepairFailure();
             PreserveRiskAnchorOnAddUsesRoot();
             LaterAddPromotesPriorPendingSponsor();
+            RootProbeStopTouchesAtConfiguredAdverseExcursion();
+            RootProbeStopSkipsAfterAcceptedAdd();
             BreakevenBackstopArmsOnlyAfterFirstAdd();
             ReconcileObservedQuantityDoesNotClampToPlanMax();
             DecisionResolverTiePrefersRiskDown();
@@ -268,6 +271,33 @@ namespace KahnRuntime
                 new CampaignContext(plan, state, 0.25, DateTimeOffset.UtcNow),
                 evidence);
             Assert(decision.Action == PolicyAction.AllowProbe, "trap probe lean");
+        }
+
+        private static void CounterClaimProbeUsesEvidenceAnchor()
+        {
+            CampaignPlan plan = WideShortProbePlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            CampaignEvidence evidence = new()
+            {
+                EventId = "failed-demand-inside-wide-probe",
+                Timestamp = DateTimeOffset.UtcNow,
+                Source = EvidenceSource.LevelLedger,
+                Kind = EvidenceKind.RailFailed,
+                Side = EvidenceSide.Demand,
+                Price = 29620.25,
+                Range = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
+                WaypointId = "wide-probe",
+            };
+
+            PolicyDecision decision = CampaignPolicyEngine.CreateDefault().Evaluate(
+                new CampaignContext(plan, state, 0.25, evidence.Timestamp),
+                evidence);
+
+            Assert(decision.Action == PolicyAction.AllowProbe,
+                "counter claim failure allows probe");
+            Assert(decision.RiskAnchor?.Lower == 29626.25
+                && decision.RiskAnchor.Upper == 29628.25,
+                "counter claim failure uses evidence anchor");
         }
 
         private static void ArmedProbeAllowsLaterInsideRail()
@@ -1170,6 +1200,93 @@ namespace KahnRuntime
                 "retire clears simulated average");
         }
 
+        private static void RootProbeStopTouchesAtConfiguredAdverseExcursion()
+        {
+            CampaignPlan plan = ShortPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_probe",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
+                EvidenceId = "seed-probe",
+            },
+                plan,
+                simulateAcceptedDecisions: true,
+                simulatedFillPrice: 29619.75);
+
+            RuntimePosition position = new()
+            {
+                Direction = CampaignSide.Short,
+                Quantity = 1,
+                AveragePrice = 29619.75,
+            };
+            ExecutableMarket marketBeforeStop = new()
+            {
+                Bid = 29623.25,
+                Ask = 29623.50,
+            };
+            Assert(!RootProbeStop.IsTouched(plan, state, position, marketBeforeStop, 0.25, out _),
+                "short root stop waits until ask reaches trigger");
+
+            ExecutableMarket marketAtStop = new()
+            {
+                Bid = 29623.50,
+                Ask = 29623.75,
+            };
+            Assert(RootProbeStop.IsTouched(plan, state, position, marketAtStop, 0.25, out double trigger),
+                "short root stop touches at configured adverse excursion");
+            Assert(trigger == 29623.75, "short root stop trigger");
+        }
+
+        private static void RootProbeStopSkipsAfterAcceptedAdd()
+        {
+            CampaignPlan plan = ShortPlan();
+            CampaignState state = CampaignState.ForPlan(plan);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowProbe,
+                Policy = "selftest",
+                ReasonCode = "seed_probe",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
+                EvidenceId = "seed-probe",
+            },
+                plan,
+                simulateAcceptedDecisions: true,
+                simulatedFillPrice: 29619.75);
+            state.ApplyDecision(new PolicyDecision
+            {
+                Action = PolicyAction.AllowAdd,
+                Policy = "selftest",
+                ReasonCode = "seed_add",
+                Quantity = 1,
+                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
+                ChildRiskAnchor = new PriceRange { Lower = 29600.25, Upper = 29602.25 },
+                EvidenceId = "seed-add",
+                DelayRiskAnchorPromotionOnAdd = true,
+            },
+                plan,
+                simulateAcceptedDecisions: true,
+                simulatedFillPrice: 29601.0);
+
+            RuntimePosition position = new()
+            {
+                Direction = CampaignSide.Short,
+                Quantity = 2,
+                AveragePrice = 29610.375,
+            };
+            ExecutableMarket adverseMarket = new()
+            {
+                Bid = 29630.0,
+                Ask = 29630.25,
+            };
+            Assert(!RootProbeStop.IsTouched(plan, state, position, adverseMarket, 0.25, out _),
+                "root stop skips scaled inventory after accepted add");
+        }
+
         private static void ReconcileObservedQuantityDoesNotClampToPlanMax()
         {
             CampaignPlan plan = LongPlan();
@@ -1576,6 +1693,48 @@ namespace KahnRuntime
                         Id = "press-edge-7690-7692",
                         Role = WaypointRole.Press,
                         Range = new PriceRange { Lower = 7690.0, Upper = 7692.5 },
+                        RequirePriceInside = true,
+                    },
+                },
+            };
+
+        private static CampaignPlan WideShortProbePlan()
+            => new()
+            {
+                SchemaVersion = 1,
+                Kind = "KAHN_CAMPAIGN",
+                Id = "wide-short-probe-plan",
+                Status = "active",
+                CreatedAt = DateTimeOffset.UtcNow,
+                Side = CampaignSide.Short,
+                Window = Window(),
+                Arena = new PriceRange { Lower = 29458.75, Upper = 29686.0 },
+                Sizing = new CampaignSizing
+                {
+                    ProbeQuantity = 2,
+                    AddQuantity = 2,
+                    MaxPositionQuantity = 10,
+                    ScaleMode = CampaignScaleMode.EvidenceScaled,
+                },
+                Risk = new CampaignRisk
+                {
+                    RootStopTicks = 16,
+                    SponsorFailureBufferTicks = 2,
+                    AllowContestBeyondRiskAnchor = true,
+                },
+                Objective = new CampaignObjective
+                {
+                    TargetRange = new PriceRange { Lower = 29458.75, Upper = 29500.75 },
+                    TargetProximityTicks = 8,
+                },
+                Policies = new CampaignPolicyFlags(),
+                Waypoints = new[]
+                {
+                    new CampaignWaypoint
+                    {
+                        Id = "wide-probe",
+                        Role = WaypointRole.TrapProbe,
+                        Range = new PriceRange { Lower = 29605.75, Upper = 29686.0 },
                         RequirePriceInside = true,
                     },
                 },

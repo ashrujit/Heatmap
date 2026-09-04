@@ -263,6 +263,10 @@ namespace KahnRuntime
 
             if (evidence.Kind == EvidenceKind.RailFailed && oppositeSide)
             {
+                PriceRange riskAnchor = EvidenceAnchor(evidence, context.TickSize);
+                if (riskAnchor == null)
+                    yield break;
+
                 yield return Decision(
                     PolicyAction.AllowProbe,
                     Name,
@@ -272,7 +276,7 @@ namespace KahnRuntime
                     evidence,
                     triggerWaypoint.Id,
                     context.Plan.Sizing.ProbeQuantity,
-                    triggerWaypoint.Range);
+                    riskAnchor);
             }
         }
     }

@@ -138,11 +138,14 @@ transient once: Kahn refreshes the bound live position and retries that path one
 time. If the retry also fails, runtime enters `RecoveryActionRequired`; that
 state is manual human intervention, not an automatic strategy branch.
 
-Root/sponsor failure is policy evidence, not a broker stop. Raw displacement
-beyond the anchor can be context, but campaign failure requires typed evidence
-such as `SponsorFailed` or same-side `RailFailed` near the active risk anchor.
-That keeps Kahn's root semantics aligned with LL time/repair/failure behavior
-instead of turning `risk.root_stop_ticks` into a touch-triggered stop order.
+`risk.root_stop_ticks` is the hard root/probe max-loss cap from actual position
+average until the first accepted add. The drawn `trap_probe` window is only the
+area where entry evidence may fire and retry attempts may occur; it is not the
+stop range. Same-side and counter-claim-failed probe entries anchor to the
+actual evidence range, never the full probe waypoint. After an add is accepted,
+root/probe max-loss no longer governs the scaled position; sponsor failure
+returns to typed evidence such as `SponsorFailed` or same-side `RailFailed` near
+the active risk anchor, with weighted BE as the account backstop.
 
 `execution.max_retry` is also directive-local and defaults to `3`. It is a
 probe-attempt budget, not an evidence retry counter and not a broker-rejection
