@@ -28,8 +28,6 @@ namespace KahnRuntime
             NewScaleCandidateResetsPriorRepairFailure();
             PreserveRiskAnchorOnAddUsesRoot();
             LaterAddPromotesPriorPendingSponsor();
-            RootProbeStopTouchesAtConfiguredAdverseExcursion();
-            RootProbeStopSkipsAfterAcceptedAdd();
             BreakevenBackstopArmsOnlyAfterFirstAdd();
             ReconcileObservedQuantityDoesNotClampToPlanMax();
             DecisionResolverTiePrefersRiskDown();
@@ -1198,93 +1196,6 @@ namespace KahnRuntime
                 "retire clears accepted add count");
             Assert(!state.SimulatedAveragePrice.HasValue,
                 "retire clears simulated average");
-        }
-
-        private static void RootProbeStopTouchesAtConfiguredAdverseExcursion()
-        {
-            CampaignPlan plan = ShortPlan();
-            CampaignState state = CampaignState.ForPlan(plan);
-            state.ApplyDecision(new PolicyDecision
-            {
-                Action = PolicyAction.AllowProbe,
-                Policy = "selftest",
-                ReasonCode = "seed_probe",
-                Quantity = 1,
-                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
-                EvidenceId = "seed-probe",
-            },
-                plan,
-                simulateAcceptedDecisions: true,
-                simulatedFillPrice: 29619.75);
-
-            RuntimePosition position = new()
-            {
-                Direction = CampaignSide.Short,
-                Quantity = 1,
-                AveragePrice = 29619.75,
-            };
-            ExecutableMarket marketBeforeStop = new()
-            {
-                Bid = 29623.25,
-                Ask = 29623.50,
-            };
-            Assert(!RootProbeStop.IsTouched(plan, state, position, marketBeforeStop, 0.25, out _),
-                "short root stop waits until ask reaches trigger");
-
-            ExecutableMarket marketAtStop = new()
-            {
-                Bid = 29623.50,
-                Ask = 29623.75,
-            };
-            Assert(RootProbeStop.IsTouched(plan, state, position, marketAtStop, 0.25, out double trigger),
-                "short root stop touches at configured adverse excursion");
-            Assert(trigger == 29623.75, "short root stop trigger");
-        }
-
-        private static void RootProbeStopSkipsAfterAcceptedAdd()
-        {
-            CampaignPlan plan = ShortPlan();
-            CampaignState state = CampaignState.ForPlan(plan);
-            state.ApplyDecision(new PolicyDecision
-            {
-                Action = PolicyAction.AllowProbe,
-                Policy = "selftest",
-                ReasonCode = "seed_probe",
-                Quantity = 1,
-                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
-                EvidenceId = "seed-probe",
-            },
-                plan,
-                simulateAcceptedDecisions: true,
-                simulatedFillPrice: 29619.75);
-            state.ApplyDecision(new PolicyDecision
-            {
-                Action = PolicyAction.AllowAdd,
-                Policy = "selftest",
-                ReasonCode = "seed_add",
-                Quantity = 1,
-                RiskAnchor = new PriceRange { Lower = 29626.25, Upper = 29628.25 },
-                ChildRiskAnchor = new PriceRange { Lower = 29600.25, Upper = 29602.25 },
-                EvidenceId = "seed-add",
-                DelayRiskAnchorPromotionOnAdd = true,
-            },
-                plan,
-                simulateAcceptedDecisions: true,
-                simulatedFillPrice: 29601.0);
-
-            RuntimePosition position = new()
-            {
-                Direction = CampaignSide.Short,
-                Quantity = 2,
-                AveragePrice = 29610.375,
-            };
-            ExecutableMarket adverseMarket = new()
-            {
-                Bid = 29630.0,
-                Ask = 29630.25,
-            };
-            Assert(!RootProbeStop.IsTouched(plan, state, position, adverseMarket, 0.25, out _),
-                "root stop skips scaled inventory after accepted add");
         }
 
         private static void ReconcileObservedQuantityDoesNotClampToPlanMax()

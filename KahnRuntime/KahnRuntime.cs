@@ -312,12 +312,6 @@ namespace KahnRuntime
                     return;
                 }
 
-                if (!MaintainRootProbeStop(now))
-                {
-                    SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
-                    return;
-                }
-
                 if (!MaintainBreakevenBackstop(now))
                 {
                     SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
@@ -344,7 +338,6 @@ namespace KahnRuntime
                 }
 
                 if (!ReconcileLivePosition(DateTime.UtcNow)
-                    || !MaintainRootProbeStop(DateTimeOffset.UtcNow)
                     || !MaintainBreakevenBackstop(DateTimeOffset.UtcNow))
                 {
                     SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
@@ -1063,98 +1056,6 @@ namespace KahnRuntime
             }
             return true;
         }
-
-        private bool MaintainRootProbeStop(DateTimeOffset now)
-        {
-            if (_plan == null || _state == null || !_state.HasPosition)
-                return true;
-
-            RuntimePosition position = CurrentPosition();
-            ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
-            if (!RootProbeStop.IsTouched(_plan, _state, position, market, _tickSize, out double trigger))
-                return true;
-
-            CampaignPhase phaseBefore = _state.Phase;
-            int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
-            PolicyDecision flatten = RootProbeStopDecision(position, trigger, now);
-            GatewayResult close = ExecuteDecision(flatten, now);
-            if (!close.Accepted)
-            {
-                _decisions.Write("root_probe_stop_close_rejected",
-                    ("campaign_id", _plan.Id),
-                    ("trigger_price", trigger),
-                    ("root_stop_ticks", Math.Max(1, _plan.Risk?.RootStopTicks ?? 16)),
-                    ("position_id", position?.PositionId),
-                    ("position_side", position == null || position.IsFlat ? null : position.Direction.ToString()),
-                    ("position_quantity", position?.Quantity ?? 0),
-                    ("position_average_price", position?.AveragePrice ?? 0),
-                    ("bid", market?.Bid),
-                    ("ask", market?.Ask),
-                    ("message", close.Message),
-                    ("requires_operator_action", close.RequiresOperatorAction));
-                LogOperator("ERR", $"Root/probe stop close rejected: {close.Message}", error: true);
-                return false;
-            }
-
-            _state.ApplyDecision(
-                flatten,
-                _plan,
-                simulateAcceptedDecisions: true,
-                appliedAt: now,
-                executionOrderId: close.OrderId);
-            _decisions.Write("root_probe_stop_flattened",
-                ("campaign_id", _plan.Id),
-                ("campaign_digest", _plan.Digest),
-                ("phase_before", phaseBefore),
-                ("phase_after", _state.Phase.ToString()),
-                ("trigger_price", trigger),
-                ("root_stop_ticks", Math.Max(1, _plan.Risk?.RootStopTicks ?? 16)),
-                ("position_id", position?.PositionId),
-                ("position_side", position == null || position.IsFlat ? null : position.Direction.ToString()),
-                ("position_quantity", position?.Quantity ?? 0),
-                ("position_average_price", position?.AveragePrice ?? 0),
-                ("bid", market?.Bid),
-                ("ask", market?.Ask),
-                ("execution_order_id", close.OrderId),
-                ("execution_shadow", close.Shadow),
-                ("message", close.Message),
-                ("execution_attempt_count", _state.ExecutionAttemptCount),
-                ("max_retry", maxRetry),
-                ("retries_remaining", _state.ExecutionRetriesRemaining(_plan)),
-                ("execution_pause_reason", _state.ExecutionPauseReason));
-            if (_state.ExecutionPaused && phaseBefore != CampaignPhase.Paused)
-            {
-                _decisions.Write("campaign_execution_paused",
-                    ("campaign_id", _plan.Id),
-                    ("campaign_digest", _plan.Digest),
-                    ("reason_code", _state.ExecutionPauseReason),
-                    ("execution_attempt_count", _state.ExecutionAttemptCount),
-                    ("max_retry", maxRetry),
-                    ("evidence_id", flatten.EvidenceId),
-                    ("policy", flatten.Policy),
-                    ("decision_action", flatten.Action.ToString()));
-                LogOperator("RISK", $"{_plan.Id} paused after {_state.ExecutionAttemptCount}/{maxRetry} probe attempts; reissue or amend the campaign to resume.");
-            }
-            LogOperator("RISK", $"{_plan.Id} root/probe stop touched at {trigger:R}; flattened.");
-            return true;
-        }
-
-        private PolicyDecision RootProbeStopDecision(RuntimePosition position,
-            double trigger,
-            DateTimeOffset now)
-            => new()
-            {
-                Action = PolicyAction.Flatten,
-                Policy = "root_probe_stop",
-                ReasonCode = "root_stop_touched",
-                Detail = "Root/probe adverse excursion reached risk.root_stop_ticks before any accepted add.",
-                Priority = DecisionResolver.PriorityFor(PolicyAction.Flatten),
-                Quantity = Math.Max(1, (int)Math.Ceiling(position?.Quantity ?? 1)),
-                RiskAnchor = PointRange(trigger),
-                RiskAnchorEvidenceId = "root_stop_ticks",
-                ProtectionPrice = trigger,
-                EvidenceId = "root-stop-" + now.UtcDateTime.Ticks.ToString(CultureInfo.InvariantCulture),
-            };
 
         private PolicyDecision BreakevenDecision(PolicyAction action,
             string reasonCode,

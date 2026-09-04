@@ -91,14 +91,13 @@ governor into a form-filled EAR directive dispatcher.
   canceling/replacing BE or submitting the close gets one retry after refreshing
   the bound position; the second failure is `RecoveryActionRequired` for manual
   intervention.
-- `risk.root_stop_ticks` is the hard root/probe max-loss cap from actual position
-  average until the first accepted add. It is intentionally separate from the
-  drawn `trap_probe` window, which is only an eligibility area for entry evidence
-  and retry attempts. Same-side and counter-claim-failed probes both anchor to
-  the actual evidence range; a wide probe box must not become the root risk
-  anchor. After an add is accepted, sponsor failure returns to typed evidence
-  such as `SponsorFailed` or same-side `RailFailed` near the active risk anchor,
-  while weighted BE is the account backstop.
+- The drawn `trap_probe` window is an eligibility area for entry evidence and
+  retry attempts, not the root risk anchor. Same-side and counter-claim-failed
+  probes both anchor to the actual evidence range so a wide probe box cannot
+  widen risk by itself. Root/sponsor failure remains policy evidence: Kahn
+  flattens only when typed evidence such as `SponsorFailed` or same-side
+  `RailFailed` near the active risk anchor confirms failure; raw tick
+  displacement alone is not enough.
 - External JSONL evidence must carry `ts_utc` or `timestamp` and must be fresh
   under `Evidence Max Age (sec)`. Kahn consumes and discards evidence while no
   campaign is eligible so stale backlogs cannot become current authority when a
