@@ -14,6 +14,10 @@ governor into a form-filled EAR directive dispatcher.
 
 ## Design Decisions
 
+- The checkpoint writer stamps `RuntimeCheckpointData.CurrentVersion`, including
+  before a first campaign exists. Defaults alone are not the transport contract:
+  the disk writer must be tested through CLI admission or a legacy stamp can
+  deadlock first Dispatch/WATCH despite a healthy runtime.
 - Executable plans are schema 2. A loaded flat plan is WATCH even though its
   internal auction phase is Ready; campaign/digest/runtime-instance/attempt-bound
   GO LIVE is separate authorization. Schema 1 remains parser/replay input, never

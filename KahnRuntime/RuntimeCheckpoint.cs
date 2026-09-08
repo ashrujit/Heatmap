@@ -6,7 +6,8 @@ namespace KahnRuntime
 {
     internal sealed class RuntimeCheckpointData
     {
-        public int Version { get; set; } = 2;
+        public const int CurrentVersion = 2;
+        public int Version { get; set; } = CurrentVersion;
         public string RuntimeInstanceId { get; set; }
         public bool ExecutionAuthorized { get; set; }
         public string AuthorizationState { get; set; }
@@ -152,7 +153,7 @@ namespace KahnRuntime
         {
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
-            data.Version = 1;
+            data.Version = RuntimeCheckpointData.CurrentVersion;
             data.UpdatedUtc = DateTime.UtcNow.ToString("O");
             Sanitize(data);
             string json = JsonSerializer.Serialize(data, SerializerOptions);

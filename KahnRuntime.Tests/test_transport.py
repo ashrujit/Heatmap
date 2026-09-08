@@ -117,6 +117,23 @@ class TransportTests(unittest.TestCase):
     def test_dispatch_requires_checkpoint(self):
         with self.assertRaises(ctl.KahnctlError): ctl.prepare_campaign_dispatch(self.profile, draft(), argparse.Namespace())
 
+    def test_first_dispatch_accepts_actual_runtime_checkpoint_writer(self):
+        subprocess.run([str(Path.home() / "AppData/Local/Microsoft/dotnet/dotnet.exe"),
+            str(REPO / "KahnRuntime.Tests/bin/Release/net10.0/KahnRuntime.Tests.dll"),
+            "write-checkpoint", str(self.profile)], check=True, capture_output=True, text=True)
+        saved = ctl.read_checkpoint_if_present(self.profile)
+        self.assertEqual(saved["version"], 2)
+        self.assertIsNone(saved["campaign_id"])
+        self.assertIsNone(ctl.prepare_campaign_dispatch(self.profile, draft(), argparse.Namespace()))
+        self.assertFalse((self.profile / "campaign.json").exists())
+        self.assertFalse((self.profile / "control.json").exists())
+
+    def test_dispatch_still_rejects_legacy_checkpoint(self):
+        self.checkpoint.update(version=1, campaign_id=None)
+        ctl.atomic_write(self.profile / "checkpoint.json", self.checkpoint)
+        with self.assertRaises(ctl.KahnctlError):
+            ctl.prepare_campaign_dispatch(self.profile, draft(), argparse.Namespace())
+
     def test_dispatch_requires_flat(self):
         self.checkpoint["position_quantity"] = 1
         ctl.atomic_write(self.profile / "checkpoint.json", self.checkpoint)

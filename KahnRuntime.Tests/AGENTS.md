@@ -13,3 +13,5 @@
   in a new directory, never overwrite frozen prior-study output.
 - Python writable profiles stay under `.tmp/kahn-transport-tests`: Windows Python
   private temporary-directory ACLs can prevent the sandbox from reading them.
+- First-dispatch coverage must consume the actual C# checkpoint writer's disk
+  output, not only hand-built Python checkpoints or in-memory C# defaults.

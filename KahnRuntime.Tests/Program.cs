@@ -3,6 +3,11 @@ using System.Text.Json;
 
 try
 {
+if (args.Length == 2 && args[0] == "write-checkpoint")
+{
+    CheckpointTests.WriteFixture(args[1]);
+    return;
+}
 if (args.Length == 2 && args[0] == "validate-plan")
 {
     var plan = CampaignPlanParser.Parse(File.ReadAllText(args[1]));
@@ -27,6 +32,7 @@ RuntimeSelfTests.RunAll();
 Console.WriteLine("PASS existing RuntimeSelfTests (39 checks)");
 ScalingTests.RunAll();
 SessionTests.RunAll();
+CheckpointTests.RunAll();
 }
 catch (Exception error)
 {
