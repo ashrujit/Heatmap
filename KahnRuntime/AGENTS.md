@@ -14,6 +14,20 @@ governor into a form-filled EAR directive dispatcher.
 
 ## Design Decisions
 
+- Executable plans are schema 2. A loaded flat plan is WATCH even though its
+  internal auction phase is Ready; campaign/digest/runtime-instance/attempt-bound
+  GO LIVE is separate authorization. Schema 1 remains parser/replay input, never
+  an executable fallback. This prevents an old binary from silently ignoring the
+  new lifecycle and prevents new binaries from reinterpreting active legacy plans.
+- `CampaignSession` owns the pure observer/fill contracts. The worker applies
+  complete LL samples before selecting any policy decision. External JSONL lacks
+  this attestation and retains root/risk uses only, not group-scale authority.
+- Observation continues in WATCH, at capacity and under vetoes. First actual
+  partial fills consume episodes and advance one-behind group sponsorship; broker
+  acceptance and position guesses cannot spend an episode. Unknown order state
+  retains capacity. Exact group members, not outer hulls or nearby untouched
+  rails, determine sponsor health. Epoch loss is uncertainty, not typed failure.
+
 - The campaign plan is immutable audit input. Adaptive behavior belongs in
   mutable `CampaignState` plus append-only decision events, not edits to the
   accepted plan.
@@ -37,8 +51,8 @@ governor into a form-filled EAR directive dispatcher.
   while `scale_allowed` lets Kahn discover add locations from repaired
   continuation evidence inside the campaign arena. `Instance Max Quantity` is
   only a runtime safety cap and campaign admission guard.
-- `execution.max_retry` is directive-local and defaults to `3`. It counts accepted
-  probe attempts that later flatten/scratch; quote staleness or broker submit
+- `execution.max_retry` is directive-local and defaults to `3`. Schema 2 counts
+  filled probe attempts once, including a first partial; quote staleness or broker submit
   rejection is logged but does not spend the campaign retry budget. Once the
   retry budget is exhausted and the campaign is flat, Kahn enters `Paused`
   rather than `Retired`, keeps the loaded auction map/checkpoint context,
@@ -61,7 +75,7 @@ governor into a form-filled EAR directive dispatcher.
   own tagged working orders on stop or explicit operator `FLAT`/`CANCEL`
   control; it does not cancel unrelated account orders.
 - Operator controls are separate from campaign evidence. `Control Path` reads
-  `KAHN_CONTROL` JSON (`FLAT` or `CANCEL`) before campaign reload and before
+  `KAHN_CONTROL` JSON (`FLAT`, `CANCEL`, `GO_LIVE`, `BE`) before campaign reload and before
   active-window/evidence gates, so `FLAT` can close bound exposure after
   campaign expiry or while the campaign file is temporarily unreadable. Existing
   `control.json` contents are marked seen at startup to avoid replaying stale
@@ -75,15 +89,15 @@ governor into a form-filled EAR directive dispatcher.
   inventory from a pre-expiry fill, evidence evaluation continues after
   `window.expires_at` so add, suppress, reduce, flatten, and retire decisions
   still manage the campaign.
-- In `scale_allowed`, first worse-price same-side ownership is tracked as a
+- Legacy schema-1 replay: first worse-price same-side ownership is tracked as a
   scale candidate, not taken immediately. Kahn needs a repair/counter-claim to
   appear, fail as typed evidence, and then fresh same-side continuation at or
   beyond that repair before `AllowAdd` can fire. The first accepted add queues a
   pending sponsor while the older/root sponsor remains active and weighted BE is
   the account backstop. A later accepted add can promote the prior pending
   sponsor and queue the newest child.
-- Weighted BE is account protection, not the root thesis stop. It is ineligible
-  at root-only/probe-only size, becomes eligible only after Kahn has accepted an
+- Weighted BE is account protection, not the root thesis stop. Automatic BE is ineligible
+  on an unscaled probe, becomes eligible only after Kahn has filled an
   add and observed scaled inventory, and arms only when the executable quote is
   already beyond the weighted average so the stop is broker-valid. Active
   `REDUCE` cancels and clears the current BE so maintenance can re-arm the
@@ -91,6 +105,10 @@ governor into a form-filled EAR directive dispatcher.
   canceling/replacing BE or submitting the close gets one retry after refreshing
   the bound position; the second failure is `RecoveryActionRequired` for manual
   intervention.
+- Operator BE is the explicit exception for an onside managed probe. Its request
+  shares the protection lifecycle, cannot loosen a tighter recorded/broker stop,
+  and cannot use an offside request as authority for a market close. Actual
+  quantity/average and protection must reconcile before additional risk.
 - The drawn `trap_probe` window is an eligibility area for entry evidence and
   retry attempts, not the root risk anchor. Same-side and counter-claim-failed
   probes both anchor to the actual evidence range so a wide probe box cannot
@@ -102,9 +120,9 @@ governor into a form-filled EAR directive dispatcher.
   under `Evidence Max Age (sec)`. Kahn consumes and discards evidence while no
   campaign is eligible so stale backlogs cannot become current authority when a
   new campaign arms.
-- `FLAT` cancels Kahn-owned working orders, submits Quantower close-position
-  requests for all bound live positions, and retires campaign state after
-  accepted submission. `CANCEL` retires only when the bound position is flat; if
+- `FLAT` cancels Kahn-owned working orders and stays latched through late fills
+  until actual exposure and outstanding orders are flat. Close submission is not
+  a flatness acknowledgement. `CANCEL` requires flat exposure and no unresolved order; if
   exposure remains, it rejects loudly and tells the operator to use `FLAT`.
 - Strategy log lines use operator buckets: `INFO:`, `ERR:`, `ENTRY:`, `ADD:`,
   `EXIT:`, `RISK:`, and `FILL:`. The JSONL decision log remains the detailed
@@ -146,12 +164,18 @@ governor into a form-filled EAR directive dispatcher.
 
 ## Current Stage
 
+`Scaling/` is connected through `CampaignSession` and the complete-sample worker
+adapter. See `SCALING_IMPLEMENTATION.md` for implementation, offline verification
+and release gates. Isolated builds do not deploy; a flat-only cutover and explicit
+release authorization remain required. Legacy replay behavior is retained only
+where labeled above, not selectable as a silent runtime fallback.
+
 Stage 1 is live-capable dry-run infrastructure:
 
 1. Load one active campaign plan.
 2. Read normalized evidence events from JSONL and live LL transitions.
 3. Evaluate deterministic policy modules.
-4. Resolve one bounded decision per event.
+4. Resolve one bounded decision after the complete observation batch.
 5. Execute through shadow fill or the broker adapter, depending on settings.
 6. Write JSONL decisions, operator log buckets, metrics, and checkpoint state.
 

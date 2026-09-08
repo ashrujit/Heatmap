@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../KahnRuntime/CampaignSession.cs" Link="CampaignSession.cs" />
+    <Compile Include="../KahnRuntime/RuntimeControlStore.cs" Link="RuntimeControlStore.cs" />
+    <Compile Include="../KahnRuntime/Scaling/*.cs" Link="Scaling/%(Filename)%(Extension)" />
+    <Compile Include="../KahnRuntime/CampaignContracts.cs" Link="CampaignContracts.cs" />
+    <Compile Include="../KahnRuntime/CampaignPolicy.cs" Link="CampaignPolicy.cs" />
+    <Compile Include="../KahnRuntime/CampaignPlanStore.cs" Link="CampaignPlanStore.cs" />
+    <Compile Include="../KahnRuntime/EvidenceInbox.cs" Link="EvidenceInbox.cs" />
+    <Compile Include="../KahnRuntime/RuntimeCheckpoint.cs" Link="RuntimeCheckpoint.cs" />
+    <Compile Include="../KahnRuntime/RuntimeSelfTests.cs" Link="RuntimeSelfTests.cs" />
+  </ItemGroup>
+</Project>

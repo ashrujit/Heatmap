@@ -1,5 +1,10 @@
 # KahnRuntime Design Notes
 
+Schema-2 scaling and operator integration supersede the legacy Press/single-rail
+details below. Current decisions and release boundaries are recorded in
+[SCALING_IMPLEMENTATION.md](SCALING_IMPLEMENTATION.md) and
+[SCHEMA2_CUTOVER.md](SCHEMA2_CUTOVER.md). Schema 1 is audit-only at runtime admission.
+
 ## Boundary
 
 Kahn is a campaign governor. The user declares the opportunity and important

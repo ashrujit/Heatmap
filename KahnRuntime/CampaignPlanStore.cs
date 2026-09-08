@@ -94,8 +94,8 @@ namespace KahnRuntime
             JsonElement root = RequireObject(document.RootElement, "campaign");
 
             int schemaVersion = RequireInt(root, "schema_version", "campaign");
-            if (schemaVersion != 1)
-                throw Invalid("campaign.schema_version must be 1");
+            if (schemaVersion is not (1 or 2))
+                throw Invalid("campaign.schema_version must be 1 (legacy audit) or 2 (WATCH/repair episodes)");
             string kind = RequireString(root, "kind", "campaign");
             if (!string.Equals(kind, "KAHN_CAMPAIGN", StringComparison.Ordinal))
                 throw Invalid("campaign.kind must be KAHN_CAMPAIGN");
@@ -133,6 +133,9 @@ namespace KahnRuntime
                 throw Invalid("campaign.waypoints must contain at least one waypoint");
             if (plan.Sizing.ProbeQuantity > plan.Sizing.MaxPositionQuantity)
                 throw Invalid("sizing.probe_quantity must not exceed max_position_quantity");
+            if (schemaVersion == 2 && plan.Sizing.ScaleMode == CampaignScaleMode.RootOnly
+                && plan.Sizing.MaxPositionQuantity != plan.Sizing.ProbeQuantity)
+                throw Invalid("sizing.max_position_quantity must equal probe_quantity in root_only mode");
             if (plan.Sizing.ScaleMode == CampaignScaleMode.EvidenceScaled
                 && plan.Sizing.MaxPositionQuantity <= plan.Sizing.ProbeQuantity)
             {
@@ -147,6 +150,8 @@ namespace KahnRuntime
 
             foreach (CampaignWaypoint waypoint in plan.Waypoints)
             {
+                if (schemaVersion == 2 && waypoint.Role is WaypointRole.NoAdd or WaypointRole.Press)
+                    throw Invalid("schema 2 requires explicit removal/conversion of legacy no_add/press roles");
                 if (!waypoint.Range.IsValid)
                     throw Invalid($"waypoint {waypoint.Id} has an invalid range");
                 if (!plan.Arena.Intersects(waypoint.Range))

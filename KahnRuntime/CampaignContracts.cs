@@ -322,6 +322,10 @@ namespace KahnRuntime
 
     internal sealed class CampaignEvidence
     {
+        // Only the in-process adapter sets these. JSONL timestamps are not batch attestation.
+        public string EvidenceEpoch { get; init; }
+        public long? SampleSequence { get; init; }
+        public DateTimeOffset? FormedAt { get; init; }
         public int SchemaVersion { get; init; } = 1;
         public string EventId { get; init; }
         public DateTimeOffset Timestamp { get; init; }
@@ -409,7 +413,8 @@ namespace KahnRuntime
         public string EvidenceId { get; init; }
 
         public string DedupeKey
-            => $"{Action}:{Policy}:{ReasonCode}:{WaypointId}:{RiskAnchor}:{ChildRiskAnchor}:{ProtectionPrice}";
+            => $"{Action}:{Policy}:{ReasonCode}:{WaypointId}:{RiskAnchor}:{ChildRiskAnchor}:{ProtectionPrice}"
+                + (Policy == "repair_episode" ? $":{EvidenceId}" : "");
 
         public static PolicyDecision None(string policy, CampaignEvidence evidence)
             => new()
@@ -465,6 +470,18 @@ namespace KahnRuntime
         public int PassiveHarvestSignalCount { get; private set; }
 
         public bool HasPosition => SimulatedPositionQuantity > 0;
+        public bool ExecutionAuthorized { get; private set; }
+        public bool GroupSponsorActive { get; set; }
+        public double? OperatorProtectionPrice { get; private set; }
+        public void AuthorizeExecution() => ExecutionAuthorized = true;
+        public void RevokeExecution() => ExecutionAuthorized = false;
+        public void SetOperatorProtection(double price) => OperatorProtectionPrice = price;
+
+        public void ReconcileFill(int quantity, double average)
+        {
+            SimulatedPositionQuantity = quantity;
+            SimulatedAveragePrice = average;
+        }
         public bool IsRetired => Phase == CampaignPhase.Retired;
         public bool ExecutionPaused => Phase == CampaignPhase.Paused;
 
@@ -476,14 +493,15 @@ namespace KahnRuntime
 
         public bool BreakevenBackstopEligible(CampaignPlan plan)
             => HasPosition
-                && plan?.Risk?.BreakevenBackstopEnabled != false
-                && AcceptedAddCount > 0;
+                && (OperatorProtectionPrice.HasValue
+                    || (plan?.Risk?.BreakevenBackstopEnabled != false && AcceptedAddCount > 0));
 
         public static CampaignState ForPlan(CampaignPlan plan)
             => new()
             {
                 PlanId = plan?.Id,
                 Phase = CampaignPhase.Ready,
+                ExecutionAuthorized = plan?.SchemaVersion != 2,
             };
 
         public bool AddsSuppressed(DateTimeOffset now)
@@ -549,7 +567,11 @@ namespace KahnRuntime
                             SimulatedPositionQuantity + quantity);
                     }
                     Phase = CampaignPhase.Pressing;
-                    if (decision.DelayRiskAnchorPromotionOnAdd)
+                    if (plan.SchemaVersion == 2)
+                    {
+                        // Group sponsorship is advanced by the fill ledger, never a price hull.
+                    }
+                    else if (decision.DelayRiskAnchorPromotionOnAdd)
                     {
                         PromotePendingSponsor(plan, decision);
                         QueuePendingSponsor(decision, plan, now);
@@ -585,7 +607,8 @@ namespace KahnRuntime
                     break;
                 case PolicyAction.HoldRoot:
                 case PolicyAction.TightenRisk:
-                    if (decision.RiskAnchor != null)
+                    if (decision.RiskAnchor != null
+                        && (plan.SchemaVersion != 2 || decision.Action == PolicyAction.TightenRisk))
                         SetRiskAnchor(decision);
                     if (HasPosition && Phase != CampaignPhase.TargetZone)
                         Phase = CampaignPhase.BuildTrial;
@@ -652,6 +675,7 @@ namespace KahnRuntime
                         Phase = CampaignPhase.Ready;
                     break;
                 case PolicyAction.Retire:
+                    ExecutionAuthorized = false;
                     if (simulateAcceptedDecisions)
                         SimulatedPositionQuantity = 0;
                     ClearRiskAnchors();
@@ -830,6 +854,8 @@ namespace KahnRuntime
             SimulatedPositionQuantity = Math.Max(0, quantity);
             if (SimulatedPositionQuantity <= 0)
             {
+                OperatorProtectionPrice = null;
+                GroupSponsorActive = false;
                 ClearRiskAnchors();
                 ClearPassiveHarvest();
                 if (Phase != CampaignPhase.Retired && Phase != CampaignPhase.Paused)
@@ -961,6 +987,8 @@ namespace KahnRuntime
 
         private void ClearRiskAnchors()
         {
+            OperatorProtectionPrice = null;
+            GroupSponsorActive = false;
             ActiveRiskAnchor = null;
             ActiveRiskAnchorEvidenceId = null;
             RootRiskAnchor = null;

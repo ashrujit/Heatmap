@@ -19,24 +19,20 @@ campaign handoff less error-prone.
 - Use the same compact terminal-style operator surface as EAR: `Cascadia Mono`,
   dense text fields, and a build-embedded icon. This console is for repeated
   dispatch work, not broad form exposition.
-- Keep the runtime state tile compact and near the profile selector. It is a
-  fast operator read, not a second status panel: green `READY` means flat/Ready,
-  yellow `ARMED` means active but flat, red `IN POS` means the bound runtime
-  has exposure, and gray/orange states mean stopped, stale, path, or control
-  safety issues.
+- Authorization and inventory are separate: WATCH, LIVE/flat, IN POS, PAUSED and
+  RETIRED cannot stand in for health, actual quantity, stale paths or recovery.
+  GO LIVE and BE show the runtime acknowledgement, not just a successful file write.
 - Runtime profiles bind the Kahn runtime directory and its passive
   `saavik-probe.json` path together so sketch import and dispatch cannot point
   at different ES/NQ profiles by accident.
-- `SaavikProbe` import is form-fill only. It may set side, root/probe range,
-  middle scale corridor, and harvest range; it must not change sizing, scale
+- `SaavikProbe` import is form-fill only. It may set side, root/probe range
+  and harvest range; it must not change sizing, scale
   mode, TTL, retry, notes, or dispatch state.
-- The dispatcher derives `arena` from the probe + middle + harvest envelope.
-  In scale mode it also emits the probe/root range as `no_add` and the middle
-  range as `press`. Otherwise Kahn's arena fallback can legally scale inside the
-  root probe after a repaired-continuation sequence, which is not the operator
-  intent for the three-box sketch. Do not emit the middle range as a Kahn
-  `evaluate` waypoint from this UI: that role locks leverage, while the operator
-  intent here is a non-harvest scale corridor.
+- The schema-2 arena is the probe + harvest envelope. There is no automatic root
+  `no_add` or middle `press`; repaired episodes own add permission. This is an
+  approved policy migration, not a reversal of the old three-box bug fix. Legacy
+  sketch/saved geometry requires explicit acknowledgement before discarding the
+  old constraints. A passive import never constitutes dispatch or GO LIVE.
 - `new-draft --dispatch --activate` is the direct Kahn campaign handoff used
   here. Do not borrow `dispatch-draft` timestamp/id aliases unless `new-draft`
   exposes them; it already defaults created/not-before timestamps to now.
@@ -52,5 +48,6 @@ campaign handoff less error-prone.
   dispatcher output. The generic rejection text is not enough for live use
   because stale control, stale checkpoint, stopped runtime, path mismatch, and
   non-flat position require different operator actions.
-- `CANCEL` and `FLAT` retain Kahn semantics: cancel retires only when flat;
-  FLAT may close the bound runtime position.
+- `CANCEL` requires flat exposure and no unresolved orders. FLAT may close bound
+  exposure and stays pending until reconciled. GO LIVE and BE are scoped by the
+  CLI from a fresh, path-correct checkpoint; no UI-created trade permission.

@@ -21,6 +21,7 @@ DEFAULT_PROFILES = {
     "DEFAULT": DEFAULT_RUNTIME_DIR,
     "ES": DEFAULT_RUNTIME_DIR / "ES",
     "NQ": DEFAULT_RUNTIME_DIR / "NQ",
+    "6J": DEFAULT_RUNTIME_DIR / "6J",
 }
 
 ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -328,7 +329,10 @@ def preflight_assessment(
         stale_seconds=control_stale_seconds,
     )
     phase = data.get("phase")
-    ready = running and fresh and paths_ok and not stale_control
+    unresolved = bool(data.get("unresolved_risk_order") or data.get("awaiting_fill_position")
+                      or data.get("pending_close_quantity") is not None
+                      or data.get("execution_recovery_reason") or number_or_zero(data.get("bound_working_order_count")))
+    ready = running and fresh and paths_ok and not stale_control and not unresolved
     active_blocks_dispatch = active_campaign["present"] and phase != "Retired"
     return {
         "runtime_running": running,
@@ -341,6 +345,8 @@ def preflight_assessment(
             "account_id": data.get("account_id"),
         },
         "phase": phase,
+        "authorization_state": data.get("authorization_state"),
+        "unresolved_execution": unresolved,
         "position": position,
         "active_campaign": active_campaign,
         "stale_control_file": stale_control,
@@ -358,7 +364,7 @@ def command_profiles(_: argparse.Namespace) -> int:
                 profile_paths(name, runtime_dir.resolve())
                 for name, runtime_dir in DEFAULT_PROFILES.items()
             ],
-            "note": "Use ES/NQ profile paths in Quantower when more than one KahnRuntime instance can run.",
+            "note": "Use named profile paths in Quantower when more than one KahnRuntime instance can run.",
         }
     )
     return 0
@@ -389,8 +395,12 @@ def command_control(args: argparse.Namespace) -> int:
         )
 
     payload = build_control(args.action, args.reason)
+    if args.action in {"GO_LIVE", "BE"}:
+        checkpoint = read_checkpoint_if_present(runtime_dir)
+        payload = scoped_control(args.action, args.reason, runtime_dir, checkpoint)
     path = runtime_dir / "control.json"
-    atomic_write(path, payload, sort_keys=True)
+    if not getattr(args, "dry_run", False):
+        atomic_write(path, payload, sort_keys=True)
     write_result(
         {
             "ok": True,
@@ -399,9 +409,42 @@ def command_control(args: argparse.Namespace) -> int:
             "control_path": str(path),
             "control_id": payload["id"],
             "action": payload["action"],
+            "dry_run": getattr(args, "dry_run", False),
+            "command": payload,
         }
     )
     return 0
+
+
+def scoped_control(action: str, reason: str | None, runtime_dir: Path,
+                   checkpoint: dict[str, Any] | None) -> dict[str, Any]:
+    data = checkpoint or {}
+    if (data.get("version") != 2 or data.get("runtime_state") != "Running"
+            or not checkpoint_fresh(data, 5) or checkpoint_path_mismatches(runtime_dir, data)
+            or data.get("unresolved_risk_order") or data.get("awaiting_fill_position")
+            or data.get("pending_close_quantity") is not None
+            or data.get("execution_recovery_reason")):
+        raise KahnctlError("GO LIVE/BE require a fresh, path-correct schema-2 runtime with reconciled execution")
+    if data.get("phase") in {"Retired", "Paused"}:
+        raise KahnctlError("retired/paused campaign requires reissue")
+    for key in ("campaign_id", "campaign_digest", "runtime_instance_id"):
+        require_string(data, key)
+    attempt = data.get("execution_attempt_count")
+    if type(attempt) is not int or attempt < 0:
+        raise KahnctlError("checkpoint execution attempt is missing")
+    flat = position_summary(data)["flat"]
+    if action == "GO_LIVE" and not flat:
+        raise KahnctlError("GO LIVE requires a watched flat campaign")
+    if action == "GO_LIVE" and data.get("entry_expires_utc"):
+        if parse_utc(data["entry_expires_utc"], "entry_expires_utc") <= utc_now():
+            raise KahnctlError("entry window expired; explicitly reissue the campaign")
+    if action == "BE" and flat:
+        raise KahnctlError("BE requires a managed position")
+    payload = build_control(action, reason)
+    payload.update(schema_version=2, campaign_id=data["campaign_id"],
+                   campaign_digest=data["campaign_digest"], runtime_instance_id=data["runtime_instance_id"],
+                   attempt=attempt)
+    return payload
 
 
 def read_checkpoint_if_present(runtime_dir: Path) -> dict[str, Any] | None:
@@ -463,6 +506,18 @@ def command_status(args: argparse.Namespace) -> int:
             "campaign_id": data.get("campaign_id"),
             "campaign_status": data.get("campaign_status"),
             "phase": data.get("phase"),
+            "authorization_state": data.get("authorization_state"),
+            "runtime_instance_id": data.get("runtime_instance_id"),
+            "execution_recovery_reason": data.get("execution_recovery_reason"),
+            "unresolved_risk_order": data.get("unresolved_risk_order"),
+            "awaiting_fill_position": data.get("awaiting_fill_position"),
+            "pending_close_quantity": data.get("pending_close_quantity"),
+            "entry_expires_utc": data.get("entry_expires_utc"),
+            "evidence_state": data.get("evidence_state"),
+            "operator_protection_price": data.get("operator_protection_price"),
+            "repair_stage": data.get("repair_stage"),
+            "repair_episode": data.get("repair_episode"),
+            "active_sponsor_health": data.get("active_sponsor_health"),
             "control": {
                 "configured_path": data.get("control_path"),
                 "profile_path": str(control_path),
@@ -583,14 +638,14 @@ def positive_int(
 ) -> int:
     label = field or key
     value = data.get(key, default)
-    if not isinstance(value, int) or value < 1:
+    if type(value) is not int or value < 1:
         raise KahnctlError(f"{label} must be a positive integer")
     return value
 
 
 def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[str, Any]:
-    if campaign.get("schema_version") != 1:
-        raise KahnctlError("campaign.schema_version must be 1")
+    if type(campaign.get("schema_version")) is not int or campaign["schema_version"] not in {1, 2}:
+        raise KahnctlError("campaign.schema_version must be 1 (legacy audit) or 2 (WATCH/repair episodes)")
     if campaign.get("kind") != "KAHN_CAMPAIGN":
         raise KahnctlError("campaign.kind must be KAHN_CAMPAIGN")
 
@@ -627,7 +682,7 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
     arena = require_range(campaign.get("arena"), "campaign.arena")
     sizing = require_obj(campaign.get("sizing", {}), "campaign.sizing")
     probe_qty = positive_int(sizing, "probe_quantity", 1, "sizing.probe_quantity")
-    add_qty = positive_int(sizing, "add_quantity", 1, "sizing.add_quantity")
+    add_qty = 0 if type(sizing.get("add_quantity")) is int and sizing["add_quantity"] == 0 else positive_int(sizing, "add_quantity", 1, "sizing.add_quantity")
     max_qty = positive_int(sizing, "max_position_quantity", 1, "sizing.max_position_quantity")
     if probe_qty > max_qty:
         raise KahnctlError("sizing.probe_quantity must not exceed max_position_quantity")
@@ -643,6 +698,8 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
         raise KahnctlError(
             "sizing.max_position_quantity must exceed probe_quantity when scale_mode is scale_allowed"
         )
+    if scale_mode == "scale_allowed" and add_qty < 1:
+        raise KahnctlError("scale_allowed requires positive add_quantity")
 
     execution = require_obj(campaign.get("execution", {}), "campaign.execution")
     max_retry = positive_int(execution, "max_retry", 3, "execution.max_retry")
@@ -683,6 +740,8 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
         if not ID_PATTERN.match(waypoint_id):
             raise KahnctlError(f"{field}.id contains unsupported characters")
         role = require_string(waypoint, "role", f"{field}.role")
+        if campaign["schema_version"] == 2 and normalize_role(role) in {"noadd", "press"}:
+            raise KahnctlError("schema 2 rejects legacy no_add/press roles; explicitly convert/remove named constraints")
         if normalize_role(role) not in {normalize_role(r) for r in SUPPORTED_WAYPOINT_ROLES}:
             raise KahnctlError(f"{field}.role is not supported")
         lower, upper = require_range(waypoint.get("range"), f"{field}.range")
@@ -701,6 +760,9 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
         "max_position_quantity": max_qty,
         "max_retry": max_retry,
         "waypoint_count": len(waypoints),
+        "schema_version": campaign["schema_version"],
+        "load_state": "WATCH" if campaign["schema_version"] == 2 else "LEGACY/AUDIT",
+        "roles": [waypoint["role"] for waypoint in waypoints],
     }
 
 
@@ -808,6 +870,46 @@ def archive_acknowledged_control(runtime_dir: Path) -> str | None:
     return str(archive)
 
 
+def convert_campaign(source: dict[str, Any], removed_ids: list[str], derive_arena: bool) -> tuple[dict[str, Any], dict[str, Any]]:
+    validate_campaign(source, allow_stale=True)
+    if source["schema_version"] != 1:
+        raise KahnctlError("conversion requires a legacy schema-1 draft")
+    campaign = copy.deepcopy(source)
+    ids = {waypoint["id"] for waypoint in source["waypoints"]}
+    if set(removed_ids) - ids:
+        raise KahnctlError("--remove-waypoint names an unknown constraint")
+    removed = [waypoint for waypoint in campaign["waypoints"] if waypoint["id"] in removed_ids]
+    campaign["waypoints"] = [waypoint for waypoint in campaign["waypoints"] if waypoint["id"] not in removed_ids]
+    campaign["schema_version"] = 2
+    campaign["status"] = "draft"
+    campaign["id"] = source["id"] + "-v2-" + uuid4().hex[:8]
+    campaign["created_at"] = iso_utc(utc_now())
+    if derive_arena:
+        boxes = [waypoint["range"] for waypoint in campaign["waypoints"]
+                 if normalize_role(waypoint["role"]) in {"trapprobe", "target"}]
+        if len(boxes) < 2:
+            raise KahnctlError("--derive-arena requires root and target waypoints")
+        campaign["arena"] = {"lower": min(box["lower"] for box in boxes),
+                             "upper": max(box["upper"] for box in boxes)}
+    validate_campaign(campaign, allow_stale=True)
+    report = {"source_id": source["id"], "removed_constraints": removed,
+              "retained_constraints": campaign["waypoints"], "arena_before": source["arena"],
+              "arena_after": campaign["arena"], "load_state": "WATCH", "entry_expiry_unchanged": True}
+    return campaign, report
+
+
+def command_convert_draft(args: argparse.Namespace) -> int:
+    source_path = runtime_dir_arg(args.draft)
+    campaign, report = convert_campaign(read_json(source_path), args.remove_waypoint, args.derive_arena)
+    if args.out:
+        target = runtime_dir_arg(args.out)
+        if target == source_path or target.exists() or target.name.lower() in {"campaign.json", "control.json", "checkpoint.json"}:
+            raise KahnctlError("conversion output must be a new draft file, never an active/runtime file")
+        atomic_write(target, campaign)
+    write_result({"ok": True, "campaign": campaign, "conversion": report, "output": args.out})
+    return 0
+
+
 def command_validate_draft(args: argparse.Namespace) -> int:
     draft_path = runtime_dir_arg(args.draft)
     campaign = stamp_campaign(args, read_json(draft_path))
@@ -870,12 +972,21 @@ def prepare_campaign_dispatch(
     campaign: dict[str, Any],
     args: argparse.Namespace,
 ) -> dict[str, Any] | None:
+    if campaign.get("schema_version") != 2:
+        raise KahnctlError("legacy campaigns are audit-only; use convert-draft before dispatch")
     if getattr(args, "dry_run", False):
         return None
 
     checkpoint = read_checkpoint_if_present(runtime_dir)
     if not checkpoint:
-        return None
+        raise KahnctlError("dispatch requires a fresh schema-2 runtime checkpoint for flat-only cutover")
+    if (checkpoint.get("version") != 2 or checkpoint.get("runtime_state") != "Running"
+            or not checkpoint_fresh(checkpoint, 15) or checkpoint_path_mismatches(runtime_dir, checkpoint)
+            or not position_summary(checkpoint)["flat"] or checkpoint.get("unresolved_risk_order")
+            or checkpoint.get("pending_close_quantity") is not None
+            or checkpoint.get("awaiting_fill_position") or checkpoint.get("execution_recovery_reason")
+            or number_or_zero(checkpoint.get("bound_working_order_count")) > 0):
+        raise KahnctlError("dispatch requires a fresh path-correct, flat schema-2 runtime without unresolved orders")
 
     active = active_campaign_summary(checkpoint)
     if not active["present"]:
@@ -940,6 +1051,8 @@ def command_dispatch_draft(args: argparse.Namespace) -> int:
     profile, runtime_dir, custom = select_runtime(args)
     draft_path = runtime_dir_arg(args.draft)
     campaign = stamp_campaign(args, read_json(draft_path))
+    if campaign.get("schema_version") != 2:
+        raise KahnctlError("legacy campaigns are audit-only; use convert-draft before dispatch")
     summary = validate_campaign(campaign, allow_stale=args.allow_stale)
     target = runtime_dir / "campaign.json"
 
@@ -1110,7 +1223,7 @@ def add_profile_argument(parser: argparse.ArgumentParser) -> None:
         "profile",
         nargs="?",
         default=None,
-        help="Named runtime profile (ES, NQ, DEFAULT) or an explicit runtime directory.",
+        help="Named runtime profile (ES, NQ, 6J, DEFAULT) or an explicit runtime directory.",
     )
     parser.add_argument(
         "--runtime-dir",
@@ -1184,6 +1297,8 @@ def parser() -> argparse.ArgumentParser:
     preflight.set_defaults(func=command_preflight)
 
     for name, action, help_text in (
+        ("go-live", "GO_LIVE", "Authorize the exact watched campaign; does not extend expiry or enter immediately."),
+        ("be", "BE", "Request weighted BE for the current managed onside attempt."),
         ("flat", "FLAT", "Cancel Kahn-owned working orders, close bound position(s), and retire the campaign."),
         ("flatten", "FLAT", "Alias for flat."),
         ("cancel", "CANCEL", "Cancel/retire the campaign only when the bound position is flat."),
@@ -1191,6 +1306,7 @@ def parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name, help=help_text)
         add_profile_argument(cmd)
         cmd.add_argument("--reason", default=None)
+        cmd.add_argument("--dry-run", action="store_true")
         cmd.add_argument(
             "--force-shared-control",
             action="store_true",
@@ -1212,6 +1328,13 @@ def parser() -> argparse.ArgumentParser:
     validate.add_argument("--draft", required=True, help="Path to a KAHN_CAMPAIGN draft JSON file.")
     add_stamp_arguments(validate)
     validate.set_defaults(func=command_validate_draft)
+
+    convert = sub.add_parser("convert-draft", help="Explicitly convert a legacy draft to WATCH/repair schema 2; never dispatch.")
+    convert.add_argument("--draft", required=True)
+    convert.add_argument("--out")
+    convert.add_argument("--remove-waypoint", action="append", default=[])
+    convert.add_argument("--derive-arena", action="store_true")
+    convert.set_defaults(func=command_convert_draft)
 
     dispatch = sub.add_parser("dispatch-draft", help="Stamp and write a draft to profile campaign.json.")
     add_profile_argument(dispatch)

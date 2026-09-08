@@ -374,7 +374,7 @@ def build_campaign(
         raise CampaignAssemblyError("--max-qty must exceed --probe-qty when --scale-mode scale_allowed")
 
     campaign = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "KAHN_CAMPAIGN",
         "id": campaign_id
         or fresh_campaign_id(profile, side_text, id_prefix, created_at),

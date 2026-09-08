@@ -6,7 +6,25 @@ namespace KahnRuntime
 {
     internal sealed class RuntimeCheckpointData
     {
-        public int Version { get; set; } = 1;
+        public int Version { get; set; } = 2;
+        public string RuntimeInstanceId { get; set; }
+        public bool ExecutionAuthorized { get; set; }
+        public string AuthorizationState { get; set; }
+        public string ExecutionRecoveryReason { get; set; }
+        public string UnresolvedRiskOrder { get; set; }
+        public bool AwaitingFillPosition { get; set; }
+        public int? PendingCloseQuantity { get; set; }
+        public string ManagedPositionId { get; set; }
+        public string EvidenceEpochId { get; set; }
+        public int? CampaignSchemaVersion { get; set; }
+        public string EntryNotBeforeUtc { get; set; }
+        public string EntryExpiresUtc { get; set; }
+        public double? OperatorProtectionPrice { get; set; }
+        public object RepairEpisode { get; set; }
+        public string RepairStage { get; set; }
+        public object ActiveSponsorGroup { get; set; }
+        public object PendingSponsorGroup { get; set; }
+        public string ActiveSponsorHealth { get; set; }
         public string UpdatedUtc { get; set; }
         public string RuntimeState { get; set; }
         public string CampaignId { get; set; }

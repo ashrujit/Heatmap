@@ -41,6 +41,7 @@ namespace KahnRuntime
         public bool Accepted { get; init; }
         public bool Shadow { get; init; }
         public bool RequiresOperatorAction { get; init; }
+        public bool SubmissionUncertain { get; init; }
         public string OrderId { get; init; }
         public string Message { get; init; }
         public double SyntheticFillPrice { get; init; } = double.NaN;
@@ -185,8 +186,8 @@ namespace KahnRuntime
             int current = position == null || position.IsFlat
                 ? 0
                 : (int)Math.Round(position.Quantity);
-            int remaining = Math.Max(0, _instanceMaxQuantity - current);
-            int quantity = Math.Min(requested, remaining);
+            int remaining = Math.Max(0, Math.Min(_instanceMaxQuantity, plan.Sizing.MaxPositionQuantity) - current);
+            int quantity = requested <= remaining ? requested : 0;
             if (quantity <= 0)
                 return Failure("instance max quantity reached");
 
@@ -422,7 +423,7 @@ namespace KahnRuntime
                     ("campaign_id", plan.Id),
                     ("position_id", position.PositionId),
                     ("message", ex.Message));
-                return Failure(ex.Message, requiresOperatorAction: true);
+                return new GatewayResult { Message = ex.Message, RequiresOperatorAction = true, SubmissionUncertain = true };
             }
 
             double elapsedMs = (Stopwatch.GetTimestamp() - before)
@@ -530,6 +531,10 @@ namespace KahnRuntime
                 Order existing = RuntimeBreakevenOrders().FirstOrDefault();
                 if (existing != null)
                 {
+                    if (double.IsFinite(existing.TriggerPrice) && existing.TriggerPrice > 0)
+                        trigger = plan.Side == CampaignSide.Long ? Math.Max(trigger, existing.TriggerPrice) : Math.Min(trigger, existing.TriggerPrice);
+                    if (plan.Side == CampaignSide.Long ? trigger >= market.Bid : trigger <= market.Ask)
+                        return Failure("existing tighter protection is already at market; do not loosen it", requiresOperatorAction: true);
                     if (NearlyEqual(existing.TriggerPrice, trigger)
                         && NearlyEqual(existing.RemainingQuantity, quantity))
                     {
@@ -988,6 +993,7 @@ namespace KahnRuntime
 
     internal sealed class BrokerEvent
     {
+        public bool Terminal { get; init; }
         public string EventType { get; init; }
         public string OrderId { get; init; }
         public string PositionId { get; init; }
@@ -1010,6 +1016,8 @@ namespace KahnRuntime
                 PositionId = order?.PositionId,
                 Side = order?.Side.ToString(),
                 Status = order?.Status.ToString(),
+                Terminal = order != null && (order.Status == OrderStatus.Filled
+                    || order.Status == OrderStatus.Cancelled || order.Status == OrderStatus.Refused),
                 Quantity = order?.TotalQuantity ?? 0,
                 FilledQuantity = order?.FilledQuantity ?? 0,
                 RemainingQuantity = order?.RemainingQuantity ?? 0,

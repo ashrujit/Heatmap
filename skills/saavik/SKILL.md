@@ -19,7 +19,7 @@ The user trades and thinks in New York time.
 - Do not dispatch orders, issue external execution controls, issue Kahn controls,
   or pretend to monitor continuously. Use `scripts/kahnctl.py` only when the
   user explicitly asks to inspect or operate a concrete Kahn instance
-  (`status`, `paths`, `FLAT`, `CANCEL`, or `dispatch-draft`). The script writes
+  (`status`, `paths`, `FLAT`, `CANCEL`, `go-live`, `be`, or `dispatch-draft`). The script writes
   campaign/control JSON and the running KahnRuntime enforces any execution.
 - Do not replace Kahn policy with discretionary narrative. Translate the read
   into inspectable campaign semantics, policy posture, waypoint changes, or a
@@ -41,8 +41,9 @@ and `./saavik/SKILL.md` can be referenced together; from the repository root, us
 
 - Read `../prep/SKILL.md` when the user asks for market-prep context, branch
   ranking, or whether the current auction thesis still exists.
-- Read `../../KahnRuntime/DESIGN.md` or campaign examples when constructing or
-  changing concrete Kahn campaign JSON.
+- Read `../../KahnRuntime/SCALING_IMPLEMENTATION.md`, `SCHEMA2_CUTOVER.md`, and
+  the schema-2 campaign example when constructing or changing campaign JSON.
+  `DESIGN.md` preserves the earlier architecture, not current schema admission.
 
 ## Runtime Instances
 
@@ -87,12 +88,11 @@ Treat `--scale-mode` as the directive-level choice. Use `root_only` when Kahn
 must keep only the initial probe/root inventory; in that mode `--max-qty` must
 equal `--probe-qty`. Use `scale_allowed` when Kahn may discover add locations
 from repaired continuation evidence inside the campaign arena; in that mode
-`--max-qty` must exceed `--probe-qty`. Do not invent `--press` or `--build`
-zones just to unlock leverage. `--press`, `--build`, `--evaluate`,
-`--repair-hold`, and `--path-stress` are optional semantic waypoints when the
-auction actually has those landmarks. Normal scale risk is already one sponsor
-behind the newest add; avoid `--press-preserves-root` unless reviewing or
-labeling a legacy/manual press waypoint that intentionally carries that field.
+`--max-qty` must exceed `--probe-qty`. Schema 2 uses root and harvest boxes with
+their derived arena; it rejects legacy `press` and `no_add` waypoints. Do not
+invent intermediate zones to unlock leverage. `--build`, `--evaluate`,
+`--repair-hold`, and `--path-stress` remain optional explicit constraints.
+Normal scale risk remains one filled group behind the newest filled add.
 
 Then either write a draft with `--out <path>` for review, dispatch an existing
 reviewed draft with `dispatch-draft`, or use `new-draft --dispatch` only after
@@ -100,15 +100,30 @@ the user explicitly asks to send that campaign to the named Kahn profile. Never
 use the assembler's existence as trade permission; it only removes mechanical
 JSON assembly work.
 
+Schema-2 dispatch loads WATCH, not execution authorization. After checking the
+exact watched campaign and runtime health, an explicitly requested `go-live`
+authorizes that campaign/digest/runtime instance/attempt. It neither enters
+immediately nor extends the absolute entry expiry. A flat restart needs fresh
+GO LIVE. `be` requires reconciled, onside managed exposure and never loosens
+tighter protection. BE retirement remains terminal; reentry requires a fresh
+human-issued campaign. Controls must be acknowledged, not merely written.
+
+Schema-1 files remain audit-readable, but runtime admission and dispatch reject
+them. Use `convert-draft` for an explicit reviewable conversion naming each
+removed legacy waypoint. Never silently reinterpret old press/no-add geometry.
+
 Before dispatch or control, prefer a terse profile preflight:
 
 ```powershell
 python .\skills\saavik\scripts\kahnctl.py preflight ES
 ```
 
-`preflight` intentionally reports only runtime running, checkpoint freshness,
-path correctness, symbol/account, phase, position, active campaign, stale
-control-file status, and whether dispatch/cancel is safe. If a new campaign is
+`preflight` reports runtime running, checkpoint freshness, path correctness,
+symbol/account, phase, position, WATCH/GO LIVE, repair health, entry expiry,
+unresolved execution, active campaign, control status, and dispatch/cancel safety.
+Exposure, pending orders, delayed fill/position reconciliation or unresolved
+closes prohibit replacement and CANCEL. Use FLAT for exposure; its acknowledgement
+waits for actual flatness and resolved orders, including late fills. If a new campaign is
 explicitly dispatched while the current campaign is still `active` but flat and
 `Ready`, use `new-draft --dispatch --retire-existing-if-flat` or
 `dispatch-draft --retire-existing-if-flat` only after preflight proves the
@@ -186,26 +201,30 @@ Then make the smallest sufficient audit:
 3. Decide posture: hold, suppress adds, allow add, tighten risk, reduce/harvest,
    flatten/retire, or prepare a fresh campaign after repair.
 4. Map the decision to Kahn terms: `RootOnly`, `ScaleAllowed`, `TrapProbe`,
-   `Press`, `BuildTrial`, `EvaluateZone`, `PathStress`, root-risk preservation,
+   repaired continuation, `BuildTrial`, `EvaluateZone`, `PathStress`, root-risk preservation,
    suppress-add window, reduce size, flatten, or retire.
 5. State the falsifier and the next checkpoint that should wake Saavik again.
 
 ## Policy Guidance
 
-- In `scale_allowed`, do not treat the first farther same-side rail as add
-  permission. Kahn tracks it as a candidate; the add needs a repair/counter-claim
-  that fails and then renewed same-side continuation. There is no fixed
-  continuation window; new candidates, fresh repairs, reduce/harvest, or flatten
-  reset the sequence.
-- Once the repaired-continuation gate permits an add, the first scale add queues
-  a pending sponsor while older/root risk remains active and weighted BE becomes
-  the account backstop. A later add can promote the prior pending sponsor.
+- In `scale_allowed`, fresh favorable evidence builds proof, not add permission.
+  Same-side TEST or a related opposing OWN/HOLD opens repair. All associated
+  opposing claims must typed-fail; defended, renewed or rebuilt current support
+  and executable clearance then permit one add. Relevant new support inside the
+  repair need not be retested. A far-edge excursion is not mandatory.
+- Group by auction challenge and exact rail lineage, never time, distance or
+  number of events. A no-op candidate does not erase repair. Unrelated extension
+  or a fresh attack cannot reuse old failure. Missed offers are not banked.
+- The first actual filled add queues pending group sponsorship while older/root
+  risk remains active and weighted BE becomes the account backstop. A later
+  filled add may promote the still-live prior group with favorable risk
+  progression. Observation at cap or submit acceptance cannot promote risk.
 - Do not use waypoint labels as a manual add ladder. Coarse scale permission
   comes from `scale_allowed`; actual adds still need Kahn evidence and policy.
 - Prefer `TrapProbe` for ambitious edge entries where full LL proof would arrive
   too late.
-- Prefer `Press` or `BuildTrial` for in-between participation where LL/Kahn math
-  says aggression is being accepted and the sponsor can be named.
+- Use repaired continuation for adds; `BuildTrial` remains an explicit campaign
+  constraint, not a replacement for the scale gate.
 - Use `EvaluateZone` or `PathStress` when price reaches a waypoint where risk must
   tighten even if the directional thesis remains plausible.
 - At target approach or repeated effort-with-no-reward, harvest into nearby

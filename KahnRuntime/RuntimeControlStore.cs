@@ -11,6 +11,8 @@ namespace KahnRuntime
         Unknown,
         Cancel,
         Flat,
+        GoLive,
+        Breakeven,
     }
 
     internal sealed class RuntimeControlCommand
@@ -23,6 +25,10 @@ namespace KahnRuntime
         public string Reason { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public string Digest { get; init; }
+        public string CampaignId { get; init; }
+        public string CampaignDigest { get; init; }
+        public string RuntimeInstanceId { get; init; }
+        public int Attempt { get; init; }
     }
 
     internal sealed class RuntimeControlLoadResult
@@ -116,8 +122,8 @@ namespace KahnRuntime
                 "control");
 
             int schemaVersion = OptionalInt(root, "schema_version", 1);
-            if (schemaVersion != 1)
-                throw CampaignPlanParser.Invalid("control.schema_version must be 1");
+            if (schemaVersion is not (1 or 2))
+                throw CampaignPlanParser.Invalid("control.schema_version must be 1 or 2");
 
             string kind = OptionalString(root, "kind", "KAHN_CONTROL");
             if (!string.Equals(kind, "KAHN_CONTROL", StringComparison.Ordinal))
@@ -128,7 +134,11 @@ namespace KahnRuntime
             RuntimeControlAction action = ParseAction(rawAction);
             if (action == RuntimeControlAction.Unknown)
                 throw CampaignPlanParser.Invalid(
-                    "control.action must be FLAT or CANCEL");
+                    "control.action must be FLAT, CANCEL, GO_LIVE or BE");
+
+            bool scoped = action is RuntimeControlAction.GoLive or RuntimeControlAction.Breakeven;
+            if (scoped && schemaVersion != 2)
+                throw CampaignPlanParser.Invalid("GO_LIVE/BE require schema_version 2");
 
             return new RuntimeControlCommand
             {
@@ -138,8 +148,13 @@ namespace KahnRuntime
                 Action = action,
                 RawAction = rawAction,
                 Reason = CampaignPlanParser.OptionalString(root, "reason"),
-                CreatedAt = OptionalTimestamp(root, "created_at", DateTimeOffset.UtcNow),
+                CreatedAt = scoped ? CampaignPlanParser.RequireTimestamp(root, "created_at", "control")
+                    : OptionalTimestamp(root, "created_at", DateTimeOffset.UtcNow),
                 Digest = digest,
+                CampaignId = scoped ? CampaignPlanParser.RequireString(root, "campaign_id", "control") : null,
+                CampaignDigest = scoped ? CampaignPlanParser.RequireString(root, "campaign_digest", "control") : null,
+                RuntimeInstanceId = scoped ? CampaignPlanParser.RequireString(root, "runtime_instance_id", "control") : null,
+                Attempt = scoped ? CampaignPlanParser.RequireInt(root, "attempt", "control") : 0,
             };
         }
 
@@ -148,6 +163,8 @@ namespace KahnRuntime
             string value = Normalize(text);
             return value switch
             {
+                "golive" => RuntimeControlAction.GoLive,
+                "be" or "breakeven" => RuntimeControlAction.Breakeven,
                 "flat" or "flatten" or "closeposition" or "closepositions"
                     or "cancelandflatten" or "flattenandcancel" => RuntimeControlAction.Flat,
                 "cancel" or "canceldirective" or "cancelcampaign"

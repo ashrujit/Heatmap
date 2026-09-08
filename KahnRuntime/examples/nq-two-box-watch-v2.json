@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "kind": "KAHN_CAMPAIGN",
+  "id": "example-nq-two-box-watch",
+  "status": "draft",
+  "created_at": "2026-09-07T14:00:00Z",
+  "side": "long",
+  "window": {"not_before": "2026-09-07T14:00:00Z", "expires_at": "2026-09-07T15:30:00Z"},
+  "arena": {"lower": 29000, "upper": 29200},
+  "sizing": {"probe_quantity": 2, "add_quantity": 2, "max_position_quantity": 10, "scale_mode": "scale_allowed"},
+  "execution": {"max_retry": 3},
+  "objective": {
+    "target_range": {"lower": 29190, "upper": 29200},
+    "passive_harvest": {"enabled": true, "range": {"lower": 29190, "upper": 29200}, "initial_clip_quantity": 2, "follow_clip_quantity": 2, "max_working_quantity": 2}
+  },
+  "waypoints": [
+    {"id": "root", "role": "trap_probe", "range": {"lower": 29000, "upper": 29010}, "require_price_inside": true},
+    {"id": "harvest", "role": "target", "range": {"lower": 29190, "upper": 29200}}
+  ],
+  "notes": "Illustrative schema-2 draft, not a dispatch instruction. Load WATCH; GO LIVE does not extend expiry."
+}

@@ -9,6 +9,7 @@ internal sealed class MainForm : Form
 {
     private readonly DispatcherSettings _settings;
     private readonly KahnctlClient _kahnctl;
+    private readonly bool _observeRuntime;
 
     private ComboBox _runtimeProfile = null!;
     private Label _runtimeProfileDetail = null!;
@@ -17,7 +18,6 @@ internal sealed class MainForm : Form
     private RadioButton _probeOnlyMode = null!;
     private RadioButton _scaleMode = null!;
     private TextBox _rootRange = null!;
-    private TextBox _middleRange = null!;
     private TextBox _harvestRange = null!;
     private Label _runtimeStateTile = null!;
     private Label _preview = null!;
@@ -33,31 +33,36 @@ internal sealed class MainForm : Form
 
     private bool _busy;
     private bool _loadingRuntimeProfile;
+    private bool _legacyGeometryPending;
     private System.Windows.Forms.Timer? _sketchPollTimer;
     private DateTime _lastSketchWriteUtc = DateTime.MinValue;
     private string _lastSketchSignature = "";
     private string _statusText = "idle";
     private readonly ToolTip _toolTip = new();
 
-    public MainForm()
+    public MainForm() : this(DispatcherSettings.Load()) { }
+
+    internal MainForm(DispatcherSettings settings, bool observeRuntime = true)
     {
-        _settings = DispatcherSettings.Load();
+        _settings = settings;
+        _legacyGeometryPending = !string.IsNullOrWhiteSpace(settings.MiddleRange);
+        _observeRuntime = observeRuntime;
         _kahnctl = new KahnctlClient(_settings);
         BuildUi();
         ApplySettings();
         WireEvents();
-        StartSketchDraftImport();
+        if (observeRuntime) StartSketchDraftImport();
     }
 
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        await RunStatusAsync(silent: true);
+        if (_observeRuntime) await RunStatusAsync(silent: true);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        SaveSettings();
+        if (_observeRuntime) SaveSettings();
         base.OnFormClosing(e);
     }
 
@@ -66,7 +71,7 @@ internal sealed class MainForm : Form
         Text = "Kahn Dispatcher";
         Icon = AppIcon.Create();
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(620, 460);
+        MinimumSize = new Size(620, 540);
         ClientSize = new Size(700, 520);
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Palette.Back;
@@ -82,6 +87,7 @@ internal sealed class MainForm : Form
             ColumnCount = 1,
             RowCount = 6,
         };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -99,7 +105,7 @@ internal sealed class MainForm : Form
         };
         root.Controls.Add(profileRow, 0, 0);
 
-        profileRow.Controls.Add(PlainLabel("Profile", 50));
+        profileRow.Controls.Add(PlainLabel("Profile", 58));
         _runtimeProfile = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -119,6 +125,7 @@ internal sealed class MainForm : Form
             BackColor = Palette.Back,
             Padding = new Padding(0, 3, 0, 0),
             TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
         };
         profileRow.Controls.Add(_runtimeProfileDetail);
 
@@ -172,15 +179,10 @@ internal sealed class MainForm : Form
         _rootRange.PlaceholderText = "7748-7756";
         form.Controls.Add(_rootRange, 1, 1);
 
-        AddLabel(form, "Mid", 2, 1);
-        _middleRange = Box("", 112);
-        _middleRange.PlaceholderText = "7756.25-7772";
-        form.Controls.Add(_middleRange, 3, 1);
-
-        AddLabel(form, "Harvest", 4, 1);
+        AddLabel(form, "Harvest", 2, 1);
         _harvestRange = Box("", 112);
         _harvestRange.PlaceholderText = "7772.25-7776";
-        form.Controls.Add(_harvestRange, 5, 1);
+        form.Controls.Add(_harvestRange, 3, 1);
 
         AddLabel(form, "Base", 0, 2);
         _baseQuantity = Box("2", 44);
@@ -252,10 +254,20 @@ internal sealed class MainForm : Form
         root.Controls.Add(buttons, 0, 3);
         buttons.Controls.Add(CommandButton("Status", async (_, _) => await RunStatusAsync()));
         buttons.Controls.Add(CommandButton("Validate", async (_, _) => await RunDraftAsync(dryRun: true)));
-        buttons.Controls.Add(CommandButton("Dispatch", async (_, _) => await RunDraftAsync(dryRun: false)));
+        buttons.Controls.Add(CommandButton("Dispatch/WATCH", async (_, _) => await RunDraftAsync(dryRun: false)));
+        buttons.Controls.Add(CommandButton("GO LIVE", async (_, _) => await RunScopedControlAsync("go-live")));
+        buttons.Controls.Add(CommandButton("BE", async (_, _) => await RunScopedControlAsync("be")));
         buttons.Controls.Add(CommandButton("Cancel", async (_, _) => await RunCancelAsync()));
         buttons.Controls.Add(CommandButton("FLAT", async (_, _) => await RunFlatAsync(), danger: true));
         buttons.Controls.Add(CommandButton("Clear", (_, _) => ClearEntryFields()));
+        root.SizeChanged += (_, _) =>
+        {
+            int width = Math.Max(200, root.ClientSize.Width - root.Padding.Horizontal);
+            _preview.MaximumSize = new Size(width, 0);
+            profileRow.MaximumSize = new Size(width, 0);
+            buttons.MaximumSize = new Size(width, 0);
+            _runtimeProfileDetail.Width = Math.Max(180, width - 58 - 96 - 124 - 20);
+        };
 
         _statusLine = new Label
         {
@@ -289,7 +301,6 @@ internal sealed class MainForm : Form
         _probeOnlyMode.CheckedChanged += (_, _) => UpdatePreview();
         _scaleMode.CheckedChanged += (_, _) => UpdatePreview();
         _rootRange.TextChanged += (_, _) => UpdatePreview();
-        _middleRange.TextChanged += (_, _) => UpdatePreview();
         _harvestRange.TextChanged += (_, _) => UpdatePreview();
         _baseQuantity.TextChanged += (_, _) => UpdatePreview();
         _scaleQuantity.TextChanged += (_, _) => UpdatePreview();
@@ -361,6 +372,13 @@ internal sealed class MainForm : Form
     {
         if (_busy)
             return;
+        if (!dryRun && _legacyGeometryPending)
+        {
+            if (!Confirm("Convert saved legacy geometry to two boxes? Remove the middle press corridor and automatic root no-add constraint from this draft?", defaultYes: false))
+                return;
+            _legacyGeometryPending = false;
+            _settings.MiddleRange = "";
+        }
 
         KahnCommand command;
         try
@@ -375,7 +393,7 @@ internal sealed class MainForm : Form
 
         if (!dryRun)
         {
-            string confirmText = "Dispatch active Kahn campaign?"
+            string confirmText = "Load Kahn campaign into WATCH? GO LIVE is a separate authorization."
                 + Environment.NewLine
                 + CommandSummary(command);
             if (!Confirm(confirmText, defaultYes: false))
@@ -417,6 +435,44 @@ internal sealed class MainForm : Form
             await RunStatusAsync(silent: true);
     }
 
+    private async Task RunScopedControlAsync(string action)
+    {
+        if (_busy || !Confirm($"Issue {action.ToUpperInvariant()} for {_settings.ActiveProfile}'s current campaign/attempt?", defaultYes: false))
+            return;
+        List<string> args = RuntimeCommand(action);
+        string profileName = _settings.ActiveProfile;
+        CommandResult result = await RunCommandAsync(action, args, silent: false);
+        string output = FormatCommandResult(action, result);
+        if (result.ExitCode == 0 && TryParseJson(result.Output, out JsonDocument? sent) && sent != null)
+        {
+            using (sent)
+            {
+                string id = Str(sent.RootElement, "control_id", "");
+                string acknowledgement = "No acknowledgement yet; inspect status before retrying.";
+                // Pin the profile arguments across polling, even if the selector changes.
+                List<string> statusArgs = new(args);
+                statusArgs[0] = "status";
+                for (int attempt = 0; attempt < 12; attempt++)
+                {
+                    await Task.Delay(250);
+                    CommandResult status = await RunCommandAsync("status", statusArgs, silent: true);
+                    if (_settings.ActiveProfile == profileName) UpdateRuntimeStateTile("status", status);
+                    if (!TryParseJson(status.Output, out JsonDocument? reply) || reply == null) continue;
+                    using (reply)
+                    {
+                        if (TryGetObject(reply.RootElement, "control", out var control) && Str(control, "last_id", "") == id)
+                        {
+                            acknowledgement = "Runtime acknowledgement: " + Str(control, "last_status", "pending");
+                            break;
+                        }
+                    }
+                }
+                output += Environment.NewLine + acknowledgement;
+            }
+        }
+        ShowOutput(action, output);
+    }
+
     private async Task RunFlatAsync()
     {
         if (_busy)
@@ -452,12 +508,11 @@ internal sealed class MainForm : Form
     private KahnCommand BuildKahnCommand(bool dryRun)
     {
         ResolvedRange root = ParseRange(_rootRange.Text, "root");
-        ResolvedRange middle = ParseRange(_middleRange.Text, "middle");
         ResolvedRange harvest = ParseRange(_harvestRange.Text, "harvest");
         string side = _shortSide.Checked ? "short" : "long";
-        ValidateDirectionalGeometry(side, root, middle, harvest);
+        ValidateDirectionalGeometry(side, root, harvest);
 
-        ResolvedRange arena = Envelope(Envelope(root, middle), harvest);
+        ResolvedRange arena = Envelope(root, harvest);
         bool scaleAllowed = _scaleMode.Checked;
         int baseQty = ParseIntBox(_baseQuantity, "base", 1, 100);
         int scaleQty = ParseIntBox(_scaleQuantity, "scale", 1, 100);
@@ -473,13 +528,6 @@ internal sealed class MainForm : Form
         args.Add(FormatRangeArg(arena));
         args.Add("--probe");
         args.Add(FormatRangeArg(root));
-        if (scaleAllowed)
-        {
-            args.Add("--no-add");
-            args.Add(FormatRangeArg(root));
-            args.Add("--press");
-            args.Add(FormatRangeArg(middle));
-        }
         args.Add("--target");
         args.Add(FormatRangeArg(harvest));
         args.Add("--passive-harvest");
@@ -521,7 +569,6 @@ internal sealed class MainForm : Form
             args,
             side,
             root,
-            middle,
             harvest,
             arena,
             scaleAllowed ? "scale_allowed" : "root_only",
@@ -555,6 +602,7 @@ internal sealed class MainForm : Form
             "DEFAULT" => DispatcherSettings.DefaultRuntimeDir,
             "ES" => Path.Combine(DispatcherSettings.DefaultRuntimeDir, "ES"),
             "NQ" => Path.Combine(DispatcherSettings.DefaultRuntimeDir, "NQ"),
+            "6J" => Path.Combine(DispatcherSettings.DefaultRuntimeDir, "6J"),
             _ => "",
         };
         return expected.Length > 0
@@ -570,7 +618,7 @@ internal sealed class MainForm : Form
                 ? $"{command.OutgoingMax} sent, {command.VisibleMax} visible"
                 : command.OutgoingMax.ToString(CultureInfo.InvariantCulture);
             _preview.Text =
-                $"{command.Side.ToUpperInvariant()} probe {command.Root} -> mid {command.Middle} -> harvest {command.Harvest} | "
+                $"{command.Side.ToUpperInvariant()} trap_probe {command.Root} -> target {command.Harvest} | WATCH | "
                 + $"arena {command.Arena} | {command.Mode} | "
                 + $"base {command.BaseQty} scale {command.ScaleQty} max {maxText}";
         }
@@ -583,22 +631,17 @@ internal sealed class MainForm : Form
     private static void ValidateDirectionalGeometry(
         string side,
         ResolvedRange root,
-        ResolvedRange middle,
         ResolvedRange harvest)
     {
         if (side == "long")
         {
-            if (middle.Lower < root.Upper)
-                throw new InputException("long middle must be at or above the probe range");
-            if (harvest.Lower < middle.Upper)
-                throw new InputException("long harvest must be at or above the middle range");
+            if (harvest.Lower < root.Upper)
+                throw new InputException("long harvest must be at or above the probe range");
             return;
         }
 
-        if (middle.Upper > root.Lower)
-            throw new InputException("short middle must be at or below the probe range");
-        if (harvest.Upper > middle.Lower)
-            throw new InputException("short harvest must be at or below the middle range");
+        if (harvest.Upper > root.Lower)
+            throw new InputException("short harvest must be at or below the probe range");
     }
 
     private static string CommandSummary(KahnCommand command)
@@ -609,8 +652,6 @@ internal sealed class MainForm : Form
         return $"{command.Side.ToUpperInvariant()} {command.Mode}"
             + Environment.NewLine
             + $"Probe: {command.Root}"
-            + Environment.NewLine
-            + $"Middle: {command.Middle}"
             + Environment.NewLine
             + $"Harvest: {command.Harvest}"
             + Environment.NewLine
@@ -638,7 +679,7 @@ internal sealed class MainForm : Form
                 "status" => FormatStatus(root),
                 "preflight" => FormatPreflight(root),
                 "validate" or "dispatch" => FormatDraftResult(root, result),
-                "cancel" or "flat" => FormatControlResult(root, result),
+                "cancel" or "flat" or "go-live" or "be" => FormatControlResult(root, result),
                 _ => root.ToString() + RawSuffix(result.Error),
             };
         }
@@ -653,6 +694,9 @@ internal sealed class MainForm : Form
         {
             $"Profile: {Str(root, "profile")} | runtime {Str(root, "runtime_state")}",
             $"Campaign: {Str(root, "campaign_id", "-")} | {Str(root, "campaign_status", "-")} | phase {Str(root, "phase", "-")}",
+            $"Authorization: {Str(root, "authorization_state", "-")} | repair {Str(root, "repair_stage", "-")}",
+            $"Evidence: {Str(root, "evidence_state", "-")} | entry expires {Str(root, "entry_expires_utc", "-")}",
+            $"Execution: {Str(root, "execution_recovery_reason", "clear")} | pending {Str(root, "unresolved_risk_order", "-")} | reconciling {Bool(root, "awaiting_fill_position")}",
         };
 
         if (root.TryGetProperty("symbol_account", out JsonElement sym)
@@ -793,7 +837,6 @@ internal sealed class MainForm : Form
         UpdateRuntimeProfileChrome();
 
         _rootRange.Text = _settings.RootRange;
-        _middleRange.Text = _settings.MiddleRange;
         _harvestRange.Text = _settings.HarvestRange;
         _baseQuantity.Text = Clamp(_settings.BaseQuantity, 1, 100).ToString(CultureInfo.InvariantCulture);
         _scaleQuantity.Text = Clamp(_settings.ScaleQuantity, 1, 100).ToString(CultureInfo.InvariantCulture);
@@ -822,7 +865,6 @@ internal sealed class MainForm : Form
         _settings.Side = _shortSide.Checked ? "short" : "long";
         _settings.ScaleMode = _scaleMode.Checked ? "scale_allowed" : "root_only";
         _settings.RootRange = _rootRange.Text;
-        _settings.MiddleRange = _middleRange.Text;
         _settings.HarvestRange = _harvestRange.Text;
         _settings.BaseQuantity = ReadIntOr(_baseQuantity, _settings.BaseQuantity, 1, 100);
         _settings.ScaleQuantity = ReadIntOr(_scaleQuantity, _settings.ScaleQuantity, 1, 100);
@@ -961,25 +1003,30 @@ internal sealed class MainForm : Form
 
     private void ApplySketchImport(SketchImport import)
     {
+        if (import.Legacy && !Confirm("Convert legacy three-box sketch to two boxes? The middle press corridor and root no-add constraint will NOT be carried into this draft. Sizing and mode remain unchanged.", defaultYes: false))
+            return;
+        _legacyGeometryPending = false;
+        _settings.MiddleRange = "";
         if (import.Side == "short")
             _shortSide.Checked = true;
         else
             _longSide.Checked = true;
 
         _rootRange.Text = $"{FormatArg(import.Root.Lower)}-{FormatArg(import.Root.Upper)}";
-        _middleRange.Text = $"{FormatArg(import.Middle.Lower)}-{FormatArg(import.Middle.Upper)}";
         _harvestRange.Text = $"{FormatArg(import.Harvest.Lower)}-{FormatArg(import.Harvest.Upper)}";
         UpdatePreview();
-        SetStatusText($"sketch {import.Side.ToUpperInvariant()} probe {import.Root} mid {import.Middle} harvest {import.Harvest}");
+        SetStatusText($"sketch {import.Side.ToUpperInvariant()} probe {import.Root} harvest {import.Harvest}");
     }
 
     private static bool TryParseSketchImport(string text, out SketchImport import)
     {
-        import = new SketchImport("", default, default, default, "");
+        import = new SketchImport("", default, default, "", false);
         try
         {
             using JsonDocument document = JsonDocument.Parse(text);
             JsonElement root = document.RootElement;
+            int version = root.TryGetProperty("schema_version", out var schema) && schema.TryGetInt32(out int parsed) ? parsed : 1;
+            if (version is not (1 or 2)) return false;
             if (!TryGetString(root, "status", out string status)
                 || !status.Equals("ok", StringComparison.OrdinalIgnoreCase))
             {
@@ -998,30 +1045,24 @@ internal sealed class MainForm : Form
             {
                 return false;
             }
-            if (!TryGetRange(draft, "middle_range", out ResolvedRange middleRange)
-                && !TryGetRange(draft, "scale_range", out middleRange)
-                && !TryGetRange(draft, "evaluate_range", out middleRange))
-            {
-                return false;
-            }
+            bool legacy = version == 1 || draft.TryGetProperty("middle_range", out _)
+                || draft.TryGetProperty("scale_range", out _) || draft.TryGetProperty("evaluate_range", out _);
             if (!TryGetRange(draft, "harvest_range", out ResolvedRange harvestRange)
                 && !TryGetRange(draft, "target_range", out harvestRange))
             {
                 return false;
             }
 
-            ValidateDirectionalGeometry(side, rootRange, middleRange, harvestRange);
+            ValidateDirectionalGeometry(side, rootRange, harvestRange);
             string generatedAt = TryGetString(root, "generated_at_utc", out string value) ? value : "";
             string signature = string.Join("|",
                 generatedAt,
                 side,
                 rootRange.Lower.ToString("R", CultureInfo.InvariantCulture),
                 rootRange.Upper.ToString("R", CultureInfo.InvariantCulture),
-                middleRange.Lower.ToString("R", CultureInfo.InvariantCulture),
-                middleRange.Upper.ToString("R", CultureInfo.InvariantCulture),
                 harvestRange.Lower.ToString("R", CultureInfo.InvariantCulture),
                 harvestRange.Upper.ToString("R", CultureInfo.InvariantCulture));
-            import = new SketchImport(side, rootRange, middleRange, harvestRange, signature);
+            import = new SketchImport(side, rootRange, harvestRange, signature, legacy);
             return true;
         }
         catch (JsonException)
@@ -1036,8 +1077,9 @@ internal sealed class MainForm : Form
 
     private void ClearEntryFields()
     {
+        _legacyGeometryPending = false;
+        _settings.MiddleRange = "";
         _rootRange.Clear();
-        _middleRange.Clear();
         _harvestRange.Clear();
         _notes.Clear();
         UpdatePreview();
@@ -1120,7 +1162,7 @@ internal sealed class MainForm : Form
         string details = $"runtime {runtime}, phase {phase}, campaign {campaignStatus}, flat {flat}, qty {quantity}";
         if (!string.Equals(runtime, "Running", StringComparison.OrdinalIgnoreCase))
         {
-            SetRuntimeStateTile("STOPPED", Palette.Unknown, Palette.Fore, details);
+            SetRuntimeStateTile(runtime == "RecoveryActionRequired" ? "RECOVERY" : "STOPPED", Palette.Unknown, Palette.Fore, details);
             return;
         }
         if (!flat)
@@ -1135,7 +1177,7 @@ internal sealed class MainForm : Form
         }
         if (phase.Equals("Ready", StringComparison.OrdinalIgnoreCase))
         {
-            SetRuntimeStateTile("READY", Palette.Ready, Palette.Fore, details);
+            SetRuntimeStateTile(Str(root, "authorization_state", "WATCH"), Palette.Ready, Palette.Fore, details);
             return;
         }
         if (phase.Equals("Retired", StringComparison.OrdinalIgnoreCase))
@@ -1144,7 +1186,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        SetRuntimeStateTile("ARMED", Palette.Armed, Palette.DarkText, details);
+        SetRuntimeStateTile(Str(root, "authorization_state", "PAUSED"), Palette.Armed, Palette.DarkText, details);
     }
 
     private void UpdateRuntimeStateTileFromPreflight(JsonElement root)
@@ -1191,7 +1233,7 @@ internal sealed class MainForm : Form
         }
         if (phase.Equals("Ready", StringComparison.OrdinalIgnoreCase))
         {
-            SetRuntimeStateTile("READY", Palette.Ready, Palette.Fore, details);
+            SetRuntimeStateTile(Str(root, "authorization_state", "WATCH"), Palette.Ready, Palette.Fore, details);
             return;
         }
         if (phase.Equals("Retired", StringComparison.OrdinalIgnoreCase))
@@ -1200,7 +1242,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        SetRuntimeStateTile("ARMED", Palette.Armed, Palette.DarkText, details);
+        SetRuntimeStateTile(Str(root, "authorization_state", "PAUSED"), Palette.Armed, Palette.DarkText, details);
     }
 
     private void SetRuntimeStateTile(string text, Color backColor, Color foreColor, string details)
@@ -1504,7 +1546,6 @@ internal sealed class MainForm : Form
         IReadOnlyList<string> Arguments,
         string Side,
         ResolvedRange Root,
-        ResolvedRange Middle,
         ResolvedRange Harvest,
         ResolvedRange Arena,
         string Mode,
@@ -1516,9 +1557,9 @@ internal sealed class MainForm : Form
     private sealed record SketchImport(
         string Side,
         ResolvedRange Root,
-        ResolvedRange Middle,
         ResolvedRange Harvest,
-        string Signature);
+        string Signature,
+        bool Legacy);
 }
 
 internal readonly record struct ResolvedRange(double Lower, double Upper)
@@ -1694,6 +1735,7 @@ internal sealed class DispatcherSettings
         AddProfileIfMissing(normalized, names, "DEFAULT", DefaultRuntimeDir);
         AddProfileIfMissing(normalized, names, "ES", Path.Combine(DefaultRuntimeDir, "ES"));
         AddProfileIfMissing(normalized, names, "NQ", Path.Combine(DefaultRuntimeDir, "NQ"));
+        AddProfileIfMissing(normalized, names, "6J", Path.Combine(DefaultRuntimeDir, "6J"));
 
         RuntimeProfiles = normalized;
         if (string.IsNullOrWhiteSpace(ActiveProfile)

@@ -30,8 +30,15 @@ namespace KahnRuntime
             List<PolicyDecision> candidates = new();
             foreach (ICampaignPolicy policy in _policies)
             {
+                if (context.Plan.SchemaVersion == 2 && policy is PressPolicy)
+                    continue;
                 candidates.AddRange(policy.Evaluate(context, evidence)
-                    .Where(decision => decision != null));
+                    .Where(decision => decision != null)
+                    .Where(decision => context.Plan.SchemaVersion != 2
+                        || ((decision.ReasonCode != "non_causal_adverse_claim" || evidence.EvidenceEpoch == null)
+                            && decision.Action != PolicyAction.TrackScaleCandidate
+                            && (context.State.ExecutionAuthorized
+                                || decision.Action is not (PolicyAction.AllowProbe or PolicyAction.AllowAdd or PolicyAction.ArmProbe)))));
             }
             return DecisionResolver.Resolve(candidates, evidence);
         }
@@ -463,7 +470,8 @@ namespace KahnRuntime
                 yield break;
             }
 
-            if (context.State.ActiveRiskAnchor != null
+            if (!context.State.GroupSponsorActive
+                && context.State.ActiveRiskAnchor != null
                 && evidence.Kind == EvidenceKind.RailFailed
                 && CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side)
                 && evidenceRange.DistanceTicksTo(

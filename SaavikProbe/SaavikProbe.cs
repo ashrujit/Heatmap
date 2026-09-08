@@ -13,7 +13,7 @@ namespace SaavikProbe
 {
     public sealed class SaavikProbe : Indicator
     {
-        private const string ProbeVersion = "0.2.0";
+        private const string ProbeVersion = "0.3.0";
 
         [InputParameter("Draft JSON Path", sortIndex: 10)]
         public string DraftJsonPath =
@@ -35,17 +35,17 @@ namespace SaavikProbe
             minimum: 1, maximum: 200, increment: 1, decimalPlaces: 0)]
         public int InitialTargetHeightTicks = 8;
 
-        [InputParameter("Initial Middle Height (ticks)", sortIndex: 24,
+        [InputParameter("Initial Gap (ticks)", sortIndex: 24,
             minimum: 1, maximum: 400, increment: 1, decimalPlaces: 0)]
-        public int InitialMiddleHeightTicks = 16;
+        public int InitialGapTicks = 16;
 
         [InputParameter("Minimum Probe Height (ticks)", sortIndex: 25,
             minimum: 1, maximum: 200, increment: 1, decimalPlaces: 0)]
         public int MinimumOrderContextHeightTicks = 4;
 
-        [InputParameter("Minimum Middle Height (ticks)", sortIndex: 26,
-            minimum: 1, maximum: 200, increment: 1, decimalPlaces: 0)]
-        public int MinimumMiddleHeightTicks = 4;
+        [InputParameter("Minimum Gap (ticks)", sortIndex: 26,
+            minimum: 0, maximum: 200, increment: 1, decimalPlaces: 0)]
+        public int MinimumGapTicks = 0;
 
         [InputParameter("Minimum Harvest Height (ticks)", sortIndex: 27,
             minimum: 1, maximum: 200, increment: 1, decimalPlaces: 0)]
@@ -55,7 +55,7 @@ namespace SaavikProbe
         private Rectangle _panelRect = Rectangle.Empty;
         private SketchState _state = SketchState.Idle;
         private CaptureBox _orderBox;
-        private CaptureBox _middleBox;
+        private CaptureBox _gapBox;
         private CaptureBox _targetBox;
         private ChartPoint _dragStart;
         private bool _initialDragReachedMinimum;
@@ -249,7 +249,7 @@ namespace SaavikProbe
         {
             _state = SketchState.AwaitSketch;
             _orderBox = null;
-            _middleBox = null;
+            _gapBox = null;
             _targetBox = null;
             _dragging = false;
             _initialDragReachedMinimum = false;
@@ -263,7 +263,7 @@ namespace SaavikProbe
         {
             _state = SketchState.Idle;
             _orderBox = null;
-            _middleBox = null;
+            _gapBox = null;
             _targetBox = null;
             _dragging = false;
             _initialDragReachedMinimum = false;
@@ -274,7 +274,7 @@ namespace SaavikProbe
 
         private void CompleteDraft()
         {
-            string side = ResolveSide(_orderBox, _middleBox, _targetBox);
+            string side = ResolveSide(_orderBox, _gapBox, _targetBox);
             if (side == null)
             {
                 _state = SketchState.AwaitSketch;
@@ -300,11 +300,6 @@ namespace SaavikProbe
                     Lower = _orderBox.Low,
                     Upper = _orderBox.High,
                 },
-                MiddleRange = new PriceRange
-                {
-                    Lower = _middleBox.Low,
-                    Upper = _middleBox.High,
-                },
                 HarvestRange = new PriceRange
                 {
                     Lower = _targetBox.Low,
@@ -313,14 +308,14 @@ namespace SaavikProbe
                 TargetPrice = targetPrice,
                 TimeRange = new TimeRange
                 {
-                    Left = MinTime(_orderBox, _middleBox, _targetBox).ToString("O", CultureInfo.InvariantCulture),
-                    Right = MaxTime(_orderBox, _middleBox, _targetBox).ToString("O", CultureInfo.InvariantCulture),
-                    LeftTicks = MinTime(_orderBox, _middleBox, _targetBox).Ticks,
-                    RightTicks = MaxTime(_orderBox, _middleBox, _targetBox).Ticks,
+                    Left = MinTime(_orderBox, _gapBox, _targetBox).ToString("O", CultureInfo.InvariantCulture),
+                    Right = MaxTime(_orderBox, _gapBox, _targetBox).ToString("O", CultureInfo.InvariantCulture),
+                    LeftTicks = MinTime(_orderBox, _gapBox, _targetBox).Ticks,
+                    RightTicks = MaxTime(_orderBox, _gapBox, _targetBox).Ticks,
                 },
                 Source = new SketchSource
                 {
-                    Kind = "saavik_one_drag_probe_middle_harvest",
+                    Kind = "saavik_two_box_probe_harvest",
                     Version = ProbeVersion,
                 },
             };
@@ -343,7 +338,7 @@ namespace SaavikProbe
             var converter = e.Window?.CoordinatesConverter
                 ?? _subscribedChart?.MainWindow?.CoordinatesConverter
                 ?? CurrentChart?.MainWindow?.CoordinatesConverter;
-            if (converter == null || _orderBox == null || _middleBox == null || _targetBox == null)
+            if (converter == null || _orderBox == null || _gapBox == null || _targetBox == null)
                 return false;
 
             foreach (var item in GetHandlePoints(converter))
@@ -362,23 +357,23 @@ namespace SaavikProbe
 
         private void UpdateBoundaryFromHandle(BoundaryHandle handle, double rawPrice)
         {
-            string side = ResolveSide(_orderBox, _middleBox, _targetBox);
+            string side = ResolveSide(_orderBox, _gapBox, _targetBox);
             if (side == null)
                 return;
 
             double price = RoundToTick(rawPrice);
             double tick = GetTickSize();
             double minOrderHeight = Math.Max(tick, Math.Max(1, MinimumOrderContextHeightTicks) * tick);
-            double minMiddleHeight = Math.Max(tick, Math.Max(1, MinimumMiddleHeightTicks) * tick);
+            double minMiddleHeight = Math.Max(0, MinimumGapTicks) * tick;
             double minTargetHeight = Math.Max(tick, Math.Max(1, MinimumTargetHeightTicks) * tick);
-            DateTime left = MinTime(_orderBox, _middleBox, _targetBox);
-            DateTime right = MaxTime(_orderBox, _middleBox, _targetBox);
+            DateTime left = MinTime(_orderBox, _gapBox, _targetBox);
+            DateTime right = MaxTime(_orderBox, _gapBox, _targetBox);
 
             if (side == "long")
             {
                 double orderLow = _orderBox.Low;
                 double rootHigh = _orderBox.High;
-                double middleHigh = _middleBox.High;
+                double middleHigh = _gapBox.High;
                 double targetHigh = _targetBox.High;
 
                 switch (handle)
@@ -386,10 +381,10 @@ namespace SaavikProbe
                     case BoundaryHandle.OrderOuter:
                         orderLow = Math.Min(price, rootHigh - minOrderHeight);
                         break;
-                    case BoundaryHandle.RootMiddle:
+                    case BoundaryHandle.RootInner:
                         rootHigh = Clamp(price, orderLow + minOrderHeight, middleHigh - minMiddleHeight);
                         break;
-                    case BoundaryHandle.MiddleHarvest:
+                    case BoundaryHandle.HarvestInner:
                         middleHigh = Clamp(price, rootHigh + minMiddleHeight, targetHigh - minTargetHeight);
                         break;
                     case BoundaryHandle.TargetOuter:
@@ -398,14 +393,14 @@ namespace SaavikProbe
                 }
 
                 _orderBox = CaptureBox.FromBounds(left, right, orderLow, rootHigh);
-                _middleBox = CaptureBox.FromBounds(left, right, rootHigh, middleHigh);
+                _gapBox = CaptureBox.FromBounds(left, right, rootHigh, middleHigh);
                 _targetBox = CaptureBox.FromBounds(left, right, middleHigh, targetHigh);
                 _status = $"LONG harvest {FormatSketchPrice(middleHigh)}-{FormatSketchPrice(targetHigh)}";
             }
             else
             {
                 double targetLow = _targetBox.Low;
-                double middleLow = _middleBox.Low;
+                double middleLow = _gapBox.Low;
                 double orderLow = _orderBox.Low;
                 double orderHigh = _orderBox.High;
 
@@ -414,10 +409,10 @@ namespace SaavikProbe
                     case BoundaryHandle.OrderOuter:
                         orderHigh = Math.Max(price, orderLow + minOrderHeight);
                         break;
-                    case BoundaryHandle.RootMiddle:
+                    case BoundaryHandle.RootInner:
                         orderLow = Clamp(price, middleLow + minMiddleHeight, orderHigh - minOrderHeight);
                         break;
-                    case BoundaryHandle.MiddleHarvest:
+                    case BoundaryHandle.HarvestInner:
                         middleLow = Clamp(price, targetLow + minTargetHeight, orderLow - minMiddleHeight);
                         break;
                     case BoundaryHandle.TargetOuter:
@@ -426,7 +421,7 @@ namespace SaavikProbe
                 }
 
                 _orderBox = CaptureBox.FromBounds(left, right, orderLow, orderHigh);
-                _middleBox = CaptureBox.FromBounds(left, right, middleLow, orderLow);
+                _gapBox = CaptureBox.FromBounds(left, right, middleLow, orderLow);
                 _targetBox = CaptureBox.FromBounds(left, right, targetLow, middleLow);
                 _status = $"SHORT harvest {FormatSketchPrice(targetLow)}-{FormatSketchPrice(middleLow)}";
             }
@@ -438,9 +433,9 @@ namespace SaavikProbe
             double anchor = RoundToTick(_dragStart.Price);
             double price = RoundToTick(current.Price);
             double initialTargetHeight = Math.Max(tick, Math.Max(1, InitialTargetHeightTicks) * tick);
-            double initialMiddleHeight = Math.Max(tick, Math.Max(1, InitialMiddleHeightTicks) * tick);
+            double initialMiddleHeight = Math.Max(tick, Math.Max(1, InitialGapTicks) * tick);
             double minOrderHeight = Math.Max(tick, Math.Max(1, MinimumOrderContextHeightTicks) * tick);
-            double minMiddleHeight = Math.Max(tick, Math.Max(1, MinimumMiddleHeightTicks) * tick);
+            double minMiddleHeight = Math.Max(0, MinimumGapTicks) * tick;
             double minTargetHeight = Math.Max(tick, Math.Max(1, MinimumTargetHeightTicks) * tick);
             _initialDragReachedMinimum = Math.Abs(price - anchor) >= minOrderHeight;
 
@@ -450,7 +445,7 @@ namespace SaavikProbe
                 double middleHigh = orderHigh + Math.Max(minMiddleHeight, initialMiddleHeight);
                 double targetHigh = middleHigh + Math.Max(minTargetHeight, initialTargetHeight);
                 _orderBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, anchor, orderHigh);
-                _middleBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, orderHigh, middleHigh);
+                _gapBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, orderHigh, middleHigh);
                 _targetBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, middleHigh, targetHigh);
                 _status = $"LONG probe {FormatSketchPrice(anchor)}-{FormatSketchPrice(orderHigh)}";
             }
@@ -460,7 +455,7 @@ namespace SaavikProbe
                 double middleLow = orderLow - Math.Max(minMiddleHeight, initialMiddleHeight);
                 double targetLow = middleLow - Math.Max(minTargetHeight, initialTargetHeight);
                 _orderBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, orderLow, anchor);
-                _middleBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, middleLow, orderLow);
+                _gapBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, middleLow, orderLow);
                 _targetBox = CaptureBox.FromBounds(_dragStart.Time, current.Time, targetLow, middleLow);
                 _status = $"SHORT probe {FormatSketchPrice(orderLow)}-{FormatSketchPrice(anchor)}";
             }
@@ -468,15 +463,15 @@ namespace SaavikProbe
 
         private bool SketchIsUsable()
         {
-            if (_orderBox == null || _middleBox == null || _targetBox == null || !_initialDragReachedMinimum)
+            if (_orderBox == null || _gapBox == null || _targetBox == null || !_initialDragReachedMinimum)
                 return false;
 
             double tick = GetTickSize();
             double minOrderHeight = Math.Max(tick, Math.Max(1, MinimumOrderContextHeightTicks) * tick);
-            double minMiddleHeight = Math.Max(tick, Math.Max(1, MinimumMiddleHeightTicks) * tick);
+            double minMiddleHeight = Math.Max(0, MinimumGapTicks) * tick;
             double minTargetHeight = Math.Max(tick, Math.Max(1, MinimumTargetHeightTicks) * tick);
             return _orderBox.High - _orderBox.Low >= minOrderHeight
-                   && _middleBox.High - _middleBox.Low >= minMiddleHeight
+                   && _gapBox.High - _gapBox.Low >= minMiddleHeight
                    && _targetBox.High - _targetBox.Low >= minTargetHeight;
         }
 
@@ -489,7 +484,7 @@ namespace SaavikProbe
             {
                 var snapshot = new SketchSnapshot
                 {
-                    SchemaVersion = 1,
+                    SchemaVersion = 2,
                     Source = nameof(SaavikProbe),
                     Version = ProbeVersion,
                     GeneratedAtUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
@@ -501,7 +496,6 @@ namespace SaavikProbe
                     State = _state.ToString(),
                     ActiveDraft = draft,
                     RootBox = _orderBox?.ToDto(),
-                    MiddleBox = _middleBox?.ToDto(),
                     HarvestBox = _targetBox?.ToDto(),
                 };
 
@@ -567,7 +561,6 @@ namespace SaavikProbe
             using var oldSmoothing = new SmoothingGuard(args.Graphics, SmoothingMode.AntiAlias);
 
             PaintCaptureBox(args.Graphics, rect, converter, _orderBox, BoxRole.Order, preview: _dragging);
-            PaintCaptureBox(args.Graphics, rect, converter, _middleBox, BoxRole.Middle, preview: _dragging);
             PaintCaptureBox(args.Graphics, rect, converter, _targetBox, BoxRole.Target, preview: _dragging);
             PaintBoundaryHandles(args.Graphics, rect, converter);
 
@@ -579,7 +572,7 @@ namespace SaavikProbe
             Rectangle chartRect,
             IChartWindowCoordinatesConverter converter)
         {
-            if (converter == null || _orderBox == null || _middleBox == null || _targetBox == null)
+            if (converter == null || _orderBox == null || _gapBox == null || _targetBox == null)
                 return;
 
             foreach (var item in GetHandlePoints(converter))
@@ -603,23 +596,26 @@ namespace SaavikProbe
 
         private HandlePoint[] GetHandlePoints(IChartWindowCoordinatesConverter converter)
         {
-            string side = ResolveSide(_orderBox, _middleBox, _targetBox);
+            string side = ResolveSide(_orderBox, _gapBox, _targetBox);
             if (side == null || converter == null)
                 return Array.Empty<HandlePoint>();
 
-            DateTime left = MinTime(_orderBox, _middleBox, _targetBox);
-            DateTime right = MaxTime(_orderBox, _middleBox, _targetBox);
+            DateTime left = MinTime(_orderBox, _gapBox, _targetBox);
+            DateTime right = MaxTime(_orderBox, _gapBox, _targetBox);
             double xLeft = converter.GetChartX(left);
             double xRight = converter.GetChartX(right);
             int x = (int)Math.Round((xLeft + xRight) / 2.0);
+            // Adjacent boxes can share a price; keep both inner handles selectable.
+            int rootInnerX = x - 14;
+            int harvestInnerX = x + 14;
 
             if (side == "long")
             {
                 return new[]
                 {
                     new HandlePoint(BoundaryHandle.TargetOuter, x, (int)Math.Round(converter.GetChartY(_targetBox.High))),
-                    new HandlePoint(BoundaryHandle.MiddleHarvest, x, (int)Math.Round(converter.GetChartY(_middleBox.High))),
-                    new HandlePoint(BoundaryHandle.RootMiddle, x, (int)Math.Round(converter.GetChartY(_orderBox.High))),
+                    new HandlePoint(BoundaryHandle.HarvestInner, harvestInnerX, (int)Math.Round(converter.GetChartY(_gapBox.High))),
+                    new HandlePoint(BoundaryHandle.RootInner, rootInnerX, (int)Math.Round(converter.GetChartY(_orderBox.High))),
                     new HandlePoint(BoundaryHandle.OrderOuter, x, (int)Math.Round(converter.GetChartY(_orderBox.Low))),
                 };
             }
@@ -627,8 +623,8 @@ namespace SaavikProbe
             return new[]
             {
                 new HandlePoint(BoundaryHandle.OrderOuter, x, (int)Math.Round(converter.GetChartY(_orderBox.High))),
-                new HandlePoint(BoundaryHandle.RootMiddle, x, (int)Math.Round(converter.GetChartY(_orderBox.Low))),
-                new HandlePoint(BoundaryHandle.MiddleHarvest, x, (int)Math.Round(converter.GetChartY(_middleBox.Low))),
+                new HandlePoint(BoundaryHandle.RootInner, rootInnerX, (int)Math.Round(converter.GetChartY(_orderBox.Low))),
+                new HandlePoint(BoundaryHandle.HarvestInner, harvestInnerX, (int)Math.Round(converter.GetChartY(_gapBox.Low))),
                 new HandlePoint(BoundaryHandle.TargetOuter, x, (int)Math.Round(converter.GetChartY(_targetBox.Low))),
             };
         }
@@ -709,7 +705,7 @@ namespace SaavikProbe
             if (yBottom <= yTop)
                 yBottom = Math.Min(chartRect.Bottom, yTop + 2);
 
-            string side = ResolveSide(_orderBox, _middleBox, _targetBox);
+            string side = ResolveSide(_orderBox, _gapBox, _targetBox);
             Color color = BoxColor(role, side);
             int fillAlpha = preview ? 38 : 56;
             int edgeAlpha = preview ? 118 : 168;
@@ -892,8 +888,8 @@ namespace SaavikProbe
         {
             None,
             OrderOuter,
-            RootMiddle,
-            MiddleHarvest,
+            RootInner,
+            HarvestInner,
             TargetOuter,
         }
 
@@ -1023,7 +1019,6 @@ namespace SaavikProbe
             public double TickSize { get; set; }
             public string State { get; set; }
             public CaptureBoxDto RootBox { get; set; }
-            public CaptureBoxDto MiddleBox { get; set; }
             public CaptureBoxDto HarvestBox { get; set; }
             public SketchDraft ActiveDraft { get; set; }
 
@@ -1033,8 +1028,6 @@ namespace SaavikProbe
                     State ?? string.Empty,
                     RootBox?.Low.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
                     RootBox?.High.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
-                    MiddleBox?.Low.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
-                    MiddleBox?.High.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
                     HarvestBox?.Low.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
                     HarvestBox?.High.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
                     ActiveDraft?.Side ?? string.Empty,
@@ -1045,7 +1038,6 @@ namespace SaavikProbe
         {
             public string Side { get; set; }
             public PriceRange RootRange { get; set; }
-            public PriceRange MiddleRange { get; set; }
             public PriceRange HarvestRange { get; set; }
             public double TargetPrice { get; set; }
             public TimeRange TimeRange { get; set; }

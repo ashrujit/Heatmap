@@ -17,7 +17,7 @@ using LlEvidenceTransitionKind = KahnRuntime.LiveEvidence.EvidenceTransitionKind
 
 namespace KahnRuntime
 {
-    public sealed class KahnRuntime : Strategy
+    public sealed partial class KahnRuntime : Strategy
     {
         private const int L1ToleranceTicks = 2;
         private const int LiveSubmitSettleSeconds = 5;
@@ -304,6 +304,11 @@ namespace KahnRuntime
                     SaveCheckpoint(force: true, runtimeState: _running ? "Running" : "Stopped");
                     return;
                 }
+                if (ContinueFlatControl(now))
+                {
+                    SaveCheckpoint(force: true, runtimeState: "Running");
+                    return;
+                }
                 LoadPlan();
 
                 if (!ReconcileLivePosition(now.UtcDateTime))
@@ -312,13 +317,16 @@ namespace KahnRuntime
                     return;
                 }
 
+                if (CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
+                    _session?.ConfirmFlat(DateTimeOffset.UtcNow);
                 if (!MaintainBreakevenBackstop(now))
                 {
                     SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
                     return;
                 }
 
-                ProcessBookSample(now.UtcDateTime);
+                _sampleEvidence.Clear();
+                ProcessBookSample(DateTime.UtcNow);
 
                 IReadOnlyList<CampaignEvidence> marketEvents = DrainMarketEvents();
                 IReadOnlyList<CampaignEvidence> inboxEvents = _evidenceInbox?.ReadNewEvents(
@@ -327,15 +335,13 @@ namespace KahnRuntime
                     && _state != null
                     && _plan.ShouldEvaluateEvidenceAt(now, _state))
                 {
-                    foreach (CampaignEvidence evidence in marketEvents)
-                        ProcessEvidence(evidence, now);
-                    foreach (CampaignEvidence evidence in inboxEvents)
-                        ProcessEvidence(evidence, now);
+                    ProcessEvidenceBatch(_sampleEvidence.Concat(marketEvents).Concat(inboxEvents).ToArray(), DateTimeOffset.UtcNow);
                 }
                 else
                 {
                     LogEvidenceDiscardedWhileInactive(marketEvents.Count + inboxEvents.Count);
                 }
+                _sampleEvidence.Clear();
 
                 if (!ReconcileLivePosition(DateTime.UtcNow)
                     || !MaintainBreakevenBackstop(DateTimeOffset.UtcNow))
@@ -374,6 +380,9 @@ namespace KahnRuntime
             if (!result.Changed)
                 return;
 
+            if (!PlanAdmissible(result.Plan))
+                return;
+
             _lastPlanError = null;
             _lastControlError = null;
             _lastControlId = null;
@@ -381,12 +390,15 @@ namespace KahnRuntime
             _lastControlStatus = null;
             CampaignPlan priorPlan = _plan;
             CampaignState priorState = _state;
-            _processedControlIds.Clear();
-            if (!PlanAdmissible(result.Plan))
-                return;
 
             _plan = result.Plan;
             _state = CampaignState.ForPlan(_plan);
+            _session = new CampaignSession(_plan, _state, _runtimeInstanceId, _tickSize,
+                TimeSpan.FromSeconds(Math.Max(1, BookFreshnessSec)));
+            _session.Observer.StartEpoch(_llEpoch, DateTimeOffset.UtcNow, _plan.Arena.Center / _tickSize);
+            _awaitingFillPosition = false;
+            _pendingCloseQuantity = null;
+            _managedPositionId = null;
             int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
             bool resumedFromRetryPause = priorState?.ExecutionPaused == true
                 && string.Equals(priorPlan?.Id, _plan.Id, StringComparison.Ordinal);
@@ -478,6 +490,7 @@ namespace KahnRuntime
             {
                 RuntimeControlAction.Flat => HandleFlatControl(command, now),
                 RuntimeControlAction.Cancel => HandleCancelControl(command, now),
+                RuntimeControlAction.GoLive or RuntimeControlAction.Breakeven => HandleScopedControl(command, now),
                 _ => false,
             };
         }
@@ -489,7 +502,9 @@ namespace KahnRuntime
                 ? LivePosition(out ambiguous)
                 : CurrentPosition();
             bool hasAmbiguousLivePosition = _runTradingEnabled && ambiguous;
-            if (hasAmbiguousLivePosition || !position.IsFlat)
+            if (hasAmbiguousLivePosition || !position.IsFlat || _session?.HasUnresolvedOrder == true
+                || _awaitingFillPosition || _pendingCloseQuantity.HasValue || _latchedFlat != null
+                || BoundWorkingOrders().Count > 0)
             {
                 _lastControlStatus = "rejected_position_exists";
                 _decisions.Write("control_cancel_rejected",
@@ -519,70 +534,10 @@ namespace KahnRuntime
 
         private bool HandleFlatControl(RuntimeControlCommand command, DateTimeOffset now)
         {
-            _gateway?.CancelRuntimeOrders("order_cancel_control");
-            RuntimePosition[] positions = _runTradingEnabled
-                ? BoundLivePositions()
-                : ShadowPositions();
-
-            if (positions.Length == 0)
-            {
-                RetireCurrentCampaign(command, now, "operator_flat_already_flat");
-                _lastControlStatus = "accepted_already_flat";
-                _decisions.Write("control_flat_completed",
-                    ("control_id", command.Id),
-                    ("campaign_id", _plan?.Id),
-                    ("reason", command.Reason),
-                    ("result", "already_flat"),
-                    ("working_order_count", BoundWorkingOrders().Count));
-                LogOperator("INFO", $"FLAT accepted for {_plan?.Id ?? "-"}: already flat.");
-                return true;
-            }
-
-            foreach (RuntimePosition position in positions)
-            {
-                PolicyDecision decision = ControlDecision(
-                    command,
-                    PolicyAction.Flatten,
-                    "operator_flatten",
-                    Math.Max(1, (int)Math.Ceiling(position.Quantity)));
-                CampaignPlan effectivePlan = PlanForControl(command, position);
-                GatewayResult result = _gateway.Execute(
-                    decision,
-                    effectivePlan,
-                    position,
-                    SnapshotMarket(now.UtcDateTime));
-                if (!result.Accepted)
-                {
-                    _lastControlStatus = "rejected_execution";
-                    _decisions.Write("control_flat_rejected",
-                        ("control_id", command.Id),
-                        ("campaign_id", _plan?.Id),
-                        ("position_id", position.PositionId),
-                        ("position_quantity", position.Quantity),
-                        ("message", result.Message),
-                        ("requires_operator_action", result.RequiresOperatorAction));
-                    LogOperator("ERR", $"FLAT rejected: {result.Message}", error: true);
-                    return true;
-                }
-            }
-
-            if (_runTradingEnabled)
-            {
-                DateTime settleUntil = DateTime.UtcNow.AddSeconds(LiveCloseSettleSeconds);
-                _liveSettleUntilUtc = settleUntil;
-                _liveCloseSettleUntilUtc = settleUntil;
-            }
-            RetireCurrentCampaign(command, now, "operator_flatten");
-            _lastControlStatus = "accepted";
-            _decisions.Write("control_flat_completed",
-                ("control_id", command.Id),
-                ("campaign_id", _plan?.Id),
-                ("reason", command.Reason),
-                ("result", "close_submitted"),
-                ("position_count", positions.Length),
-                ("working_order_count", BoundWorkingOrders().Count));
-            LogOperator("RISK", $"FLAT accepted for {_plan?.Id ?? "-"}; close submitted for {positions.Length} position(s).");
-            return true;
+            _latchedFlat = command;
+            _flatCloseSubmitted.Clear();
+            _state?.RevokeExecution();
+            return ContinueFlatControl(now);
         }
 
         private RuntimePosition[] ShadowPositions()
@@ -657,6 +612,12 @@ namespace KahnRuntime
         {
             if (plan == null)
                 return false;
+            if (plan.SchemaVersion != 2 || _session?.HasUnresolvedOrder == true || _awaitingFillPosition || _pendingCloseQuantity.HasValue)
+            {
+                _decisions.Write("campaign_rejected", ("campaign_id", plan.Id),
+                    ("reason", plan.SchemaVersion != 2 ? "legacy_plan_requires_explicit_conversion" : "unresolved_execution"));
+                return false;
+            }
             int instanceMax = Math.Max(1, InstanceMaxQuantity);
             if (plan.Sizing.MaxPositionQuantity > instanceMax)
             {
@@ -716,7 +677,7 @@ namespace KahnRuntime
             return true;
         }
 
-        private void ProcessEvidence(CampaignEvidence evidence, DateTimeOffset now)
+        private void ProcessEvidence(CampaignEvidence evidence, DateTimeOffset now, PolicyDecision selected = null)
         {
             if (_plan == null
                 || _state == null
@@ -744,7 +705,7 @@ namespace KahnRuntime
             CampaignPhase phaseBefore = _state.Phase;
             int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
             CampaignContext context = new(_plan, _state, _tickSize, now);
-            PolicyDecision decision = _policyEngine.Evaluate(context, evidence);
+            PolicyDecision decision = selected ?? _policyEngine.Evaluate(context, evidence);
             if (!_state.ShouldEmit(decision, now, TimeSpan.FromSeconds(5)))
                 return;
 
@@ -782,7 +743,8 @@ namespace KahnRuntime
                 ("retries_remaining", _state.ExecutionRetriesRemaining(_plan)),
                 ("execution_pause_reason", _state.ExecutionPauseReason));
 
-            GatewayResult execution = ExecuteDecision(decision, now);
+            bool newRisk = decision.Action is PolicyAction.AllowProbe or PolicyAction.AllowAdd;
+            GatewayResult execution = newRisk ? ExecuteNewRisk(decision, evidence, now) : ExecuteDecision(decision, now);
             if (!execution.Accepted && RequiresBrokerAction(decision.Action))
             {
                 _decisions.Write("policy_execution_rejected",
@@ -811,7 +773,7 @@ namespace KahnRuntime
                 && double.IsFinite(execution.SyntheticFillPrice)
                     ? execution.SyntheticFillPrice
                     : null;
-            _state.ApplyDecision(decision,
+            if (!newRisk) _state.ApplyDecision(decision,
                 _plan,
                 simulateAccepted,
                 now,
@@ -919,8 +881,9 @@ namespace KahnRuntime
             RuntimePosition position = CurrentPosition();
             if (position == null || position.IsFlat || position.Direction != _plan.Side)
                 return true;
-            bool scaledInventoryObserved = position.Quantity > _plan.Sizing.ProbeQuantity + 1e-9;
-            if (!_state.BreakevenBackstopActive && !scaledInventoryObserved)
+            bool scaledInventoryObserved = position.Quantity > _plan.Sizing.ProbeQuantity + 1e-9
+                || (_plan.SchemaVersion == 2 && _state.AcceptedAddCount > 0);
+            if (!_state.BreakevenBackstopActive && !scaledInventoryObserved && !_state.OperatorProtectionPrice.HasValue)
                 return true;
             if (!double.IsFinite(position.AveragePrice) || position.AveragePrice <= 0)
                 return true;
@@ -929,7 +892,7 @@ namespace KahnRuntime
             if (market == null || !market.IsValid)
                 return true;
 
-            double trigger = BreakevenTriggerPrice(_plan, position);
+            double trigger = ProtectedBreakevenPrice(position);
             if (StopTouched(_plan.Side, trigger, market))
             {
                 if (!_state.BreakevenBackstopActive)
@@ -944,7 +907,6 @@ namespace KahnRuntime
                         ("working_be_quantity", workingBeQuantity));
                     return true;
                 }
-
                 PolicyDecision retire = BreakevenDecision(
                     PolicyAction.Retire,
                     "breakeven_backstop_touched",
@@ -1111,6 +1073,8 @@ namespace KahnRuntime
 
         private GatewayResult ExecuteDecision(PolicyDecision decision, DateTimeOffset now)
         {
+            if (decision.Action == PolicyAction.Reduce && _pendingCloseQuantity.HasValue)
+                return new GatewayResult { Message = "prior reduction is awaiting position reconciliation" };
             if (!RequiresBrokerAction(decision.Action))
                 return new GatewayResult { Accepted = true, Message = "state-only decision" };
             if (_gateway == null)
@@ -1123,6 +1087,11 @@ namespace KahnRuntime
 
             RuntimePosition position = CurrentPosition();
             ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
+            if (IsCloseAction(decision.Action) && _session?.HasUnresolvedOrder == true)
+            {
+                _session.RequireRecovery("risk_down_with_unresolved_order");
+                _gateway.CancelRuntimeOrders("risk_down_cancel_pending");
+            }
             GatewayResult result = _gateway.Execute(decision, _plan, position, market);
             if (_runTradingEnabled
                 && result.Accepted
@@ -1134,7 +1103,11 @@ namespace KahnRuntime
                 DateTime settleUntil = DateTime.UtcNow.AddSeconds(settleSeconds);
                 _liveSettleUntilUtc = settleUntil;
                 if (IsCloseAction(decision.Action))
+                {
                     _liveCloseSettleUntilUtc = settleUntil;
+                    _pendingCloseQuantity = decision.Action == PolicyAction.Reduce
+                        ? Math.Max(0, (int)Math.Round(position.Quantity) - Math.Max(1, decision.Quantity ?? 1)) : 0;
+                }
             }
             return result;
         }
@@ -1188,6 +1161,8 @@ namespace KahnRuntime
             if ((nowUtc - _lastBookSampleUtc).TotalMilliseconds < Math.Max(250, BookSampleMs))
                 return;
             _lastBookSampleUtc = nowUtc;
+            if (_session?.Observer.Suspended == true && _evidenceState != "BookUnusable")
+                ResetEvidenceEpoch("scale_observation_gap_rewarm");
 
             BookSampleDiagnostic diagnostic = new()
             {
@@ -1235,16 +1210,26 @@ namespace KahnRuntime
             foreach (LlEvidenceTransition transition in transitions)
             {
                 LogLiveEvidenceTransition(transition);
-                if (!_evidenceWarmupComplete)
-                    continue;
                 if (TryTranslateLiveEvidence(transition, out CampaignEvidence evidence)
-                    && _plan != null
-                    && _state != null
-                    && _plan.ShouldEvaluateEvidenceAt(evidence.Timestamp, _state))
+                    && _session != null)
                 {
-                    ProcessEvidence(evidence, DateTimeOffset.UtcNow);
+                    _sampleEvidence.Add(evidence);
                 }
             }
+            if (_session != null)
+            {
+                ExecutableMarket market = SnapshotMarket(nowUtc);
+                if (market.IsValid)
+                    _session.Observe(new Scaling.RepairSample(EvidenceSource.LevelLedger, _llEpoch,
+                        _evidenceEpochSampleCount, new DateTimeOffset(nowUtc, TimeSpan.Zero), ManagementTicks(market),
+                        _sampleEvidence.Select(e => new Scaling.RepairTransition(
+                            new(EvidenceSource.LevelLedger, _llEpoch, e.RailId), e.Kind,
+                            e.Side == EvidenceSide.Demand ? CampaignSide.Long : CampaignSide.Short,
+                            _session.Ticks(e.Range), e.FormedAt)).ToArray(), true));
+                else _session.Observer.Suspend(DateTimeOffset.UtcNow, "sample_quote_unavailable");
+                DrainRepairAudit();
+            }
+            if (!_evidenceWarmupComplete) _sampleEvidence.Clear();
         }
 
         private void MarkBookUnusable(string reason, BookSampleDiagnostic diagnostic)
@@ -1272,6 +1257,8 @@ namespace KahnRuntime
 
         private void ResetEvidenceEpoch(string reason)
         {
+            _session?.Observer.Suspend(DateTimeOffset.UtcNow, reason);
+            _llEpoch = Guid.NewGuid().ToString("N");
             _evidenceEpochStartedUtc = DateTime.MinValue;
             _evidenceEpochSampleCount = 0;
             _evidenceWarmupComplete = false;
@@ -1392,6 +1379,10 @@ namespace KahnRuntime
                 Price = transition.CurrentMidTick * _tickSize,
                 Range = range,
                 RailId = railId,
+                EvidenceEpoch = _llEpoch,
+                SampleSequence = _evidenceEpochSampleCount,
+                FormedAt = transition.Band.FormedUtc == default ? null
+                    : new DateTimeOffset(transition.Band.FormedUtc, TimeSpan.Zero),
                 Score = transition.Band.Score,
                 Note = $"{transition.Band.Source}:{transition.Reason}",
             };
@@ -1551,6 +1542,8 @@ namespace KahnRuntime
 
         private void SaveCheckpoint(bool force, string runtimeState)
         {
+            if (_session?.RecoveryReason != null || _awaitingFillPosition)
+                runtimeState = "RecoveryActionRequired";
             DateTime now = DateTime.UtcNow;
             if (!force && now - _lastCheckpointUtc < TimeSpan.FromSeconds(1))
                 return;
@@ -1572,6 +1565,26 @@ namespace KahnRuntime
             RuntimeCheckpointData checkpoint = new()
             {
                 RuntimeState = runtimeState,
+                RuntimeInstanceId = _runtimeInstanceId,
+                ExecutionAuthorized = _state?.ExecutionAuthorized ?? false,
+                AuthorizationState = _state == null ? "NONE" : _state.IsRetired ? "RETIRED"
+                    : _state.ExecutionPaused ? "PAUSED" : _state.HasPosition ? "IN POS"
+                    : _state.ExecutionAuthorized ? "LIVE/flat" : "WATCH",
+                ExecutionRecoveryReason = _session?.RecoveryReason,
+                UnresolvedRiskOrder = _session?.Outstanding?.Id,
+                AwaitingFillPosition = _awaitingFillPosition,
+                PendingCloseQuantity = _pendingCloseQuantity,
+                ManagedPositionId = _managedPositionId,
+                EvidenceEpochId = _llEpoch,
+                CampaignSchemaVersion = _plan?.SchemaVersion,
+                EntryNotBeforeUtc = _plan?.Window?.NotBefore.ToString("O", CultureInfo.InvariantCulture),
+                EntryExpiresUtc = _plan?.Window?.ExpiresAt.ToString("O", CultureInfo.InvariantCulture),
+                OperatorProtectionPrice = _state?.OperatorProtectionPrice,
+                RepairEpisode = _session?.Observer.CurrentEpisode,
+                RepairStage = _session?.Observer.Stage.ToString(),
+                ActiveSponsorGroup = _session?.Sponsors?.Active,
+                PendingSponsorGroup = _session?.Sponsors?.Pending,
+                ActiveSponsorHealth = _session?.Sponsors?.ActiveHealth.ToString(),
                 CampaignId = _plan?.Id,
                 CampaignDigest = _plan?.Digest,
                 CampaignStatus = _plan?.Status,
@@ -1728,6 +1741,7 @@ namespace KahnRuntime
         {
             while (_brokerEvents.TryDequeue(out BrokerEvent ev))
             {
+                ReportCampaignOrder(ev);
                 _decisions.Write(ev.EventType,
                     ("order_id", ev.OrderId),
                     ("position_id", ev.PositionId),
@@ -1759,6 +1773,30 @@ namespace KahnRuntime
                 return true;
 
             RuntimePosition live = LivePosition(out bool ambiguous);
+            if (!double.IsFinite(live.Quantity) || live.Quantity != Math.Round(live.Quantity)
+                || (!live.IsFlat && (!double.IsFinite(live.AveragePrice) || live.AveragePrice <= 0))
+                || (!live.IsFlat && _managedPositionId != null && live.PositionId != _managedPositionId))
+            {
+                LogRecoveryOnce(live, "invalid_or_changed_managed_position");
+                return false;
+            }
+            if (_session?.RecoveryReason != null)
+            {
+                LogRecoveryOnce(live, _session.RecoveryReason);
+                return false;
+            }
+            if (_awaitingFillPosition)
+            {
+                if (ambiguous || live.Direction != _plan.Side
+                    || live.Quantity != _state.SimulatedPositionQuantity
+                    || !NearlyEqual(live.AveragePrice, _state.SimulatedAveragePrice ?? 0))
+                    return false;
+                _awaitingFillPosition = false;
+            }
+            if (_pendingCloseQuantity.HasValue && live.Quantity <= _pendingCloseQuantity.Value)
+                _pendingCloseQuantity = null;
+            if (_session?.HasUnresolvedOrder == true && live.Quantity != _state.SimulatedPositionQuantity)
+                return false;
             if (nowUtc < _liveSettleUntilUtc)
                 return true;
 
@@ -1781,6 +1819,11 @@ namespace KahnRuntime
             int observed = live.IsFlat
                 ? 0
                 : Math.Max(1, (int)Math.Round(live.Quantity));
+            if (observed > _state.SimulatedPositionQuantity && !_pendingCloseQuantity.HasValue)
+            {
+                LogRecoveryOnce(live, "unattributed_position_increase");
+                return false;
+            }
             if (observed == 0
                 && _state.HasPosition
                 && _state.BreakevenBackstopActive
@@ -1823,6 +1866,12 @@ namespace KahnRuntime
                 LogRecoveryOnce(live, "bound_position_exceeds_plan_max");
                 return false;
             }
+            if (!live.IsFlat && _state.HasPosition)
+            {
+                _managedPositionId ??= live.PositionId;
+                _state.ReconcileFill(observed, live.AveragePrice);
+            }
+            if (live.IsFlat && _session?.HasUnresolvedOrder != true) _managedPositionId = null;
             return true;
         }
 
@@ -2102,6 +2151,15 @@ namespace KahnRuntime
 
         private void ResetForRun()
         {
+            _runtimeInstanceId = Guid.NewGuid().ToString("N");
+            _llEpoch = Guid.NewGuid().ToString("N");
+            _session = null;
+            _sampleEvidence.Clear();
+            _awaitingFillPosition = false;
+            _latchedFlat = null;
+            _pendingCloseQuantity = null;
+            _managedPositionId = null;
+            _flatCloseSubmitted.Clear();
             _shutdownStarted = 0;
             _workerBusy = 0;
             _running = false;
