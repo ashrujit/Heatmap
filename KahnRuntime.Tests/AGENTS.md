@@ -15,3 +15,13 @@
   private temporary-directory ACLs can prevent the sandbox from reading them.
 - First-dispatch coverage must consume the actual C# checkpoint writer's disk
   output, not only hand-built Python checkpoints or in-memory C# defaults.
+- Broker callback regression tests use the production event DTO, fill merger,
+  session adapter and management-cycle orchestration. Include trade-first and
+  order-first delivery, stale removals, duplicates and concurrent reductions.
+  The September 8 incident log did not retain Trade.Id; label its test identity
+  as synthetic, not recovered broker provenance. Offline tests are not connected
+  broker validation or proof that Quantower has loaded the deployed DLL.
+- Position regressions must include a broker average updating before quantity
+  and before its trade callback. Correct fill deduplication alone does not prove
+  correct weighted cost or BE eligibility. Test protection maintenance separately
+  from new-risk admission, including recovery and invalid position identity.

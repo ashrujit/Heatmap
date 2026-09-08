@@ -113,6 +113,13 @@ governor into a form-filled EAR directive dispatcher.
   shares the protection lifecycle, cannot loosen a tighter recorded/broker stop,
   and cannot use an offside request as authority for a market close. Actual
   quantity/average and protection must reconcile before additional risk.
+- Broker position quantity and average can update separately during an add. An
+  unresolved order's mixed old-quantity/new-average snapshot must not reprice
+  attributed inventory, or the trade callback blends the add twice. BE maintenance
+  runs independently of the new-risk recovery gate but requires a matching managed
+  position identity, side, attributed quantity and average; it never protects a
+  guessed/manual position. Transport uncertainty cannot silently disable protection
+  on otherwise fully identified scaled inventory.
 - The drawn `trap_probe` window is an eligibility area for entry evidence and
   retry attempts, not the root risk anchor. Same-side and counter-claim-failed
   probes both anchor to the actual evidence range so a wide probe box cannot
@@ -167,6 +174,18 @@ governor into a form-filled EAR directive dispatcher.
   campaign/directive unless explicitly modeled later.
 
 ## Current Stage
+
+- Broker order snapshots and trade callbacks overlap and can arrive out of order.
+  Count unique `Trade.Id` executions or cumulative order fills, never both. A
+  removed order can still say Opened/filled-zero; removal is not proof of no fill.
+  Accepted submission and position changes alone still do not attribute a fill.
+- Reconciliation and protection failures veto new risk, not LL sampling or
+  existing-risk evaluation. Retain a selected exit until submission succeeds;
+  typed failure during an entry callback lag must survive that lag. Automatic
+  risk-down during recovery still requires the known managed position identity.
+- Fill accounting applies only newly attributed quantity. Duplicate reports must
+  not restore inventory already reduced. A fill arriving after a terminal cancel
+  is accounted for but quarantines new risk; it cannot promote cancelled proof.
 
 `Scaling/` is connected through `CampaignSession` and the complete-sample worker
 adapter. See `SCALING_IMPLEMENTATION.md` for implementation, offline verification

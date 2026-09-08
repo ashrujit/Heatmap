@@ -3,6 +3,10 @@
 This project links pure runtime/session sources. It neither references the
 deploying strategy project nor loads a broker API. Cumulative fake reports test
 the coordinator used by the worker; they are not exchange/Quantower integration.
+Broker regressions also use identified trade events and stale order snapshots
+through the production fill merger and worker-cycle orchestration. The incident
+identity and connected-validation limits are recorded in
+`KahnRuntime/FILL_RECONCILIATION_FIX.md`.
 
 ```powershell
 & "$env:USERPROFILE\AppData\Local\Microsoft\dotnet\dotnet.exe" run --project KahnRuntime.Tests/KahnRuntime.Tests.csproj -c Release

@@ -1,7 +1,7 @@
 using KahnRuntime;
 using KahnRuntime.Scaling;
 
-internal static class SessionTests
+internal static partial class SessionTests
 {
     private static readonly DateTimeOffset Start = DateTimeOffset.Parse("2026-09-07T14:00:00Z");
     private static DateTimeOffset At(double seconds) => Start.AddSeconds(seconds);
@@ -32,6 +32,7 @@ internal static class SessionTests
             catch (Exception error) { throw new Exception("FAIL " + test.Method.Name + ": " + error.Message, error); }
         }
         Console.WriteLine($"PASS campaign session integration ({tests.Length} checks)");
+        RunBrokerTests();
     }
 
     private static CampaignPlan Plan(bool rootOnly = false, bool harvest = false, CampaignSide side = CampaignSide.Long) => new()

@@ -311,40 +311,29 @@ namespace KahnRuntime
                 }
                 LoadPlan();
 
-                if (!ReconcileLivePosition(now.UtcDateTime))
-                {
-                    SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
-                    return;
-                }
-
-                if (CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
-                    _session?.ConfirmFlat(DateTimeOffset.UtcNow);
-                if (!MaintainBreakevenBackstop(now))
-                {
-                    SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
-                    return;
-                }
-
-                _sampleEvidence.Clear();
-                ProcessBookSample(DateTime.UtcNow);
-
-                IReadOnlyList<CampaignEvidence> marketEvents = DrainMarketEvents();
-                IReadOnlyList<CampaignEvidence> inboxEvents = _evidenceInbox?.ReadNewEvents(
-                    message => LogOperator("INFO", message)) ?? Array.Empty<CampaignEvidence>();
-                if (_plan != null
-                    && _state != null
-                    && _plan.ShouldEvaluateEvidenceAt(now, _state))
-                {
-                    ProcessEvidenceBatch(_sampleEvidence.Concat(marketEvents).Concat(inboxEvents).ToArray(), DateTimeOffset.UtcNow);
-                }
-                else
-                {
-                    LogEvidenceDiscardedWhileInactive(marketEvents.Count + inboxEvents.Count);
-                }
-                _sampleEvidence.Clear();
-
-                if (!ReconcileLivePosition(DateTime.UtcNow)
-                    || !MaintainBreakevenBackstop(DateTimeOffset.UtcNow))
+                bool ready = RuntimeManagementCycle.Run(
+                    () => ReconcileLivePosition(DateTime.UtcNow),
+                    () => MaintainBreakevenBackstop(DateTimeOffset.UtcNow),
+                    () =>
+                    {
+                        _sampleEvidence.Clear();
+                        ProcessBookSample(DateTime.UtcNow);
+                    },
+                    allowNewRisk =>
+                    {
+                        _newRiskReady = allowNewRisk;
+                        if (allowNewRisk && CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
+                            _session?.ConfirmFlat(DateTimeOffset.UtcNow);
+                        IReadOnlyList<CampaignEvidence> marketEvents = DrainMarketEvents();
+                        IReadOnlyList<CampaignEvidence> inboxEvents = _evidenceInbox?.ReadNewEvents(
+                            message => LogOperator("INFO", message)) ?? Array.Empty<CampaignEvidence>();
+                        if (_plan != null && _state != null
+                            && (_plan.ShouldEvaluateEvidenceAt(now, _state) || _session?.HasUnresolvedOrder == true))
+                            ProcessEvidenceBatch(_sampleEvidence.Concat(marketEvents).Concat(inboxEvents).ToArray(), DateTimeOffset.UtcNow);
+                        else LogEvidenceDiscardedWhileInactive(marketEvents.Count + inboxEvents.Count);
+                        _sampleEvidence.Clear();
+                    });
+                if (!ready)
                 {
                     SaveCheckpoint(force: true, runtimeState: "RecoveryActionRequired");
                     return;
@@ -687,7 +676,7 @@ namespace KahnRuntime
                 return;
             }
 
-            if (!EvidenceFreshEnough(evidence, now))
+            if (!EvidenceFreshEnough(evidence, now) && _session?.IsPendingRiskExit(selected) != true)
             {
                 _decisions.Write("evidence_stale_ignored",
                     ("campaign_id", _plan.Id),
@@ -706,6 +695,8 @@ namespace KahnRuntime
             int maxRetry = Math.Max(1, _plan.Execution?.MaxRetry ?? 3);
             CampaignContext context = new(_plan, _state, _tickSize, now);
             PolicyDecision decision = selected ?? _policyEngine.Evaluate(context, evidence);
+            if (_session?.IsPendingRiskExit(decision) == true && !_newRiskReady && !CanManageKnownPosition())
+                return;
             if (!_state.ShouldEmit(decision, now, TimeSpan.FromSeconds(5)))
                 return;
 
@@ -780,6 +771,7 @@ namespace KahnRuntime
                 passiveHarvestFillQuantity,
                 simulatedFillPrice,
                 execution.OrderId);
+            _session?.AcknowledgeRiskExit(decision);
             bool retryPaused = _state.ExecutionPaused && phaseBefore != CampaignPhase.Paused;
             if (retryPaused)
             {
@@ -879,6 +871,13 @@ namespace KahnRuntime
             }
 
             RuntimePosition position = CurrentPosition();
+            if (_runTradingEnabled)
+            {
+                position = LivePosition(out bool ambiguous);
+                if (_pendingCloseQuantity.HasValue || _session?.CanProtectPosition(_managedPositionId,
+                    position.PositionId, position.Direction, position.Quantity, position.AveragePrice, ambiguous) != true)
+                    return false;
+            }
             if (position == null || position.IsFlat || position.Direction != _plan.Side)
                 return true;
             bool scaledInventoryObserved = position.Quantity > _plan.Sizing.ProbeQuantity + 1e-9
@@ -1077,6 +1076,8 @@ namespace KahnRuntime
                 return new GatewayResult { Message = "prior reduction is awaiting position reconciliation" };
             if (!RequiresBrokerAction(decision.Action))
                 return new GatewayResult { Accepted = true, Message = "state-only decision" };
+            if (!_newRiskReady && !CanManageKnownPosition())
+                return new GatewayResult { Message = "risk action awaits an identified managed position", RequiresOperatorAction = true };
             if (_gateway == null)
                 return new GatewayResult
                 {
@@ -1570,7 +1571,7 @@ namespace KahnRuntime
                 AuthorizationState = _state == null ? "NONE" : _state.IsRetired ? "RETIRED"
                     : _state.ExecutionPaused ? "PAUSED" : _state.HasPosition ? "IN POS"
                     : _state.ExecutionAuthorized ? "LIVE/flat" : "WATCH",
-                ExecutionRecoveryReason = _session?.RecoveryReason,
+                ExecutionRecoveryReason = _session?.RecoveryReason ?? _positionReconciliationReason,
                 UnresolvedRiskOrder = _session?.Outstanding?.Id,
                 AwaitingFillPosition = _awaitingFillPosition,
                 PendingCloseQuantity = _pendingCloseQuantity,
@@ -1744,6 +1745,7 @@ namespace KahnRuntime
                 ReportCampaignOrder(ev);
                 _decisions.Write(ev.EventType,
                     ("order_id", ev.OrderId),
+                    ("trade_id", ev.TradeId),
                     ("position_id", ev.PositionId),
                     ("side", ev.Side),
                     ("status", ev.Status),
@@ -1767,6 +1769,7 @@ namespace KahnRuntime
 
         private bool ReconcileLivePosition(DateTime nowUtc)
         {
+            _positionReconciliationReason = null;
             RuntimePosition position = CurrentPosition();
             LogPositionIfChanged(position);
             if (!_runTradingEnabled || _state == null)
@@ -1780,26 +1783,6 @@ namespace KahnRuntime
                 LogRecoveryOnce(live, "invalid_or_changed_managed_position");
                 return false;
             }
-            if (_session?.RecoveryReason != null)
-            {
-                LogRecoveryOnce(live, _session.RecoveryReason);
-                return false;
-            }
-            if (_awaitingFillPosition)
-            {
-                if (ambiguous || live.Direction != _plan.Side
-                    || live.Quantity != _state.SimulatedPositionQuantity
-                    || !NearlyEqual(live.AveragePrice, _state.SimulatedAveragePrice ?? 0))
-                    return false;
-                _awaitingFillPosition = false;
-            }
-            if (_pendingCloseQuantity.HasValue && live.Quantity <= _pendingCloseQuantity.Value)
-                _pendingCloseQuantity = null;
-            if (_session?.HasUnresolvedOrder == true && live.Quantity != _state.SimulatedPositionQuantity)
-                return false;
-            if (nowUtc < _liveSettleUntilUtc)
-                return true;
-
             if (ambiguous)
             {
                 LogRecoveryOnce(live, "ambiguous_bound_positions");
@@ -1810,6 +1793,32 @@ namespace KahnRuntime
                 LogRecoveryOnce(live, "opposite_bound_position");
                 return false;
             }
+            bool closeObserved = _pendingCloseQuantity.HasValue && live.Quantity <= _pendingCloseQuantity.Value;
+            if (_awaitingFillPosition)
+            {
+                if (!closeObserved && (live.Direction != _plan.Side
+                    || live.Quantity != _state.SimulatedPositionQuantity
+                    || !NearlyEqual(live.AveragePrice, _state.SimulatedAveragePrice ?? 0)))
+                {
+                    LogRecoveryOnce(live, "awaiting_attributed_fill_position");
+                    return false;
+                }
+                _awaitingFillPosition = false;
+            }
+            if (closeObserved)
+                _pendingCloseQuantity = null;
+            if (_session?.HasUnresolvedOrder == true && live.Quantity != _state.SimulatedPositionQuantity)
+            {
+                LogRecoveryOnce(live, "pending_order_position_mismatch");
+                return false;
+            }
+            if (_session?.RecoveryReason != null)
+            {
+                LogRecoveryOnce(live, _session.RecoveryReason);
+                return false;
+            }
+            if (nowUtc < _liveSettleUntilUtc)
+                return true;
             if (!_state.HasPosition && !live.IsFlat)
             {
                 LogRecoveryOnce(live, "orphan_bound_position");
@@ -1869,7 +1878,11 @@ namespace KahnRuntime
             if (!live.IsFlat && _state.HasPosition)
             {
                 _managedPositionId ??= live.PositionId;
-                _state.ReconcileFill(observed, live.AveragePrice);
+                if (!_session.TryReconcilePositionAverage(observed, live.AveragePrice))
+                {
+                    LogRecoveryOnce(live, "pending_order_average_mismatch");
+                    return false;
+                }
             }
             if (live.IsFlat && _session?.HasUnresolvedOrder != true) _managedPositionId = null;
             return true;
@@ -1877,6 +1890,7 @@ namespace KahnRuntime
 
         private void LogRecoveryOnce(RuntimePosition position, string reason)
         {
+            _positionReconciliationReason = reason;
             string signature = $"{reason}|{position.PositionId}|{position.Direction}|{position.Quantity:R}|{position.AveragePrice:R}";
             if (string.Equals(signature, _lastRecoverySignature, StringComparison.Ordinal))
                 return;
@@ -2156,6 +2170,8 @@ namespace KahnRuntime
             _session = null;
             _sampleEvidence.Clear();
             _awaitingFillPosition = false;
+            _newRiskReady = false;
+            _positionReconciliationReason = null;
             _latchedFlat = null;
             _pendingCloseQuantity = null;
             _managedPositionId = null;

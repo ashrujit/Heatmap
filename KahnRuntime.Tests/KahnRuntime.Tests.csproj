@@ -7,6 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../KahnRuntime/CampaignSession.cs" Link="CampaignSession.cs" />
+    <Compile Include="../KahnRuntime/BrokerFillLedger.cs" Link="BrokerFillLedger.cs" />
+    <Compile Include="../KahnRuntime/RuntimeManagementCycle.cs" Link="RuntimeManagementCycle.cs" />
     <Compile Include="../KahnRuntime/RuntimeControlStore.cs" Link="RuntimeControlStore.cs" />
     <Compile Include="../KahnRuntime/Scaling/*.cs" Link="Scaling/%(Filename)%(Extension)" />
     <Compile Include="../KahnRuntime/CampaignContracts.cs" Link="CampaignContracts.cs" />

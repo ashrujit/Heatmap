@@ -991,23 +991,8 @@ namespace KahnRuntime
             };
     }
 
-    internal sealed class BrokerEvent
+    internal sealed partial class BrokerEvent
     {
-        public bool Terminal { get; init; }
-        public string EventType { get; init; }
-        public string OrderId { get; init; }
-        public string PositionId { get; init; }
-        public string Side { get; init; }
-        public string Status { get; init; }
-        public double Quantity { get; init; }
-        public double FilledQuantity { get; init; }
-        public double RemainingQuantity { get; init; }
-        public double Price { get; init; }
-        public double AverageFillPrice { get; init; }
-        public DateTime BrokerUtc { get; init; }
-        public string Comment { get; init; }
-        public string GroupId { get; init; }
-
         public static BrokerEvent FromOrder(string eventType, IOrder order)
             => new()
             {
@@ -1033,6 +1018,7 @@ namespace KahnRuntime
             {
                 EventType = "trade_fill",
                 OrderId = trade?.OrderId,
+                TradeId = trade?.Id,
                 PositionId = trade?.PositionId,
                 Side = trade == null
                     ? null

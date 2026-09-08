@@ -14,6 +14,8 @@ namespace KahnRuntime
         private readonly List<CampaignEvidence> _sampleEvidence = new();
         private ScaleReservationSnapshot _selectedScale;
         private bool _awaitingFillPosition;
+        private bool _newRiskReady;
+        private string _positionReconciliationReason;
         private int? _pendingCloseQuantity;
         private string _managedPositionId;
         private RuntimeControlCommand _latchedFlat;
@@ -24,6 +26,8 @@ namespace KahnRuntime
             if (_latchedFlat == null) return false;
             bool cancelAccepted = _gateway.CancelRuntimeOrders("order_cancel_flat_pending");
             RuntimePosition[] positions = _runTradingEnabled ? BoundLivePositions() : ShadowPositions();
+            if (positions.Length == 0 && _session?.HasUnresolvedOrder != true && BoundWorkingOrders().Count == 0)
+                _awaitingFillPosition = false;
             if (_awaitingFillPosition && positions.Length == 1 && _state != null
                 && positions[0].Direction == _plan.Side
                 && positions[0].Quantity == _state.SimulatedPositionQuantity
@@ -63,13 +67,13 @@ namespace KahnRuntime
         private void ProcessEvidenceBatch(IReadOnlyList<CampaignEvidence> evidence, DateTimeOffset now)
         {
             if (_plan == null || _state == null || _state.IsRetired
-                || !_plan.ShouldEvaluateEvidenceAt(now, _state)) return;
+                || (!_plan.ShouldEvaluateEvidenceAt(now, _state) && !_session.HasUnresolvedOrder)) return;
             var choices = _session.PolicyCandidates(evidence.Where(e => EvidenceFreshEnough(e, now)), now).ToList();
 
             ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
             if (_session != null)
             {
-                if (CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
+                if (_newRiskReady && CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
                     _session.ConfirmFlat(now);
                 if (market.IsValid)
                     _session.Observer.ObservePrice(now, ManagementTicks(market));
@@ -96,7 +100,9 @@ namespace KahnRuntime
                 }
                 DrainRepairAudit();
             }
-            var selected = choices.OrderByDescending(x => x.Decision.Priority > 0
+            var selected = choices.Where(x => _newRiskReady
+                    || x.Decision.Action is not (PolicyAction.AllowProbe or PolicyAction.ArmProbe or PolicyAction.AllowAdd))
+                .OrderByDescending(x => x.Decision.Priority > 0
                 ? x.Decision.Priority : DecisionResolver.PriorityFor(x.Decision.Action)).FirstOrDefault();
             if (selected.Decision != null) ProcessEvidence(selected.Evidence, now, selected.Decision);
             _selectedScale = null;
@@ -126,7 +132,7 @@ namespace KahnRuntime
                     && _state.BreakevenBackstopPrice.HasValue
                     && NearlyEqual(stops[0].TriggerPrice, _state.BreakevenBackstopPrice.Value);
             }
-            bool ordersClear = !_session.HasUnresolvedOrder && !_awaitingFillPosition && !_pendingCloseQuantity.HasValue
+            bool ordersClear = _newRiskReady && !_session.HasUnresolvedOrder && !_awaitingFillPosition && !_pendingCloseQuantity.HasValue
                 && (!_runTradingEnabled || BoundWorkingOrders().All(o =>
                     _gateway.RuntimeProtectionOrders().Any(p => p.Id == o.Id)));
             return new(now, new DateTimeOffset(market.QuoteUtc, TimeSpan.Zero),
@@ -144,7 +150,7 @@ namespace KahnRuntime
 
         private GatewayResult ExecuteNewRisk(PolicyDecision decision, CampaignEvidence evidence, DateTimeOffset now)
         {
-            if (_session == null || !_state.ExecutionAuthorized || _session.HasUnresolvedOrder
+            if (!_newRiskReady || _session == null || !_state.ExecutionAuthorized || _session.HasUnresolvedOrder
                 || _session.RecoveryReason != null || _awaitingFillPosition || _pendingCloseQuantity.HasValue)
                 return new GatewayResult { Message = "new risk is not authorized or reconciled" };
             ExecutableMarket market = SnapshotMarket(DateTime.UtcNow);
@@ -190,24 +196,18 @@ namespace KahnRuntime
         private void ReportCampaignOrder(BrokerEvent ev)
         {
             CampaignOrder order = _session?.FindBrokerOrder(ev.OrderId);
-            if (order == null || !ev.EventType.StartsWith("order_", StringComparison.Ordinal)) return;
-            bool terminal = ev.Terminal;
-            if (ev.FilledQuantity != Math.Round(ev.FilledQuantity)
-                || (ev.FilledQuantity > 0 && (!double.IsFinite(ev.AverageFillPrice) || ev.AverageFillPrice <= 0)))
-            {
-                _session.RequireRecovery("order_report_missing_valid_fill_facts");
-                return;
-            }
+            if (order == null) return;
             try
             {
                 int prior = order.Filled;
                 double? priorAverage = order.FillAverage;
-                _session.Report(order, (int)ev.FilledQuantity, ev.FilledQuantity > 0 ? ev.AverageFillPrice : null,
-                    terminal, DateTimeOffset.UtcNow, ManagementTicks(SnapshotMarket(DateTime.UtcNow)));
+                if (_session.ReportBrokerEvent(ev, DateTimeOffset.UtcNow,
+                    ManagementTicks(SnapshotMarket(DateTime.UtcNow))) == null) return;
                 if (order.Filled != prior || order.FillAverage != priorAverage) _awaitingFillPosition = true;
-                if (prior == 0 && order.Filled > 0 && order.Decision.Action == PolicyAction.AllowProbe)
-                    _managedPositionId = ev.PositionId;
+                if (order.Filled > 0 && order.Decision.Action == PolicyAction.AllowProbe)
+                    _managedPositionId ??= order.PositionId;
                 _decisions.Write("campaign_order_report", ("reservation_id", order.Id), ("order_id", order.BrokerOrderId),
+                    ("source_event", ev.EventType), ("trade_id", ev.TradeId),
                     ("filled_quantity", order.Filled), ("fill_average", order.FillAverage), ("terminal", order.Terminal),
                     ("active_group", _session.Sponsors?.Active), ("pending_group", _session.Sponsors?.Pending));
             }
@@ -217,6 +217,16 @@ namespace KahnRuntime
                 LogOperator("ERR", _session.RecoveryReason, error: true);
             }
             DrainRepairAudit();
+        }
+
+        private bool CanManageKnownPosition()
+        {
+            if (!_runTradingEnabled) return true;
+            RuntimePosition live = LivePosition(out bool ambiguous);
+            return !ambiguous && !live.IsFlat && _state?.HasPosition == true && _plan != null
+                && _managedPositionId != null && live.PositionId == _managedPositionId
+                && live.Direction == _plan.Side && double.IsFinite(live.Quantity)
+                && live.Quantity == Math.Round(live.Quantity) && live.Quantity <= _state.SimulatedPositionQuantity;
         }
 
         private void DrainRepairAudit()

@@ -22,14 +22,20 @@ namespace KahnRuntime
         private readonly Dictionary<string, CampaignOrder> _orders = new(StringComparer.Ordinal);
         private bool _attemptOpen;
         private CampaignOrder _awaitingRootObservation;
+        public (PolicyDecision Decision, CampaignEvidence Evidence)? PendingRiskExit { get; private set; }
         private readonly CampaignPolicyEngine _policies = CampaignPolicyEngine.CreateDefault();
 
         public IReadOnlyList<(PolicyDecision Decision, CampaignEvidence Evidence)> PolicyCandidates(
             IEnumerable<CampaignEvidence> evidence, DateTimeOffset now)
         {
-            var choices = new List<(PolicyDecision, CampaignEvidence)>();
+            var choices = new List<(PolicyDecision Decision, CampaignEvidence Evidence)>();
+            CampaignOrder pendingRoot = Outstanding?.Decision.Action == PolicyAction.AllowProbe ? Outstanding : null;
             foreach (CampaignEvidence item in evidence)
             {
+                if (pendingRoot?.Filled == 0 && item.Kind is EvidenceKind.RailFailed or EvidenceKind.SponsorFailed
+                    && item.Source == pendingRoot.Evidence.Source && item.EvidenceEpoch == pendingRoot.Evidence.EvidenceEpoch
+                    && item.RailId != null && item.RailId == pendingRoot.Evidence.RailId)
+                    pendingRoot.FailureBeforeFill = item;
                 PolicyDecision decision = _policies.Evaluate(new(Plan, State, TickSize, now), item);
                 if (decision.Action is PolicyAction.AllowProbe or PolicyAction.ArmProbe)
                 {
@@ -43,6 +49,7 @@ namespace KahnRuntime
                 }
                 if (decision.Action != PolicyAction.NoAction) choices.Add((decision, item));
             }
+            if (PendingRiskExit.HasValue && State.HasPosition) choices.Add(PendingRiskExit.Value);
             if (State.HasPosition && Sponsors?.ActiveHealth == GroupHealth.Failed)
             {
                 var failed = new CampaignEvidence { EventId = "group-failed-" + Sponsors.Active.EpisodeId,
@@ -51,7 +58,18 @@ namespace KahnRuntime
                     ReasonCode = "active_group_failed", Priority = 1000, Quantity = State.SimulatedPositionQuantity,
                     EvidenceId = failed.EventId }, failed));
             }
+            var exit = choices.Where(x => x.Decision.Action is PolicyAction.Flatten or PolicyAction.Retire)
+                .OrderByDescending(x => x.Decision.Priority).FirstOrDefault();
+            if (State.HasPosition && exit.Decision != null) PendingRiskExit = exit;
             return choices;
+        }
+
+        public bool IsPendingRiskExit(PolicyDecision decision)
+            => decision != null && PendingRiskExit?.Decision == decision;
+
+        public void AcknowledgeRiskExit(PolicyDecision decision)
+        {
+            if (IsPendingRiskExit(decision)) PendingRiskExit = null;
         }
 
         public CampaignSession(CampaignPlan plan, CampaignState state, string instanceId,
@@ -125,6 +143,7 @@ namespace KahnRuntime
             Sponsors = null;
             Reservations = null;
             _awaitingRootObservation = null;
+            PendingRiskExit = null;
             State.GroupSponsorActive = false;
             _attemptOpen = false;
         }
@@ -175,18 +194,63 @@ namespace KahnRuntime
         public CampaignOrder FindBrokerOrder(string id)
             => string.IsNullOrWhiteSpace(id) ? null : _orders.Values.FirstOrDefault(o => o.BrokerOrderId == id);
 
+        public bool PositionMatchesAttributedFills(double quantity, double average)
+            => State.HasPosition && double.IsFinite(quantity) && quantity == State.SimulatedPositionQuantity
+                && double.IsFinite(average) && average > 0 && State.SimulatedAveragePrice.HasValue
+                && Math.Abs(average - State.SimulatedAveragePrice.Value) <= TickSize / 2;
+
+        public bool CanProtectPosition(string managedId, string observedId, CampaignSide side,
+            double quantity, double average, bool ambiguous)
+            => !ambiguous && !string.IsNullOrWhiteSpace(managedId) && observedId == managedId
+                && side == Plan.Side && PositionMatchesAttributedFills(quantity, average);
+
+        public bool TryReconcilePositionAverage(int quantity, double average)
+        {
+            if (quantity <= 0 || quantity != State.SimulatedPositionQuantity
+                || !double.IsFinite(average) || average <= 0) return false;
+            // Quantower can publish an add's new average before its quantity/trade callback.
+            // Until fill attribution catches up, that mixed snapshot cannot reprice old inventory.
+            if (HasUnresolvedOrder && !PositionMatchesAttributedFills(quantity, average)) return false;
+            State.ReconcileFill(quantity, average);
+            return true;
+        }
+
+        public CampaignOrder ReportBrokerEvent(BrokerEvent report, DateTimeOffset now, double executableTicks)
+        {
+            CampaignOrder order = FindBrokerOrder(report.OrderId);
+            if (order == null || (report.EventType != "trade_fill"
+                && report.EventType?.StartsWith("order_", StringComparison.Ordinal) != true)) return null;
+            if (!string.IsNullOrWhiteSpace(report.PositionId))
+            {
+                if (order.PositionId != null && order.PositionId != report.PositionId)
+                    throw new InvalidOperationException("Reserved order changed broker position identity.");
+                order.PositionId = report.PositionId;
+            }
+            BrokerFillSnapshot fill = order.BrokerFills.Observe(report, Plan.Side);
+            double? average = fill.Average;
+            if (fill.Quantity == order.Filled && average.HasValue && order.FillAverage.HasValue
+                && Math.Abs(average.Value - order.FillAverage.Value) <= 0.000001) average = order.FillAverage;
+            Report(order, fill.Quantity, average, fill.Terminal, now, executableTicks);
+            return order;
+        }
+
         public bool Report(CampaignOrder order, int filled, double? average, bool terminal,
             DateTimeOffset now, double executableTicks)
         {
             if (now < order.SubmittedAt || filled < order.Filled || filled > order.Quantity
                 || (filled == 0 && average.HasValue)
                 || (filled > 0 && (!average.HasValue || !double.IsFinite(average.Value) || average <= 0))
-                || (order.Terminal && (filled != order.Filled || average != order.FillAverage)))
+                || (filled == order.Filled && average != order.FillAverage))
                 throw new InvalidOperationException("Contradictory cumulative fill report; recovery required.");
-            if (order.Terminal) return false;
+            if (order.Terminal && filled == order.Filled) return false;
             bool first = order.Filled == 0 && filled > 0;
             bool retired = State.IsRetired;
-            if (order.ScaleReservationId != null)
+            bool late = order.Terminal && filled > order.Filled;
+            int added = filled - order.Filled;
+            int positionBefore = State.SimulatedPositionQuantity;
+            double valueBefore = (State.SimulatedAveragePrice ?? 0) * positionBefore;
+            double addedValue = filled * (average ?? 0) - order.Filled * (order.FillAverage ?? 0);
+            if (order.ScaleReservationId != null && !late)
                 Reservations.Report(order.ScaleReservationId, filled, average / TickSize, terminal, now, executableTicks);
             if (first)
             {
@@ -212,22 +276,27 @@ namespace KahnRuntime
                     }
                 }
             }
-            if (filled > 0)
+            if (added > 0)
             {
-                int position = order.PositionBefore + filled;
-                double weighted = (order.AverageBefore * order.PositionBefore + average.Value * filled) / position;
-                // Position reconciliation may subsequently account for concurrent risk-down fills.
-                State.ReconcileFill(position, weighted);
+                // Only new fills change exposure; repeated snapshots cannot undo an intervening exit.
+                State.ReconcileFill(positionBefore + added, (valueBefore + addedValue) / (positionBefore + added));
+                if (first && order.FailureBeforeFill != null)
+                {
+                    PolicyDecision failure = _policies.Evaluate(new(Plan, State, TickSize, now), order.FailureBeforeFill);
+                    if (failure.Action is PolicyAction.Flatten or PolicyAction.Retire)
+                        PendingRiskExit = (failure, order.FailureBeforeFill);
+                }
             }
             order.Filled = filled;
             order.FillAverage = average;
-            order.Terminal = terminal || filled == order.Quantity;
+            order.Terminal |= terminal || filled == order.Quantity;
             State.GroupSponsorActive = Sponsors?.Active != null;
             if (retired && filled > 0)
             {
                 State.ApplyDecision(new PolicyDecision { Action = PolicyAction.Retire }, Plan, false, now);
                 RequireRecovery("late_fill_after_retirement_requires_flat");
             }
+            else if (late) RequireRecovery("late_fill_after_terminal_order");
             return first;
         }
 
@@ -257,11 +326,15 @@ namespace KahnRuntime
         public double? FillAverage { get; set; }
         public bool Terminal { get; set; }
         public bool CarryLiveEvidence { get; set; } = true;
+        public string PositionId { get; set; }
+        public CampaignEvidence FailureBeforeFill { get; set; }
+        public BrokerFillLedger BrokerFills { get; }
         public CampaignOrder(string id, PolicyDecision decision, CampaignEvidence evidence, string scaleId,
             int quantity, int before, double average, DateTimeOffset at)
         {
             Id = id; Decision = decision; Evidence = evidence; ScaleReservationId = scaleId;
             Quantity = quantity; PositionBefore = before; AverageBefore = average; SubmittedAt = at;
+            BrokerFills = new(quantity);
         }
     }
 }
