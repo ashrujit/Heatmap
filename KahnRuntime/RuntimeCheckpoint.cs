@@ -97,6 +97,13 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; set; }
         public PriceRange RootRiskAnchor { get; set; }
         public string RootRiskAnchorEvidenceId { get; set; }
+        public RootRiskBinding RootBinding { get; set; }
+        public string RootOwnerHealth { get; set; }
+        public string RootOwnerOrigin { get; set; }
+        public double? RootEntryDistanceTicks { get; set; }
+        public string RootRiskRecoveryReason { get; set; }
+        public string LastRootAdmissionReason { get; set; }
+        public int? MaxRootEntryDistanceTicks { get; set; }
         public PriceRange PendingSponsorAnchor { get; set; }
         public string PendingSponsorEvidenceId { get; set; }
         public string PendingSponsorQueuedAtUtc { get; set; }
@@ -173,6 +180,7 @@ namespace KahnRuntime
             data.LatestBid = NullableFinite(data.LatestBid);
             data.LatestAsk = NullableFinite(data.LatestAsk);
             data.SimulatedAveragePrice = NullableFinite(data.SimulatedAveragePrice);
+            data.RootEntryDistanceTicks = NullableFinite(data.RootEntryDistanceTicks);
             data.BreakevenBackstopPrice = NullableFinite(data.BreakevenBackstopPrice);
             data.EvidenceWarmupRemainingSeconds = FiniteOrZero(data.EvidenceWarmupRemainingSeconds);
             data.PositionQuantity = FiniteOrZero(data.PositionQuantity);

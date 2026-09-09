@@ -134,6 +134,10 @@ namespace KahnRuntime
         public bool CancelRuntimeProtectionOrders(string eventType)
             => CancelRuntimeOrders(eventType, order => IsRole(order, "BE"));
 
+        public bool CancelRuntimeOrder(string orderId, string eventType)
+            => !string.IsNullOrWhiteSpace(orderId)
+                && CancelRuntimeOrders(eventType, order => order.Id == orderId);
+
         private bool CancelRuntimeOrders(string eventType, Func<Order, bool> include)
         {
             if (!_tradingEnabled)

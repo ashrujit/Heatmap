@@ -54,13 +54,26 @@ internal static class SessionReplay
             if (op == "begin")
             {
                 session.GoLive(new() { SchemaVersion = 2, CampaignId = plan.Id, CampaignDigest = plan.Digest,
-                    RuntimeInstanceId = "offline", Attempt = 0, CreatedAt = at }, at);
+                    RuntimeInstanceId = "offline", Attempt = 0, CreatedAt = at.AddTicks(-1) }, at.AddTicks(-1));
                 var key = row.GetProperty("key");
                 var evidence = new CampaignEvidence { EventId = "seed", Timestamp = at, Source = EvidenceSource.LevelLedger,
                     Kind = EvidenceKind.RailOwned, Side = side == CampaignSide.Long ? EvidenceSide.Demand : EvidenceSide.Supply,
-                    Range = rootRange, EvidenceEpoch = key.GetProperty("epoch").GetString(), RailId = key.GetProperty("rail_id").GetString() };
+                    Range = rootRange, Price = row.GetProperty("price_ticks").GetDouble() * .25,
+                    EvidenceEpoch = key.GetProperty("epoch").GetString(), RailId = key.GetProperty("rail_id").GetString() };
+                var binding = session.Roots.Resolve(evidence, side, at, out string rootReason);
+                if (binding != null)
+                    rootReason = session.Roots.Revalidate(binding, at, evidence.Price.Value, .25, null);
+                if (binding == null || rootReason != null)
+                {
+                    exit = rootReason;
+                    Write(writer, new { kind = "root_proxy_rejected", t, reason = rootReason });
+                    continue;
+                }
+                // Fixture seeds are counterfactual entries, never claimed as fresh live permission.
+                binding = binding with { Association = "replay_seed_not_live_entry_permission" };
                 var order = session.Reserve(new() { Action = PolicyAction.AllowProbe, Quantity = 2,
-                    RiskAnchor = rootRange, RiskAnchorEvidenceId = "seed", EvidenceId = "seed" }, evidence, null, at);
+                    RootBinding = binding, RiskAnchor = binding.Range(.25),
+                    RiskAnchorEvidenceId = binding.Owner.Key.ToString(), EvidenceId = "seed" }, evidence, null, at);
                 order.CarryLiveEvidence = row.GetProperty("warm").GetBoolean();
                 session.Submitted(order, "seed", true, false);
                 session.Report(order, 2, row.GetProperty("price_ticks").GetDouble() * .25, true, at, executable);
@@ -83,11 +96,19 @@ internal static class SessionReplay
                     return new RepairTransition(new(EvidenceSource.LevelLedger, epoch, rail), kind, eventSide,
                         new(coverage[0].GetInt64(), coverage[1].GetInt64()));
                 }).ToArray();
+                RootClaim[] snapshot = row.TryGetProperty("root_snapshot", out var rootSnapshot)
+                    ? rootSnapshot.EnumerateArray().Select(c => new RootClaim(
+                        new(EvidenceSource.LevelLedger, c.GetProperty("epoch").GetString(), c.GetProperty("rail_id").GetString()),
+                        c.GetProperty("side").GetString() == "demand" ? CampaignSide.Long : CampaignSide.Short,
+                        new(c.GetProperty("coverage")[0].GetInt64(), c.GetProperty("coverage")[1].GetInt64()),
+                        RootClaimOrigin.Unknown, null, Time(c.GetProperty("owned_t").GetInt64()),
+                        Time(c.GetProperty("updated_t").GetInt64()), Enum.Parse<EvidenceKind>(c.GetProperty("kind").GetString()),
+                        c.TryGetProperty("failed_t", out var failed) ? Time(failed.GetInt64()) : null)).ToArray() : null;
                 session.Observe(new(EvidenceSource.LevelLedger, row.GetProperty("epoch").GetString(),
-                    row.GetProperty("sequence").GetInt64(), at, executable, transitions, true));
+                    row.GetProperty("sequence").GetInt64(), at, executable, transitions, true), snapshot);
             }
             else if (op == "price") session.Observer.ObservePrice(at, executable);
-            else if (op == "gap") session.Observer.Suspend(at, "recorded_gap");
+            else if (op == "gap") { session.Observer.Suspend(at, "recorded_gap"); session.SuspendRootEvidence(at); }
             else throw new ArgumentException("Unknown operation");
             operations++;
             events.Add(new() { EventId = "quote-" + t, Timestamp = at, Source = EvidenceSource.Price,
@@ -127,6 +148,7 @@ internal static class SessionReplay
                         TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), bid, ask, (state.SimulatedAveragePrice ?? 0) / .25,
                         state.SimulatedPositionQuantity, 2, 10, 10, state.ExecutionAuthorized, state.HasPosition,
                         !session.HasUnresolvedOrder, !veto && !state.IsRetired && !state.AddsSuppressed(at)
+                            && session.RootRiskRecoveryReason == null
                             && (session.Sponsors.Active == null || session.Sponsors.ActiveHealth == GroupHealth.Live), false);
                     if (session.Reservations.TryReserve(opportunity, context, out var reserved, out var reason))
                     {

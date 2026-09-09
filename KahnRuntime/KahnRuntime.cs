@@ -713,6 +713,7 @@ namespace KahnRuntime
                 ("waypoint_id", decision.WaypointId),
                 ("risk_anchor", decision.RiskAnchor),
                 ("risk_anchor_evidence_id", decision.RiskAnchorEvidenceId),
+                ("root_binding", decision.RootBinding ?? _state.RootBinding),
                 ("child_risk_anchor", decision.ChildRiskAnchor),
                 ("child_risk_anchor_evidence_id", decision.ChildRiskAnchorEvidenceId),
                 ("delay_risk_anchor_promotion_on_add", decision.DelayRiskAnchorPromotionOnAdd),
@@ -720,6 +721,7 @@ namespace KahnRuntime
                 ("expires_at", decision.ExpiresAt?.ToString("O", CultureInfo.InvariantCulture)),
                 ("evidence_id", evidence.EventId),
                 ("evidence_source", evidence.Source),
+                ("evidence_rail_origin", evidence.RailOrigin),
                 ("evidence_kind", evidence.Kind),
                 ("evidence_side", evidence.Side),
                 ("evidence_price", evidence.Price),
@@ -1220,14 +1222,15 @@ namespace KahnRuntime
             if (_session != null)
             {
                 ExecutableMarket market = SnapshotMarket(nowUtc);
-                if (market.IsValid)
-                    _session.Observe(new Scaling.RepairSample(EvidenceSource.LevelLedger, _llEpoch,
-                        _evidenceEpochSampleCount, new DateTimeOffset(nowUtc, TimeSpan.Zero), ManagementTicks(market),
+                _session.Observe(new Scaling.RepairSample(EvidenceSource.LevelLedger, _llEpoch,
+                        _evidenceEpochSampleCount, new DateTimeOffset(nowUtc, TimeSpan.Zero),
+                        market.IsValid ? ManagementTicks(market) : double.NaN,
                         _sampleEvidence.Select(e => new Scaling.RepairTransition(
                             new(EvidenceSource.LevelLedger, _llEpoch, e.RailId), e.Kind,
                             e.Side == EvidenceSide.Demand ? CampaignSide.Long : CampaignSide.Short,
-                            _session.Ticks(e.Range), e.FormedAt)).ToArray(), true));
-                else _session.Observer.Suspend(DateTimeOffset.UtcNow, "sample_quote_unavailable");
+                            _session.Ticks(e.Range), e.FormedAt, e.RailOrigin)).ToArray(), true), RootSnapshot());
+                if (!market.IsValid) _session.Observer.Suspend(DateTimeOffset.UtcNow, "sample_quote_unavailable");
+                if (!_evidenceWarmupComplete) _session.SuspendRootEvidence(new DateTimeOffset(nowUtc, TimeSpan.Zero));
                 DrainRepairAudit();
             }
             if (!_evidenceWarmupComplete) _sampleEvidence.Clear();
@@ -1259,6 +1262,7 @@ namespace KahnRuntime
         private void ResetEvidenceEpoch(string reason)
         {
             _session?.Observer.Suspend(DateTimeOffset.UtcNow, reason);
+            _session?.SuspendRootEvidence(DateTimeOffset.UtcNow);
             _llEpoch = Guid.NewGuid().ToString("N");
             _evidenceEpochStartedUtc = DateTime.MinValue;
             _evidenceEpochSampleCount = 0;
@@ -1384,6 +1388,8 @@ namespace KahnRuntime
                 SampleSequence = _evidenceEpochSampleCount,
                 FormedAt = transition.Band.FormedUtc == default ? null
                     : new DateTimeOffset(transition.Band.FormedUtc, TimeSpan.Zero),
+                RailOrigin = transition.Band.Source == LiveEvidence.EvidenceSource.Consumed
+                    ? RootClaimOrigin.Consumed : RootClaimOrigin.Lean,
                 Score = transition.Band.Score,
                 Note = $"{transition.Band.Source}:{transition.Reason}",
             };
@@ -1543,7 +1549,7 @@ namespace KahnRuntime
 
         private void SaveCheckpoint(bool force, string runtimeState)
         {
-            if (_session?.RecoveryReason != null || _awaitingFillPosition)
+            if (_session?.RecoveryReason != null || _session?.RootRiskRecoveryReason != null || _awaitingFillPosition)
                 runtimeState = "RecoveryActionRequired";
             DateTime now = DateTime.UtcNow;
             if (!force && now - _lastCheckpointUtc < TimeSpan.FromSeconds(1))
@@ -1571,7 +1577,7 @@ namespace KahnRuntime
                 AuthorizationState = _state == null ? "NONE" : _state.IsRetired ? "RETIRED"
                     : _state.ExecutionPaused ? "PAUSED" : _state.HasPosition ? "IN POS"
                     : _state.ExecutionAuthorized ? "LIVE/flat" : "WATCH",
-                ExecutionRecoveryReason = _session?.RecoveryReason ?? _positionReconciliationReason,
+                ExecutionRecoveryReason = _session?.RecoveryReason ?? _session?.RootRiskRecoveryReason ?? _positionReconciliationReason,
                 UnresolvedRiskOrder = _session?.Outstanding?.Id,
                 AwaitingFillPosition = _awaitingFillPosition,
                 PendingCloseQuantity = _pendingCloseQuantity,
@@ -1671,6 +1677,13 @@ namespace KahnRuntime
                 ActiveRiskAnchorEvidenceId = _state?.ActiveRiskAnchorEvidenceId,
                 RootRiskAnchor = _state?.RootRiskAnchor,
                 RootRiskAnchorEvidenceId = _state?.RootRiskAnchorEvidenceId,
+                RootBinding = _state?.RootBinding,
+                RootOwnerHealth = _state?.RootBinding == null ? null : _session?.Roots.Health(_state.RootBinding, DateTimeOffset.UtcNow).ToString(),
+                RootOwnerOrigin = _state?.RootBinding?.Owner.Origin.ToString(),
+                RootEntryDistanceTicks = _session?.RootEntryDistanceTicks,
+                RootRiskRecoveryReason = _session?.RootRiskRecoveryReason,
+                LastRootAdmissionReason = _session?.LastRootAdmissionReason,
+                MaxRootEntryDistanceTicks = _plan?.Risk.MaxRootEntryDistanceTicks,
                 PendingSponsorAnchor = _state?.PendingSponsorAnchor,
                 PendingSponsorEvidenceId = _state?.PendingSponsorEvidenceId,
                 PendingSponsorQueuedAtUtc = _state?.PendingSponsorQueuedAt?.ToString("O", CultureInfo.InvariantCulture),

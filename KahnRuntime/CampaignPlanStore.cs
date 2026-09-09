@@ -231,6 +231,7 @@ namespace KahnRuntime
             return new CampaignRisk
             {
                 RootStopTicks = OptionalPositiveInt(value, "root_stop_ticks", 16),
+                MaxRootEntryDistanceTicks = OptionalNullablePositiveInt(value, "max_root_entry_distance_ticks"),
                 SponsorFailureBufferTicks = OptionalNonNegativeInt(value, "sponsor_failure_buffer_ticks", 2),
                 AllowContestBeyondRiskAnchor = OptionalBool(value, "allow_contest_beyond_risk_anchor", true),
                 BreakevenBackstopEnabled = OptionalBool(value, "breakeven_backstop", true),

@@ -83,8 +83,10 @@ internal static partial class SessionTests
         public CampaignOrder ReserveRoot()
         {
             var ev = Evidence();
-            return Session.Reserve(new() { Action = PolicyAction.AllowProbe, Quantity = 2,
-                RiskAnchor = ev.Range, RiskAnchorEvidenceId = ev.EventId, EvidenceId = ev.EventId }, ev, null, At(1));
+            if (Session.Roots.Find(new(EvidenceSource.LevelLedger, "epoch", "root")) == null)
+                Step(1, 408, T("root", 400, 404));
+            var decision = Session.PolicyCandidates([ev], At(1)).Single(x => x.Decision.Action == PolicyAction.AllowProbe).Decision;
+            return Session.Reserve(decision, ev, null, At(1));
         }
         public ScaleOpportunity Complete()
         {

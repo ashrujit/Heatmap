@@ -88,7 +88,8 @@ namespace KahnRuntime
                 .ThenByDescending(candidate => RiskDownTieRank(candidate.Action))
                 .FirstOrDefault();
 
-            return decision ?? PolicyDecision.None("resolver", evidence);
+            return decision ?? candidates.FirstOrDefault(x => x.Policy == "root_risk")
+                ?? PolicyDecision.None("resolver", evidence);
         }
 
         public static int PriorityFor(PolicyAction action)
@@ -125,6 +126,7 @@ namespace KahnRuntime
                     WaypointId = decision.WaypointId,
                     RiskAnchor = decision.RiskAnchor,
                     RiskAnchorEvidenceId = decision.RiskAnchorEvidenceId,
+                    RootBinding = decision.RootBinding,
                     ChildRiskAnchor = decision.ChildRiskAnchor,
                     ChildRiskAnchorEvidenceId = decision.ChildRiskAnchorEvidenceId,
                     DelayRiskAnchorPromotionOnAdd = decision.DelayRiskAnchorPromotionOnAdd,
@@ -256,6 +258,11 @@ namespace KahnRuntime
 
             if (evidence.Kind is EvidenceKind.RailOwned or EvidenceKind.RailHeld && sameSide)
             {
+                if (context.Plan.SchemaVersion == 2)
+                {
+                    yield return BoundProbe(context, evidence, triggerWaypoint);
+                    yield break;
+                }
                 yield return Decision(
                     PolicyAction.AllowProbe,
                     Name,
@@ -270,6 +277,11 @@ namespace KahnRuntime
 
             if (evidence.Kind == EvidenceKind.RailFailed && oppositeSide)
             {
+                if (context.Plan.SchemaVersion == 2)
+                {
+                    yield return BoundProbe(context, evidence, triggerWaypoint);
+                    yield break;
+                }
                 PriceRange riskAnchor = EvidenceAnchor(evidence, context.TickSize);
                 if (riskAnchor == null)
                     yield break;
@@ -285,6 +297,23 @@ namespace KahnRuntime
                     context.Plan.Sizing.ProbeQuantity,
                     riskAnchor);
             }
+        }
+
+        private static PolicyDecision BoundProbe(CampaignContext context, CampaignEvidence evidence, CampaignWaypoint waypoint)
+        {
+            string reason = "root_owner_unavailable";
+            RootRiskBinding binding = context.Roots?.Resolve(evidence, context.Plan.Side, context.Now, out reason);
+            if (binding != null)
+                reason = context.Roots.Revalidate(binding, context.Now, evidence.Price ?? double.NaN,
+                    context.TickSize, context.Plan.Risk.MaxRootEntryDistanceTicks);
+            return new PolicyDecision
+            {
+                Action = binding == null || reason != null ? PolicyAction.NoAction : PolicyAction.AllowProbe,
+                Policy = "root_risk", ReasonCode = reason ?? "owned_root_at_trap_probe",
+                WaypointId = waypoint.Id, Quantity = context.Plan.Sizing.ProbeQuantity,
+                EvidenceId = evidence.EventId, RootBinding = binding,
+                RiskAnchor = binding?.Range(context.TickSize), RiskAnchorEvidenceId = binding?.Owner.Key.ToString(),
+            };
         }
     }
 
@@ -457,7 +486,9 @@ namespace KahnRuntime
             PriceRange evidenceRange = evidence.EffectiveRange(context.TickSize);
             bool sameSide = CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side);
 
-            if (evidence.Kind == EvidenceKind.SponsorFailed)
+            if (evidence.Kind == EvidenceKind.SponsorFailed
+                && (context.Plan.SchemaVersion != 2 || (!context.State.GroupSponsorActive
+                    && context.State.RootBinding?.Matches(evidence) == true)))
             {
                 yield return Decision(
                     PolicyAction.Flatten,
@@ -474,9 +505,10 @@ namespace KahnRuntime
                 && context.State.ActiveRiskAnchor != null
                 && evidence.Kind == EvidenceKind.RailFailed
                 && CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side)
-                && evidenceRange.DistanceTicksTo(
+                && (context.Plan.SchemaVersion == 2 ? context.State.RootBinding?.Matches(evidence) == true
+                    : evidenceRange.DistanceTicksTo(
                     context.State.ActiveRiskAnchor,
-                    context.TickSize) <= context.Plan.Risk.SponsorFailureBufferTicks)
+                    context.TickSize) <= context.Plan.Risk.SponsorFailureBufferTicks))
             {
                 yield return Decision(
                     PolicyAction.Flatten,

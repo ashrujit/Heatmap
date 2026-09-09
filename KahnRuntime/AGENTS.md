@@ -25,7 +25,8 @@ governor into a form-filled EAR directive dispatcher.
   new lifecycle and prevents new binaries from reinterpreting active legacy plans.
 - `CampaignSession` owns the pure observer/fill contracts. The worker applies
   complete LL samples before selecting any policy decision. External JSONL lacks
-  this attestation and retains root/risk uses only, not group-scale authority.
+  this attestation and retains risk-down uses only, not root-entry or group-scale
+  authority. An externally named rail is not a hydrated in-process owner.
 - Observation continues in WATCH, at capacity and under vetoes. First actual
   partial fills consume episodes and advance one-behind group sponsorship; broker
   acceptance and position guesses cannot spend an episode. Unknown order state
@@ -120,13 +121,32 @@ governor into a form-filled EAR directive dispatcher.
   position identity, side, attributed quantity and average; it never protects a
   guessed/manual position. Transport uncertainty cannot silently disable protection
   on otherwise fully identified scaled inventory.
-- The drawn `trap_probe` window is an eligibility area for entry evidence and
-  retry attempts, not the root risk anchor. Same-side and counter-claim-failed
-  probes both anchor to the actual evidence range so a wide probe box cannot
-  widen risk by itself. Root/sponsor failure remains policy evidence: Kahn
-  flattens only when typed evidence such as `SponsorFailed` or same-side
-  `RailFailed` near the active risk anchor confirms failure; raw tick
-  displacement alone is not enough.
+- The drawn `trap_probe` window is eligibility geometry, not a stop. Executable
+  roots bind a live owner's source/epoch/rail identity separately from the entry
+  trigger. Exact owner failure, not a neighboring overlapping rail, ends the
+  attempt. TEST is not FAIL. Schema-1 proximity behavior remains legacy replay
+  only. `RootRisk.cs` records why a binding qualifies or why admission is refused.
+- A failed counter-claim cannot own future risk. LL does not currently export a
+  causal parent relation, so schema-2 counter-claim-only entries fail closed with
+  `root_owner_missing` or `root_pair_unresolved`. Do not pick the nearest/newest
+  rail or silently merge an overlapping group. Direct live same-side OWN/HOLD
+  entries remain supported; Lean and Consumed are provenance, not different
+  permission shortcuts. This intentionally narrows entry permission pending a
+  separately validated causal-pair resolver.
+- Root ownership is hydrated from complete live-engine snapshots independently
+  of scale development. A campaign reload must not forget old live defenses;
+  hydration itself must not create fresh entry events or completed scale cycles.
+  Evidence loss means unknown root health, vetoes new risk, and is visible as
+  recovery; it is not fabricated typed failure. Working root orders cancel when
+  their owner fails or becomes unknown. A confirmed failure survives cancellation,
+  partial/late fills, pruning and reconciliation lag.
+- `risk.max_root_entry_distance_ticks` is an optional positive entry-admission
+  limit measured to the owner's adverse edge, rechecked at submission. Missing
+  means unset: no ES/NQ numeric limit has been selected. It is not a hard stop,
+  excludes LL failure-confirmation allowance/slippage, and cannot guarantee loss.
+  `root_stop_ticks` retains its old meaning; LL thresholds and one-behind scale
+  sponsorship are unchanged. No automatic adoption of later tighter rails is
+  included. See `ROOT_RISK_IMPLEMENTATION_2026-09-09.md` for remaining decisions.
 - External JSONL evidence must carry `ts_utc` or `timestamp` and must be fresh
   under `Evidence Max Age (sec)`. Kahn consumes and discards evidence while no
   campaign is eligible so stale backlogs cannot become current authority when a

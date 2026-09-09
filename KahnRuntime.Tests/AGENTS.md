@@ -25,3 +25,8 @@
   and before its trade callback. Correct fill deduplication alone does not prove
   correct weighted cost or BE eligibility. Test protection maintenance separately
   from new-risk admission, including recovery and invalid position identity.
+- Root tests must distinguish trigger and owner identities, historical ownership
+  hydration from fresh permission, and TEST from FAIL. Never repair a failing
+  counter-claim fixture by inventing its live partner. The session replay must
+  hydrate only from the actual earlier prefix and report inadmissible proxy seeds
+  as rejected, not force them through live admission or erase them from results.

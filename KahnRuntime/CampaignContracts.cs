@@ -183,6 +183,7 @@ namespace KahnRuntime
 
     internal sealed class CampaignRisk
     {
+        public int? MaxRootEntryDistanceTicks { get; init; }
         public int RootStopTicks { get; init; } = 16;
         public int SponsorFailureBufferTicks { get; init; } = 2;
         public bool AllowContestBeyondRiskAnchor { get; init; } = true;
@@ -326,6 +327,7 @@ namespace KahnRuntime
         public string EvidenceEpoch { get; init; }
         public long? SampleSequence { get; init; }
         public DateTimeOffset? FormedAt { get; init; }
+        public RootClaimOrigin RailOrigin { get; init; }
         public int SchemaVersion { get; init; } = 1;
         public string EventId { get; init; }
         public DateTimeOffset Timestamp { get; init; }
@@ -370,18 +372,21 @@ namespace KahnRuntime
         public CampaignContext(CampaignPlan plan,
             CampaignState state,
             double tickSize,
-            DateTimeOffset now)
+            DateTimeOffset now,
+            RootEvidenceLedger roots = null)
         {
             Plan = plan ?? throw new ArgumentNullException(nameof(plan));
             State = state ?? throw new ArgumentNullException(nameof(state));
             TickSize = tickSize > 0 ? tickSize : 0.25;
             Now = now;
+            Roots = roots;
         }
 
         public CampaignPlan Plan { get; }
         public CampaignState State { get; }
         public double TickSize { get; }
         public DateTimeOffset Now { get; }
+        public RootEvidenceLedger Roots { get; }
 
         public bool IsNearTarget(CampaignEvidence evidence)
         {
@@ -396,6 +401,7 @@ namespace KahnRuntime
 
     internal sealed class PolicyDecision
     {
+        public RootRiskBinding RootBinding { get; init; }
         public PolicyAction Action { get; init; }
         public string Policy { get; init; }
         public string ReasonCode { get; init; }
@@ -439,6 +445,7 @@ namespace KahnRuntime
         public string ActiveRiskAnchorEvidenceId { get; private set; }
         public PriceRange RootRiskAnchor { get; private set; }
         public string RootRiskAnchorEvidenceId { get; private set; }
+        public RootRiskBinding RootBinding { get; private set; }
         public PriceRange PendingSponsorAnchor { get; private set; }
         public string PendingSponsorEvidenceId { get; private set; }
         public DateTimeOffset? PendingSponsorQueuedAt { get; private set; }
@@ -873,6 +880,7 @@ namespace KahnRuntime
                 return;
             RootRiskAnchor = decision.RiskAnchor;
             RootRiskAnchorEvidenceId = decision.RiskAnchorEvidenceId ?? decision.EvidenceId;
+            RootBinding = decision.RootBinding;
         }
 
         private void PauseExecution(string reasonCode, DateTimeOffset now)
@@ -993,6 +1001,7 @@ namespace KahnRuntime
             ActiveRiskAnchorEvidenceId = null;
             RootRiskAnchor = null;
             RootRiskAnchorEvidenceId = null;
+            RootBinding = null;
             SimulatedAveragePrice = null;
             AcceptedAddCount = 0;
             ClearBreakevenBackstop();

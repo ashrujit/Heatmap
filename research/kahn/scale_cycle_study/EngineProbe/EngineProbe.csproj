@@ -9,5 +9,7 @@
     <Compile Include="../../../../KahnRuntime/LevelLedgerEvidenceEngine.cs" Link="LevelLedgerEvidenceEngine.cs" />
     <Compile Include="../../../../KahnRuntime/CampaignContracts.cs" Link="CampaignContracts.cs" />
     <Compile Include="../../../../KahnRuntime/CampaignPolicy.cs" Link="CampaignPolicy.cs" />
+    <Compile Include="../../../../KahnRuntime/RootRisk.cs" Link="RootRisk.cs" />
+    <Compile Include="../../../../KahnRuntime/Scaling/RepairEpisodeContracts.cs" Link="RepairEpisodeContracts.cs" />
   </ItemGroup>
 </Project>

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KahnRuntime;
+using KahnRuntime.Scaling;
 
 internal static class CheckpointTests
 {
@@ -50,8 +51,27 @@ internal static class CheckpointTests
                 Require(saved.RootElement.GetProperty("campaign_id").GetString() == "watched-test", "replacement must reach disk");
                 Require(!saved.RootElement.GetProperty("execution_authorized").GetBoolean(), "WATCH must remain unauthorized");
             }
+            var key = new ClaimKey(EvidenceSource.LevelLedger, "root-epoch", "27");
+            new RuntimeCheckpointStore(path).Save(new RuntimeCheckpointData
+            {
+                RootBinding = new(new(key, CampaignSide.Short, new(118133, 118145), RootClaimOrigin.Consumed,
+                    before.AddMinutes(-2), before.AddMinutes(-1), before, EvidenceKind.RailHeld, null),
+                    "separate-trigger", new(EvidenceSource.LevelLedger, "root-epoch", "32"), before, "fixture-only-pair"),
+                RootOwnerHealth = "Tested", RootOwnerOrigin = "Consumed", RootEntryDistanceTicks = 129,
+                LastRootAdmissionReason = "root_pair_unresolved", MaxRootEntryDistanceTicks = null,
+            });
+            using (JsonDocument saved = JsonDocument.Parse(File.ReadAllText(path)))
+            {
+                var root = saved.RootElement;
+                var binding = root.GetProperty("root_binding");
+                Require(binding.GetProperty("owner").GetProperty("key").GetProperty("rail_id").GetString() == "27", "owner identity lost");
+                Require(binding.GetProperty("trigger_key").GetProperty("rail_id").GetString() == "32", "trigger replaced owner");
+                Require(root.GetProperty("root_owner_origin").GetString() == "Consumed", "claim source not visible");
+                Require(root.GetProperty("root_entry_distance_ticks").GetDouble() == 129, "entry distance lost");
+                Require(root.GetProperty("max_root_entry_distance_ticks").ValueKind == JsonValueKind.Null, "unset cap manufactured");
+            }
             Require(!File.Exists(path + ".tmp"), "atomic save must not leave a temporary file");
-            Console.WriteLine("PASS checkpoint disk round trips (2 cases)");
+            Console.WriteLine("PASS checkpoint disk round trips (3 cases)");
         }
         finally
         {

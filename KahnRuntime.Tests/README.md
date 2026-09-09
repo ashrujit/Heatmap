@@ -52,6 +52,13 @@ in three fixed windows for ES/NQ before reading outcomes. `--holdout-data <dir>`
 reuses previously prepared, hashed capture inputs without changing old artifacts.
 No source or test binary may change while a replay is running.
 
+Root-risk verification also checks exact owner identity, Lean/Consumed provenance,
+reload hydration, pre-submit revalidation, pending/partial/late-fill failures,
+unknown epochs and the optional entry-distance gate. The integrated replay now
+hydrates root history from the actual pre-window prefix without replaying old
+scale events. Missing or offside owners produce `root_proxy_rejected` rows.
+Seeds remain explicitly counterfactual, not claimed as fresh live entry signals.
+
 To compile the actual strategy without deploying:
 
 ```powershell

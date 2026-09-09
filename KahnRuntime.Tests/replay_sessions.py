@@ -8,6 +8,28 @@ import subprocess
 import replay_fixtures as core
 
 
+def root_snapshot(events, before, epoch):
+    """Hydrate ownership from the real prefix, without feeding old scale events."""
+    claims = {}
+    for event in events:
+        if event["t"] >= before:
+            break
+        if event["kind"] == "Reset":
+            claims.clear()
+            continue
+        if str(event["epoch"]) != epoch:
+            continue
+        key = event["id"]
+        prior = claims.get(key)
+        if event["kind"] == "RailOwned" and prior is None:
+            prior = claims[key] = {**core.transition(event, {}), "owned_t": event["t"]}
+        if prior is not None and "failed_t" not in prior:
+            prior.update(kind=event["kind"], updated_t=event["t"])
+            if event["kind"] == "RailFailed":
+                prior["failed_t"] = event["t"]
+    return list(claims.values())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
@@ -52,6 +74,8 @@ def main():
         market = markets[key]
         for root in core.s.root_seeds(case, market):
             rows = core.inputs(case, market, root, True)
+            first_sample = next(row for row in rows[1:] if row["op"] == "sample")
+            first_sample["root_snapshot"] = root_snapshot(market.events, first_sample["t"], rows[0]["epoch"])
             for row in rows[1:]:
                 quote = market.quote(row["t"])
                 if quote is None: raise ValueError("missing BBO")
@@ -59,8 +83,10 @@ def main():
             folder = out / case.name / f"root-{root['root_n']}"
             source, result = folder / "input.jsonl", folder / "output.jsonl"
             core.s.write_lines(source, rows)
-            subprocess.run([str(core.s.DOTNET), str(core.DLL), "session-replay", str(source), str(result)],
-                           check=True, capture_output=True, text=True)
+            replay = subprocess.run([str(core.s.DOTNET), str(core.DLL), "session-replay", str(source), str(result)],
+                                    capture_output=True, text=True)
+            if replay.returncode:
+                raise RuntimeError(f"Session replay failed for {case.name}/root-{root['root_n']}: {replay.stderr}")
             output = core.s.read_lines(result)
             row = {"case": case.name, "root_n": root["root_n"], "root_time": core.s.clock(root["t"]),
                    "root_selector_end": root["end_reason"], **output[-1],

@@ -69,6 +69,9 @@ namespace KahnRuntime
             if (_plan == null || _state == null || _state.IsRetired
                 || (!_plan.ShouldEvaluateEvidenceAt(now, _state) && !_session.HasUnresolvedOrder)) return;
             var choices = _session.PolicyCandidates(evidence.Where(e => EvidenceFreshEnough(e, now)), now).ToList();
+            CampaignOrder pendingRoot = _session.Outstanding;
+            if (pendingRoot?.CancelReason != null && _runTradingEnabled)
+                _gateway.CancelRuntimeOrder(pendingRoot.BrokerOrderId, "root_risk_cancel_pending");
 
             ExecutableMarket market = SnapshotMarket(now.UtcDateTime);
             if (_session != null)
@@ -142,6 +145,7 @@ namespace KahnRuntime
                 Math.Max(1, InstanceMaxQuantity), _state.ExecutionAuthorized && _session.RecoveryReason == null,
                 _state.HasPosition && position.Direction == _plan.Side, ordersClear,
                 policyAllows && protection && _evidenceWarmupComplete && !_state.ExecutionPaused
+                    && _session.RootRiskRecoveryReason == null
                     && (_session.Sponsors?.Active == null || _session.Sponsors.ActiveHealth == GroupHealth.Live)
                     && !_state.AddsSuppressed(now) && _plan.Policies.PressEnabled
                     && _plan.Sizing.ScaleMode == CampaignScaleMode.EvidenceScaled
@@ -151,7 +155,8 @@ namespace KahnRuntime
         private GatewayResult ExecuteNewRisk(PolicyDecision decision, CampaignEvidence evidence, DateTimeOffset now)
         {
             if (!_newRiskReady || _session == null || !_state.ExecutionAuthorized || _session.HasUnresolvedOrder
-                || _session.RecoveryReason != null || _awaitingFillPosition || _pendingCloseQuantity.HasValue)
+                || _session.RecoveryReason != null || _session.RootRiskRecoveryReason != null
+                || _awaitingFillPosition || _pendingCloseQuantity.HasValue)
                 return new GatewayResult { Message = "new risk is not authorized or reconciled" };
             ExecutableMarket market = SnapshotMarket(DateTime.UtcNow);
             RuntimePosition position = CurrentPosition();
@@ -161,6 +166,15 @@ namespace KahnRuntime
                 || !market.IsValid || (_plan.FindWaypoint(decision.WaypointId) is { RequirePriceInside: true } probe
                     && !probe.Range.Contains(market.Executable(_plan.Side)))))
                 return new GatewayResult { Message = "probe quote/location or outstanding orders changed before submission" };
+            if (decision.Action == PolicyAction.AllowProbe)
+            {
+                string error = _session.Roots.Revalidate(decision.RootBinding, DateTimeOffset.UtcNow,
+                    market.Executable(_plan.Side), _tickSize, _plan.Risk.MaxRootEntryDistanceTicks);
+                _decisions.Write("root_pre_submit", ("binding", decision.RootBinding), ("reason", error ?? "accepted"),
+                    ("entry_distance_ticks", decision.RootBinding?.EntryDistanceTicks(market.Executable(_plan.Side), _tickSize)),
+                    ("max_entry_distance_ticks", _plan.Risk.MaxRootEntryDistanceTicks));
+                if (error != null) return new GatewayResult { Message = error };
+            }
             ScaleReservationSnapshot scale = decision.Action == PolicyAction.AllowAdd ? _selectedScale : null;
             if (decision.Action == PolicyAction.AllowAdd)
             {
@@ -232,10 +246,27 @@ namespace KahnRuntime
         private void DrainRepairAudit()
         {
             if (_session == null) return;
+            foreach (RootRiskAudit audit in _session.DrainRootAudit())
+                _decisions.Write("root_risk", ("campaign_id", _plan.Id), ("audit", audit));
             foreach (RepairAudit audit in _session.Observer.DrainAudit())
                 _decisions.Write("repair_episode", ("campaign_id", _plan.Id), ("epoch", _session.Observer.Epoch),
                     ("sample", _evidenceEpochSampleCount), ("audit", audit));
         }
+
+        private IReadOnlyList<RootClaim> RootSnapshot()
+            => new[] { LiveEvidence.EvidenceSide.Demand, LiveEvidence.EvidenceSide.Supply }
+                .SelectMany(side => _liveEvidence.LiveRails(side).Concat(_liveEvidence.FailedRails(side)))
+                .Select(band => new RootClaim(new(EvidenceSource.LevelLedger, _llEpoch,
+                    band.Id.ToString(CultureInfo.InvariantCulture)),
+                    band.Side == LiveEvidence.EvidenceSide.Demand ? CampaignSide.Long : CampaignSide.Short,
+                    new(band.MinTick, band.MaxTick),
+                    band.Source == LiveEvidence.EvidenceSource.Consumed ? RootClaimOrigin.Consumed : RootClaimOrigin.Lean,
+                    band.FormedUtc == default ? null : new DateTimeOffset(band.FormedUtc, TimeSpan.Zero),
+                    band.OwnedUtc == default ? null : new DateTimeOffset(band.OwnedUtc, TimeSpan.Zero),
+                    new DateTimeOffset(band.LastStateUtc, TimeSpan.Zero),
+                    band.State == LiveEvidence.EvidenceState.Failed ? EvidenceKind.RailFailed
+                        : band.State == LiveEvidence.EvidenceState.Tested ? EvidenceKind.RailTested : EvidenceKind.RailOwned,
+                    band.FailedUtc.HasValue ? new DateTimeOffset(band.FailedUtc.Value, TimeSpan.Zero) : null)).ToArray();
 
         private bool HandleScopedControl(RuntimeControlCommand command, DateTimeOffset now)
         {

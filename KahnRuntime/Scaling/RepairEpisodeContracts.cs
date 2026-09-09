@@ -40,7 +40,8 @@ namespace KahnRuntime.Scaling
         EvidenceKind Kind,
         CampaignSide Side,
         TickInterval Coverage,
-        DateTimeOffset? FormedAt = null);
+        DateTimeOffset? FormedAt = null,
+        RootClaimOrigin Origin = RootClaimOrigin.Unknown);
 
     // The adapter attests an actual source sample, not merely equal timestamps.
     // PriceTicks is side-correct executable BBO. Midpoint is only a replay diagnostic.

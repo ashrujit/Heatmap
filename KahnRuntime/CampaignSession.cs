@@ -13,6 +13,12 @@ namespace KahnRuntime
         public string InstanceId { get; }
         public double TickSize { get; }
         public RepairEpisodeObserver Observer { get; }
+        public RootEvidenceLedger Roots { get; }
+        public string RootRiskRecoveryReason { get; private set; }
+        public string LastRootAdmissionReason { get; private set; }
+        public double? RootEntryDistanceTicks { get; private set; }
+        private readonly Queue<RootRiskAudit> _rootAudit = new();
+        private readonly HashSet<(string Epoch, string Rail, EvidenceKind Kind, DateTimeOffset At)> _reservedRootTriggers = new();
         public GroupSponsorState Sponsors { get; private set; }
         public ScaleOrderReservations Reservations { get; private set; }
         public DateTimeOffset AuthorizedAt { get; private set; }
@@ -29,24 +35,36 @@ namespace KahnRuntime
             IEnumerable<CampaignEvidence> evidence, DateTimeOffset now)
         {
             var choices = new List<(PolicyDecision Decision, CampaignEvidence Evidence)>();
-            CampaignOrder pendingRoot = Outstanding?.Decision.Action == PolicyAction.AllowProbe ? Outstanding : null;
+            RefreshRootRisk(now);
             foreach (CampaignEvidence item in evidence)
             {
-                if (pendingRoot?.Filled == 0 && item.Kind is EvidenceKind.RailFailed or EvidenceKind.SponsorFailed
-                    && item.Source == pendingRoot.Evidence.Source && item.EvidenceEpoch == pendingRoot.Evidence.EvidenceEpoch
-                    && item.RailId != null && item.RailId == pendingRoot.Evidence.RailId)
-                    pendingRoot.FailureBeforeFill = item;
-                PolicyDecision decision = _policies.Evaluate(new(Plan, State, TickSize, now), item);
+                if (item.Kind is EvidenceKind.RailFailed or EvidenceKind.SponsorFailed)
+                {
+                    Roots.RecordFailure(item);
+                    foreach (CampaignOrder order in _orders.Values.Where(o => o.Decision.Action == PolicyAction.AllowProbe
+                        && o.Decision.RootBinding?.Matches(item) == true))
+                        MarkRootFailure(order, item);
+                    if (State.RootBinding?.Matches(item) == true) LatchRootExit(State.RootBinding, item);
+                }
+                PolicyDecision decision = _policies.Evaluate(new(Plan, State, TickSize, now, Roots), item);
+                if (decision.Policy == "root_risk" && item.Timestamp > AuthorizedAt && State.ExecutionAuthorized)
+                {
+                    LastRootAdmissionReason = decision.ReasonCode;
+                    _rootAudit.Enqueue(new(now, decision.ReasonCode, item.EventId, decision.RootBinding,
+                        decision.RootBinding != null && item.Price.HasValue
+                            ? decision.RootBinding.EntryDistanceTicks(item.Price.Value, TickSize) : null));
+                }
                 if (decision.Action is PolicyAction.AllowProbe or PolicyAction.ArmProbe)
                 {
                     if (item.Timestamp <= AuthorizedAt || !State.ExecutionAuthorized
-                        || HasUnresolvedOrder || RecoveryReason != null) continue;
-                    if (item.EvidenceEpoch != null && item.Kind is EvidenceKind.RailOwned or EvidenceKind.RailHeld)
-                    {
-                        var claim = Observer.Find(new(EvidenceSource.LevelLedger, item.EvidenceEpoch, item.RailId));
-                        if (claim?.Confirmed != true) continue;
-                    }
+                        || HasUnresolvedOrder || RecoveryReason != null || RootRiskRecoveryReason != null) continue;
+                    if (decision.Action == PolicyAction.AllowProbe
+                        && _reservedRootTriggers.Contains((item.EvidenceEpoch, item.RailId, item.Kind, item.Timestamp))) continue;
                 }
+                if (State.HasPosition && !State.GroupSponsorActive && State.RootBinding != null
+                    && item.Kind == EvidenceKind.RailFailed && CampaignSideMath.IsSameSide(Plan.Side, item.Side)
+                    && !State.RootBinding.Matches(item))
+                    _rootAudit.Enqueue(new(now, "non_owner_failure_ignored", item.EventId, State.RootBinding, null));
                 if (decision.Action != PolicyAction.NoAction) choices.Add((decision, item));
             }
             if (PendingRiskExit.HasValue && State.HasPosition) choices.Add(PendingRiskExit.Value);
@@ -81,6 +99,7 @@ namespace KahnRuntime
             TickSize = tickSize;
             PriceRange root = plan.WaypointsByRole(WaypointRole.TrapProbe).FirstOrDefault()?.Range ?? plan.Arena;
             Observer = new(plan.Side, Ticks(root), maximumSampleGap);
+            Roots = new(maximumSampleGap);
         }
 
         public TickInterval Ticks(PriceRange range)
@@ -125,8 +144,16 @@ namespace KahnRuntime
             return "accepted";
         }
 
-        public void Observe(RepairSample sample)
+        public void Observe(RepairSample sample, IReadOnlyList<RootClaim> rootSnapshot = null)
         {
+            Roots.Observe(sample, rootSnapshot);
+            if (!Roots.Available)
+            {
+                DateTimeOffset at = sample.At < Observer.LastObservedAt ? Observer.LastObservedAt : sample.At;
+                Observer.Suspend(at, "root_sample_invalid");
+                RefreshRootRisk(at);
+                return;
+            }
             if (Observer.Epoch != sample.Epoch)
                 Observer.StartEpoch(sample.Epoch, sample.At, sample.PriceTicks);
             Observer.Observe(sample);
@@ -134,6 +161,63 @@ namespace KahnRuntime
                 StartRootObservation(_awaitingRootObservation, sample.At, sample.PriceTicks, false);
             Sponsors?.Observe(Observer);
             State.GroupSponsorActive = Sponsors?.Active != null;
+            RefreshRootRisk(sample.At);
+        }
+
+        public IReadOnlyList<RootRiskAudit> DrainRootAudit()
+        {
+            var result = _rootAudit.ToArray();
+            _rootAudit.Clear();
+            return result;
+        }
+
+        public void SuspendRootEvidence(DateTimeOffset now)
+        {
+            Roots.Suspend();
+            RefreshRootRisk(now);
+        }
+
+        private CampaignEvidence OwnerFailure(RootRiskBinding binding, DateTimeOffset at)
+            => new() { EventId = "root-owner-failed-" + binding.Owner.Key, Timestamp = at,
+                Source = binding.Owner.Key.Source, EvidenceEpoch = binding.Owner.Key.Epoch,
+                RailId = binding.Owner.Key.RailId, Kind = EvidenceKind.RailFailed,
+                Side = binding.Owner.Side == CampaignSide.Long ? EvidenceSide.Demand : EvidenceSide.Supply,
+                Range = binding.Range(TickSize), RailOrigin = binding.Owner.Origin };
+
+        private void MarkRootFailure(CampaignOrder order, CampaignEvidence failed)
+        {
+            order.FailureBeforeFill ??= failed;
+            if (!order.Terminal) order.CancelReason ??= "root_owner_failed";
+        }
+
+        private void LatchRootExit(RootRiskBinding binding, CampaignEvidence failure)
+        {
+            if (!State.HasPosition || State.GroupSponsorActive) return;
+            PolicyDecision decision = new() { Action = PolicyAction.Flatten, Policy = "root_risk",
+                ReasonCode = "root_owner_failed", Priority = 1000, Quantity = State.SimulatedPositionQuantity,
+                RootBinding = binding, RiskAnchor = binding.Range(TickSize),
+                RiskAnchorEvidenceId = binding.Owner.Key.ToString(), EvidenceId = failure.EventId };
+            PendingRiskExit ??= (decision, failure);
+        }
+
+        private void RefreshRootRisk(DateTimeOffset now)
+        {
+            RootRiskRecoveryReason = null;
+            foreach (CampaignOrder order in _orders.Values.Where(o => o.Decision.Action == PolicyAction.AllowProbe && !o.Terminal))
+            {
+                RootRiskBinding binding = order.Decision.RootBinding;
+                RootHealth health = Roots.Health(binding, now);
+                if (health == RootHealth.Failed)
+                    MarkRootFailure(order, OwnerFailure(binding, Roots.Find(binding.Owner.Key).FailedAt.Value));
+                else if (health == RootHealth.Unknown)
+                    order.CancelReason ??= "root_owner_health_unknown";
+            }
+            if (!State.HasPosition || State.GroupSponsorActive || State.RootBinding == null) return;
+            RootHealth active = Roots.Health(State.RootBinding, now);
+            if (active == RootHealth.Failed)
+                LatchRootExit(State.RootBinding, OwnerFailure(State.RootBinding, Roots.Find(State.RootBinding.Owner.Key).FailedAt.Value));
+            else if (active == RootHealth.Unknown)
+                RootRiskRecoveryReason = "root_owner_health_unknown";
         }
 
         public void ConfirmFlat(DateTimeOffset now)
@@ -144,7 +228,9 @@ namespace KahnRuntime
             Reservations = null;
             _awaitingRootObservation = null;
             PendingRiskExit = null;
+            RootRiskRecoveryReason = null;
             State.GroupSponsorActive = false;
+            RootEntryDistanceTicks = null;
             _attemptOpen = false;
         }
 
@@ -157,8 +243,21 @@ namespace KahnRuntime
         public CampaignOrder Reserve(PolicyDecision decision, CampaignEvidence evidence,
             ScaleReservationSnapshot scale, DateTimeOffset now)
         {
-            if (HasUnresolvedOrder || RecoveryReason != null || !State.ExecutionAuthorized)
+            if (HasUnresolvedOrder || RecoveryReason != null || RootRiskRecoveryReason != null || !State.ExecutionAuthorized)
                 throw new InvalidOperationException("New risk is not admissible.");
+            if (decision.Action == PolicyAction.AllowProbe)
+            {
+                string error = Roots.Revalidate(decision.RootBinding, now, evidence.Price ?? double.NaN,
+                    TickSize, Plan.Risk.MaxRootEntryDistanceTicks);
+                if (error != null || decision.RootBinding.TriggerEventId != evidence.EventId
+                    || decision.RootBinding.TriggerKey != new ClaimKey(evidence.Source, evidence.EvidenceEpoch, evidence.RailId)
+                    || decision.RootBinding.Owner.Side != Plan.Side || evidence.Timestamp <= AuthorizedAt
+                    || decision.RiskAnchor?.Lower != decision.RootBinding.Range(TickSize).Lower
+                    || decision.RiskAnchor?.Upper != decision.RootBinding.Range(TickSize).Upper)
+                    throw new InvalidOperationException(error ?? "Root binding does not belong to this entry.");
+                if (_reservedRootTriggers.Contains((evidence.EvidenceEpoch, evidence.RailId, evidence.Kind, evidence.Timestamp)))
+                    throw new InvalidOperationException("Root trigger already reserved; fresh evidence required.");
+            }
             int quantity = scale?.RequestedQuantity ?? decision.Quantity ?? Plan.Sizing.ProbeQuantity;
             if (decision.Action is not (PolicyAction.AllowProbe or PolicyAction.AllowAdd)
                 || quantity <= 0 || quantity > Plan.Sizing.MaxPositionQuantity - State.SimulatedPositionQuantity
@@ -168,6 +267,8 @@ namespace KahnRuntime
             var order = new CampaignOrder(Guid.NewGuid().ToString("N"), decision, evidence,
                 scale?.Id, quantity, State.SimulatedPositionQuantity, State.SimulatedAveragePrice ?? 0, now);
             _orders.Add(order.Id, order);
+            if (decision.Action == PolicyAction.AllowProbe)
+                _reservedRootTriggers.Add((evidence.EvidenceEpoch, evidence.RailId, evidence.Kind, evidence.Timestamp));
             return order;
         }
 
@@ -260,6 +361,7 @@ namespace KahnRuntime
                     ReasonCode = order.Decision.ReasonCode, Quantity = filled,
                     RiskAnchor = order.Decision.RiskAnchor,
                     RiskAnchorEvidenceId = order.Decision.RiskAnchorEvidenceId,
+                    RootBinding = order.Decision.RootBinding,
                     EvidenceId = order.Evidence.EventId,
                 }, Plan, true, now, simulatedFillPrice: average);
                 if (order.Decision.Action == PolicyAction.AllowProbe)
@@ -278,14 +380,12 @@ namespace KahnRuntime
             }
             if (added > 0)
             {
+                if (order.Decision.Action == PolicyAction.AllowProbe)
+                    RootEntryDistanceTicks = order.Decision.RootBinding.EntryDistanceTicks(average.Value, TickSize);
                 // Only new fills change exposure; repeated snapshots cannot undo an intervening exit.
                 State.ReconcileFill(positionBefore + added, (valueBefore + addedValue) / (positionBefore + added));
-                if (first && order.FailureBeforeFill != null)
-                {
-                    PolicyDecision failure = _policies.Evaluate(new(Plan, State, TickSize, now), order.FailureBeforeFill);
-                    if (failure.Action is PolicyAction.Flatten or PolicyAction.Retire)
-                        PendingRiskExit = (failure, order.FailureBeforeFill);
-                }
+                if (order.FailureBeforeFill != null)
+                    LatchRootExit(order.Decision.RootBinding, order.FailureBeforeFill);
             }
             order.Filled = filled;
             order.FillAverage = average;
@@ -302,9 +402,7 @@ namespace KahnRuntime
 
         private void StartRootObservation(CampaignOrder order, DateTimeOffset now, double priceTicks, bool carry)
         {
-            ClaimKey? key = order.Evidence.Source == EvidenceSource.LevelLedger
-                && order.Evidence.EvidenceEpoch != null && order.Evidence.RailId != null
-                ? new ClaimKey(EvidenceSource.LevelLedger, order.Evidence.EvidenceEpoch, order.Evidence.RailId) : null;
+            ClaimKey? key = order.Decision.RootBinding?.Owner.Key;
             Observer.BeginAttempt(State.ExecutionAttemptCount, Sponsors.RootAnchor, now, priceTicks, key, carry);
             Reservations = new(Observer, Sponsors);
             _awaitingRootObservation = null;
@@ -328,6 +426,7 @@ namespace KahnRuntime
         public bool CarryLiveEvidence { get; set; } = true;
         public string PositionId { get; set; }
         public CampaignEvidence FailureBeforeFill { get; set; }
+        public string CancelReason { get; set; }
         public BrokerFillLedger BrokerFills { get; }
         public CampaignOrder(string id, PolicyDecision decision, CampaignEvidence evidence, string scaleId,
             int quantity, int before, double average, DateTimeOffset at)
@@ -337,4 +436,7 @@ namespace KahnRuntime
             BrokerFills = new(quantity);
         }
     }
+
+    internal sealed record RootRiskAudit(DateTimeOffset At, string Reason, string EvidenceId,
+        RootRiskBinding Binding, double? EntryDistanceTicks);
 }

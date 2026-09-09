@@ -68,8 +68,8 @@ internal static partial class SessionTests
         session.Observe(new(EvidenceSource.LevelLedger, "incident-epoch", 1, evidence.Timestamp, 118218,
             [new(new(EvidenceSource.LevelLedger, "incident-epoch", "18"), EvidenceKind.RailOwned,
                 CampaignSide.Short, new(118247, 118264))], true));
-        var root = session.Reserve(new() { Action = PolicyAction.AllowProbe, Quantity = 2,
-            RiskAnchor = evidence.Range, RiskAnchorEvidenceId = evidence.EventId }, evidence, null, submit);
+        var rootDecision = session.PolicyCandidates([evidence], submit).Single(x => x.Decision.Action == PolicyAction.AllowProbe).Decision;
+        var root = session.Reserve(rootDecision, evidence, null, submit);
         session.Submitted(root, "38660935", true, false);
         foreach (string type in new[] { "order_added", "order_updated", "order_updated" })
             session.ReportBrokerEvent(OrderReport(order: "38660935", type: type, side: "Sell"), submit.AddSeconds(1), 118218);
@@ -234,6 +234,9 @@ internal static partial class SessionTests
             RuntimeInstanceId = s.InstanceId, Attempt = 0, CreatedAt = At(0) }, At(0));
         RepairTransition T(string id, EvidenceKind kind, CampaignSide side, long lo, long hi)
             => new(new(EvidenceSource.LevelLedger, "nq-epoch", id), kind, side, new(lo, hi));
+        // Ownership predates the held trigger; sample timing remains synthetic.
+        s.Observe(new(EvidenceSource.LevelLedger, "nq-epoch", 0, At(0), 118346,
+            [T("41", EvidenceKind.RailOwned, CampaignSide.Long, 118328, 118331)], true));
         s.Observe(new(EvidenceSource.LevelLedger, "nq-epoch", 1, At(1), 118346,
             [T("34", EvidenceKind.RailHeld, CampaignSide.Short, 118366, 118370),
              T("42", EvidenceKind.RailOwned, CampaignSide.Short, 118357, 118367),
@@ -241,8 +244,8 @@ internal static partial class SessionTests
         var rootEvidence = new CampaignEvidence { EventId = "root-held", Timestamp = At(1),
             Source = EvidenceSource.LevelLedger, EvidenceEpoch = "nq-epoch", RailId = "41",
             Kind = EvidenceKind.RailHeld, Side = EvidenceSide.Demand, Range = Range(29582, 29582.75), Price = 29586.25 };
-        var root = s.Reserve(new() { Action = PolicyAction.AllowProbe, Quantity = 2,
-            RiskAnchor = rootEvidence.Range }, rootEvidence, null, At(1));
+        var rootDecision = s.PolicyCandidates([rootEvidence], At(1)).Single(x => x.Decision.Action == PolicyAction.AllowProbe).Decision;
+        var root = s.Reserve(rootDecision, rootEvidence, null, At(1));
         s.Submitted(root, "38669544", true, false);
         s.ReportBrokerEvent(Trade("38669544@2", 2, 29587, "38669544"), At(1.1), 118346);
         // Real claim/fill values; compressed synthetic sample timing isolates the callback race.

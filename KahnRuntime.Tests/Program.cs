@@ -32,6 +32,7 @@ RuntimeSelfTests.RunAll();
 Console.WriteLine("PASS existing RuntimeSelfTests (39 checks)");
 ScalingTests.RunAll();
 SessionTests.RunAll();
+RootRiskTests.RunAll();
 CheckpointTests.RunAll();
 }
 catch (Exception error)
