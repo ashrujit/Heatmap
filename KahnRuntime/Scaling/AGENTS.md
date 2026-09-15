@@ -19,3 +19,7 @@
   one group; remaining fills cannot cause a second sponsor promotion or add.
 - Sponsor membership is frozen at fill. Only its recorded qualifying members
   can keep it alive. Missing epoch state is unknown, not typed failure.
+- Discovery recovery increments generation without changing claim identities.
+  That invalidates unfilled scale permission; it must not invalidate a filled
+  sponsor's risk monitor. The session supplies the retained LL root ledger for
+  filled-group health. Promotion still requires current-generation proof.

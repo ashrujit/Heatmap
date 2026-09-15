@@ -78,9 +78,9 @@ namespace KahnRuntime
             {
                 if (_newRiskReady && CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
                     _session.ConfirmFlat(now);
-                if (market.IsValid)
-                    _session.Observer.ObservePrice(now, ManagementTicks(market));
-                _session.Sponsors?.Observe(_session.Observer);
+                // Captured book observations own observer time. Advancing it to
+                // wall time here would reject the next buffered sample as old.
+                _session.RefreshRiskHealth(now);
                 ScaleOpportunity opportunity = _session.Observer.Opportunity;
                 if (opportunity != null && _session.Reservations != null)
                 {
@@ -154,7 +154,7 @@ namespace KahnRuntime
 
         private GatewayResult ExecuteNewRisk(PolicyDecision decision, CampaignEvidence evidence, DateTimeOffset now)
         {
-            if (!_newRiskReady || _session == null || !_state.ExecutionAuthorized || _session.HasUnresolvedOrder
+            if (!_newRiskReady || !CaptureAllowsNewRisk(DateTime.UtcNow) || _session == null || !_state.ExecutionAuthorized || _session.HasUnresolvedOrder
                 || _session.RecoveryReason != null || _session.RootRiskRecoveryReason != null
                 || _awaitingFillPosition || _pendingCloseQuantity.HasValue)
                 return new GatewayResult { Message = "new risk is not authorized or reconciled" };
@@ -168,6 +168,8 @@ namespace KahnRuntime
                 return new GatewayResult { Message = "probe quote/location or outstanding orders changed before submission" };
             if (decision.Action == PolicyAction.AllowProbe)
             {
+                if (!_evidenceWarmupComplete || !_session.Observer.FreshAt(DateTimeOffset.UtcNow))
+                    return new GatewayResult { Message = "root observation is recovering" };
                 string error = _session.Roots.Revalidate(decision.RootBinding, DateTimeOffset.UtcNow,
                     market.Executable(_plan.Side), _tickSize, _plan.Risk.MaxRootEntryDistanceTicks);
                 _decisions.Write("root_pre_submit", ("binding", decision.RootBinding), ("reason", error ?? "accepted"),

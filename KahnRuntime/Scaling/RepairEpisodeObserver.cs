@@ -89,6 +89,21 @@ namespace KahnRuntime.Scaling
             Suspend(at, "epoch_reset");
             Epoch = epoch;
             _usedEpochs.Add(epoch);
+            ResetObservation(at, priceTicks);
+            Audit(at, "epoch_started");
+        }
+
+        public void ResumeObservation(DateTimeOffset at, double priceTicks)
+        {
+            if (!Suspended || string.IsNullOrWhiteSpace(Epoch) || !ValidPrice(priceTicks)
+                || at == default || at < LastObservedAt)
+                throw new ArgumentException("Recovery needs a suspended observer and a current finite price.");
+            ResetObservation(at, priceTicks);
+            Audit(at, "observation_recovered_same_identity_epoch");
+        }
+
+        private void ResetObservation(DateTimeOffset at, double priceTicks)
+        {
             Generation++;
             _claims.Clear();
             _forming.Clear();
@@ -102,7 +117,6 @@ namespace KahnRuntime.Scaling
             _peak = Orient(priceTicks);
             Suspended = false;
             SuspensionReason = null;
-            Audit(at, "epoch_started");
         }
 
         public void Suspend(DateTimeOffset at, string reason)

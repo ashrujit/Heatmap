@@ -173,6 +173,28 @@ namespace KahnRuntime.LiveEvidence
 
         public long? LastMidTick { get; private set; }
 
+        public void ResetObservation()
+        {
+            _samples.Clear();
+            InterruptObservation();
+        }
+
+        // Missing observations break timers and unfinished proof even when the
+        // rolling statistical baseline survives a bounded interruption.
+        public void InterruptObservation()
+        {
+            _pendingEvents.Clear();
+            _candidates.Clear();
+            _transitions.Clear();
+            LastMidTick = null;
+            // Missing time cannot confirm failure. Owned identities outlive discovery warmup.
+            foreach (Band band in _bands.ToArray())
+            {
+                if (band.Role != EvidenceRole.Rail) _bands.Remove(band);
+                else band.PendingFailureUtc = null;
+            }
+        }
+
         public IReadOnlyList<EvidenceTransition> Process(BookDepthSnapshot depth)
         {
             _transitions.Clear();

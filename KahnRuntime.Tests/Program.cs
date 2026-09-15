@@ -30,6 +30,7 @@ if (args.Length != 0)
     throw new ArgumentException("Usage: KahnRuntime.Tests [replay input.jsonl output.jsonl]");
 RuntimeSelfTests.RunAll();
 Console.WriteLine("PASS existing RuntimeSelfTests (39 checks)");
+BookCaptureTests.RunAll();
 ScalingTests.RunAll();
 SessionTests.RunAll();
 RootRiskTests.RunAll();

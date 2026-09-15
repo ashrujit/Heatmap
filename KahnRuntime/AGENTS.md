@@ -140,6 +140,46 @@ governor into a form-filled EAR directive dispatcher.
   recovery; it is not fabricated typed failure. Working root orders cancel when
   their owner fails or becomes unknown. A confirmed failure survives cancellation,
   partial/late fills, pruning and reconciliation lag.
+- Observation recovery must not replace the engine or its identity epoch. A
+  processing stall, invalid quote or book/feed gap clears discovery baselines,
+  unconfirmed candidates and pending failure timers, but retains owned rails,
+  failed identities and the next rail ID. Missing time cannot confirm a failure.
+  Root and filled-sponsor health continues from complete retained LL state during
+  discovery warmup; risk-down must not wait for new-entry readiness.
+- A dedicated capture thread copies validated books at `BookSampleMs` into a
+  bounded buffer alongside lightweight price observations. Broker/file work on
+  the trading worker must not erase
+  observations that were actually captured. This is sampled book continuity,
+  never a claim to replay QT's private transport queue or every exchange update.
+- Catch-up preserves the LL baseline and exact owner identities when samples
+  remain ordered within the existing maximum gap. Historical batches hydrate
+  owned risk only; fresh post-boundary observations resume discovery. Unfilled
+  scale proof is invalidated on catch-up. Overflow, reconnect, invalid capture
+  ordering and excessive observation gaps still require full warmup.
+- A short unusable book interrupts unfinished claims and failure timers even when
+  its statistical baseline survives. Missing time must never finish a failure.
+  The capture reader retries torn BBO/DOM reads three times without sleeping.
+- Source timestamps and arrival timestamps have separate roles. Missing, regressed,
+  excessively future or stale source time vetoes freshness; receipt time cannot
+  turn an old delivery into current authority. Provider timestamp semantics require
+  connected validation. Snapshot reads cannot prove a QT-side backlog is complete.
+- Book and lightweight BBO observations share one capture timeline. Preserve
+  `BookSampleMs` for LL and the worker-frequency price updates for repair logic;
+  wall-time peeks on the trading worker would advance the observer ahead of
+  queued books. L1-only observations cannot satisfy book warmup or recovery.
+- Connection changes preserve consumable pre-disconnect owner observations before
+  clearing discovery. A reconnect cannot erase an already captured owner failure.
+
+- Scale recovery advances observer generation within the same identity epoch.
+  Old repair offers and pending proof cannot authorize new leverage, but a filled
+  active sponsor still owns risk through its exact retained members. Do not use
+  scale-generation freshness to erase existing inventory's failure detector.
+- A temporary lack of observations is unknown health and vetoes new risk, not
+  auction failure. A genuinely lost owner identity (replacement epoch, missing
+  owner in a complete snapshot or conflicting geometry) instead latches an
+  explicit `risk_recovery` exit and revokes execution authorization. This is not
+  a `RailFailed` event, nearest-rail substitution or an invented tick/time stop.
+  Its cancellation and exit obligation survives partial/late fills.
 - `risk.max_root_entry_distance_ticks` is an optional positive entry-admission
   limit measured to the owner's adverse edge, rechecked at submission. Missing
   means unset: no ES/NQ numeric limit has been selected. It is not a hard stop,

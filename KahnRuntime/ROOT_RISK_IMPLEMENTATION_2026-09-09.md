@@ -4,6 +4,8 @@ Codex implementation, 2026-09-09. Based on the approved direction in
 [the root-risk investigation](../research/kahn/KAHN_ROOT_RISK_RESEARCH_2026-09-09.md).
 Built and verified offline, then deployed with explicit user authorization.
 See [the release record](RELEASE_2026-09-09.md) for hashes and the cutover boundary.
+The subsequent [September 10 recovery correction](RISK_RECOVERY_FIX_2026-09-10.md)
+supersedes this increment's indefinite unknown-owner handling after identity loss.
 
 ## Implemented Scope
 

@@ -6,6 +6,8 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../KahnRuntime/BookObservationBuffer.cs" Link="BookObservationBuffer.cs" />
+    <Compile Include="../KahnRuntime/LevelLedgerEvidenceEngine.cs" Link="LevelLedgerEvidenceEngine.cs" />
     <Compile Include="../KahnRuntime/RootRisk.cs" Link="RootRisk.cs" />
     <Compile Include="../KahnRuntime/CampaignSession.cs" Link="CampaignSession.cs" />
     <Compile Include="../KahnRuntime/BrokerFillLedger.cs" Link="BrokerFillLedger.cs" />

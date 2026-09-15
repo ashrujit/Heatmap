@@ -1,7 +1,7 @@
 using KahnRuntime;
 using KahnRuntime.Scaling;
 
-internal static class RootRiskTests
+internal static partial class RootRiskTests
 {
     private static readonly DateTimeOffset Start = DateTimeOffset.Parse("2026-09-09T14:00:00Z");
     private static DateTimeOffset At(double seconds) => Start.AddSeconds(seconds);
@@ -68,6 +68,7 @@ internal static class RootRiskTests
             catch (Exception e) { throw new Exception("FAIL " + test.Method.Name + ": " + e.Message, e); }
         }
         Console.WriteLine($"PASS root ownership and admission ({tests.Length} checks)");
+        RunRecoveryTests();
     }
 
     private static void DirectLeanAndConsumedBothSides()
@@ -162,7 +163,8 @@ internal static class RootRiskTests
         var (s, o) = Pending(); Fill(s, o);
         s.Observe(Sample(2, 3) with { Epoch = "new" });
         Check(s.RootRiskRecoveryReason != null && s.Roots.Health(s.State.RootBinding, At(3)) == RootHealth.Unknown
-            && s.PolicyCandidates([], At(3)).All(x => x.Decision.Action != PolicyAction.Flatten), "epoch loss fabricated failure or healthy root");
+            && s.PendingRiskExit?.Decision.ReasonCode == "root_owner_tracking_lost"
+            && s.PendingRiskExit?.Evidence.Kind == EvidenceKind.Timer, "epoch loss needs an infrastructure exit, not typed failure");
     }
     private static void SameSampleOwnerFailureWins()
     {

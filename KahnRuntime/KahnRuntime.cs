@@ -149,7 +149,8 @@ namespace KahnRuntime
         private double _latestAsk = double.NaN;
         private DateTime _lastQuoteUtc = DateTime.MinValue;
         private DateTime _lastL2Utc = DateTime.MinValue;
-        private DateTime _lastBookSampleUtc = DateTime.MinValue;
+        private DateTime _lastEvidenceSampleUtc = DateTime.MinValue;
+        private long _llSampleSequence;
         private DateTime _lastCheckpointUtc = DateTime.MinValue;
         private DateTime _evidenceEpochStartedUtc = DateTime.MinValue;
         private DateTime _liveSettleUntilUtc = DateTime.MinValue;
@@ -241,6 +242,7 @@ namespace KahnRuntime
 
                 Subscribe();
                 _running = true;
+                StartBookCapture();
                 int interval = Math.Max(100, WorkerPollMs);
                 _workerTimer = new Timer(_ => Worker(), null, interval, interval);
                 _decisions.Write("runtime_initialized",
@@ -321,8 +323,8 @@ namespace KahnRuntime
                     },
                     allowNewRisk =>
                     {
-                        _newRiskReady = allowNewRisk;
-                        if (allowNewRisk && CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
+                        _newRiskReady = allowNewRisk && CaptureAllowsNewRisk(DateTime.UtcNow);
+                        if (_newRiskReady && CurrentPosition().IsFlat && !_pendingCloseQuantity.HasValue)
                             _session?.ConfirmFlat(DateTimeOffset.UtcNow);
                         IReadOnlyList<CampaignEvidence> marketEvents = DrainMarketEvents();
                         IReadOnlyList<CampaignEvidence> inboxEvents = _evidenceInbox?.ReadNewEvents(
@@ -1152,125 +1154,185 @@ namespace KahnRuntime
         private IReadOnlyList<CampaignEvidence> DrainMarketEvents()
         {
             List<CampaignEvidence> result = new();
-            while (_marketEvents.TryDequeue(out CampaignEvidence evidence))
+            int pending = Math.Min(2000, _marketEvents.Count);
+            for (int i = 0; i < pending && _marketEvents.TryDequeue(out CampaignEvidence evidence); i++)
                 result.Add(evidence);
             return result;
         }
 
         private void ProcessBookSample(DateTime nowUtc)
         {
-            if (_liveEvidence == null || _marketDataSymbol == null)
-                return;
-            if ((nowUtc - _lastBookSampleUtc).TotalMilliseconds < Math.Max(250, BookSampleMs))
-                return;
-            _lastBookSampleUtc = nowUtc;
-            if (_session?.Observer.Suspended == true && _evidenceState != "BookUnusable")
-                ResetEvidenceEpoch("scale_observation_gap_rewarm");
-
-            BookSampleDiagnostic diagnostic = new()
-            {
-                SymbolBid = double.IsFinite(_marketDataSymbol.Bid) ? _marketDataSymbol.Bid : null,
-                SymbolAsk = double.IsFinite(_marketDataSymbol.Ask) ? _marketDataSymbol.Ask : null,
-            };
-            bool l2Fresh;
+            if (_liveEvidence == null || _bookBuffer == null) return;
+            var batch = _bookBuffer.Drain();
+            bool connectionChanged;
+            DateTime connectionBoundary;
             lock (_marketGate)
             {
-                diagnostic.LastL2Utc = _lastL2Utc == DateTime.MinValue ? null : _lastL2Utc;
-                diagnostic.L2AgeMs = _lastL2Utc == DateTime.MinValue
-                    ? null
-                    : Math.Max(0, (nowUtc - _lastL2Utc).TotalMilliseconds);
-                l2Fresh = _lastL2Utc != DateTime.MinValue
-                    && (nowUtc - _lastL2Utc).TotalSeconds <= Math.Max(1, BookFreshnessSec);
+                if (_captureConnectionChanged != 0 && _pendingCaptureConnectionBoundary == default)
+                    _pendingCaptureConnectionBoundary = _captureConnectionBoundary;
+                connectionBoundary = _pendingCaptureConnectionBoundary;
+                connectionChanged = connectionBoundary != default;
+                Volatile.Write(ref _captureConnectionChanged, 0);
             }
-
-            if (!l2Fresh)
+            if (connectionChanged)
             {
-                MarkBookUnusable("l2_heartbeat_stale", diagnostic);
-                return;
+                // Consume known pre-disconnect history for owned risk before the
+                // reset. A reconnect cannot erase an already captured failure.
+                batch.Frames = batch.Frames.Where(f => f.At < connectionBoundary).ToArray();
+                BeginCaptureCatchup("capture_connection_changed", interrupt: false);
             }
-
-            if (!TryBuildDepthSnapshot(nowUtc, out LlBookDepthSnapshot depth, diagnostic))
+            void FinishConnectionReset()
             {
-                MarkBookUnusable(diagnostic.Reason ?? "dom_unusable", diagnostic);
-                return;
+                if (!connectionChanged || _bookBuffer.HasBefore(connectionBoundary)) return;
+                int discarded = _bookBuffer.Discard();
+                _decisions.Write("capture_connection_boundary", ("discarded_records", discarded),
+                    ("boundary_utc", connectionBoundary.ToString("O", CultureInfo.InvariantCulture)));
+                BeginCaptureCatchup("capture_connection_changed", interrupt: true);
+                ResetEvidenceObservation("capture_connection_changed");
+                _bookRecovery.LostBuffer();
+                _pendingCaptureConnectionBoundary = default;
             }
-
-            if (_evidenceState == "BookUnusable")
+            if (batch.Overflow)
             {
-                _decisions.Write("book_usable_recovered",
-                    ("market_data_symbol", _marketDataSymbol.Name),
-                    ("bid_levels", diagnostic.BidLevels),
-                    ("ask_levels", diagnostic.AskLevels));
-                LogOperator("INFO", "L2 book usable again.");
+                BeginCaptureCatchup("capture_buffer_overflow", interrupt: false);
+                ResetEvidenceObservation("capture_buffer_overflow");
+                _bookRecovery.LostBuffer();
             }
-
-            StartEvidenceEpochIfNeeded(nowUtc);
-            IReadOnlyList<LlEvidenceTransition> transitions = _liveEvidence.Process(depth);
-            _evidenceEpochSampleCount++;
-            CompleteEvidenceWarmupIfReady(nowUtc);
-            _evidenceState = _evidenceWarmupComplete ? "Ready" : "Warming";
-
-            foreach (LlEvidenceTransition transition in transitions)
+            bool backlog = BookCaptureBatch.IsBacklog(batch.Frames, nowUtc, BookSampleMs, WorkerPollMs);
+            if (backlog) BeginCaptureCatchup("capture_worker_backlog", interrupt: false);
+            if (batch.Frames.Length == 0)
             {
-                LogLiveEvidenceTransition(transition);
-                if (TryTranslateLiveEvidence(transition, out CampaignEvidence evidence)
-                    && _session != null)
+                if (connectionChanged) { FinishConnectionReset(); return; }
+                if (_lastEvidenceSampleUtc != default && nowUtc - _lastEvidenceSampleUtc
+                    > TimeSpan.FromSeconds(Math.Max(1, BookFreshnessSec)))
                 {
-                    _sampleEvidence.Add(evidence);
+                    var missing = _bookRecovery.Missing(nowUtc);
+                    BeginCaptureCatchup("capture_observation_gap", interrupt: true);
+                    if (missing.ResetReason != null) ResetEvidenceObservation(missing.ResetReason);
+                }
+                return;
+            }
+            _captureWorkerLagMs = Math.Max(0, (nowUtc - batch.Frames[0].At).TotalMilliseconds);
+            CapturedBook lastBook = batch.Frames.LastOrDefault(f => !f.IsPriceOnly);
+            foreach (CapturedBook frame in batch.Frames)
+            {
+                LogCapturedBookHealth(frame);
+                _captureL2AgeMs = frame.L2SourceAgeMs;
+                _captureQuoteAgeMs = frame.QuoteSourceAgeMs;
+                var step = _bookRecovery.Inspect(frame);
+                if (step.Interrupt || step.ResetReason != null)
+                    BeginCaptureCatchup(frame.Error ?? step.ResetReason, step.Interrupt);
+                if (step.ResetReason != null) ResetEvidenceObservation(step.ResetReason);
+                if (!step.Accept) continue;
+                if (frame.IsPriceOnly)
+                {
+                    if (!_captureCatchingUp && _evidenceWarmupComplete && _session != null
+                        && new DateTimeOffset(frame.At, TimeSpan.Zero) >= _session.Observer.LastObservedAt)
+                        _session.Observer.ObservePrice(new DateTimeOffset(frame.At, TimeSpan.Zero),
+                            (_plan.Side == CampaignSide.Long ? frame.Bid : frame.Ask) / _tickSize);
+                    continue;
+                }
+                bool current = !connectionChanged && _bookBuffer.Count == 0 && ReferenceEquals(frame, lastBook)
+                    && SourceQuoteClock.Fresh(frame.At, nowUtc, Math.Max(Math.Max(250, BookSampleMs), Math.Max(100, WorkerPollMs)) + 250)
+                    && SnapshotMarket(DateTime.UtcNow).IsValid;
+                if (!current && ReferenceEquals(frame, lastBook))
+                    BeginCaptureCatchup("capture_worker_backlog", interrupt: false);
+                bool recovered = _captureRecovery.CanResume(frame, current);
+                // A new observation after draining closes catch-up; the historical
+                // batch can hydrate risk, but cannot supply an entry/add trigger.
+                bool discover = !_captureCatchingUp || recovered;
+                ProcessCapturedBook(frame, discover, allowTriggers: !backlog && !connectionChanged);
+                if (recovered)
+                {
+                    _decisions.Write("evidence_catchup_completed", ("reason", _captureReason),
+                        ("identity_epoch", _llEpoch), ("sample_count", _evidenceEpochSampleCount),
+                        ("worker_lag_ms", _captureWorkerLagMs), ("buffer_dropped", _bookBuffer.Dropped));
+                    _captureRecovery.Complete();
                 }
             }
-            if (_session != null)
+            FinishConnectionReset();
+            _evidenceState = _captureCatchingUp ? "CatchingUp" : _evidenceWarmupComplete ? "Ready" : "Warming";
+        }
+
+        private void ProcessCapturedBook(CapturedBook frame, bool discover, bool allowTriggers)
+        {
+            DateTime nowUtc = frame.At;
+            StartEvidenceEpochIfNeeded(nowUtc);
+            var transitions = _liveEvidence.Process(frame.Depth);
+            _lastEvidenceSampleUtc = nowUtc;
+            _llSampleSequence++;
+            _evidenceEpochSampleCount++;
+            CompleteEvidenceWarmupIfReady(nowUtc);
+            var sampleEvidence = new List<CampaignEvidence>();
+            foreach (LlEvidenceTransition transition in transitions)
             {
-                ExecutableMarket market = SnapshotMarket(nowUtc);
-                _session.Observe(new Scaling.RepairSample(EvidenceSource.LevelLedger, _llEpoch,
-                        _evidenceEpochSampleCount, new DateTimeOffset(nowUtc, TimeSpan.Zero),
-                        market.IsValid ? ManagementTicks(market) : double.NaN,
-                        _sampleEvidence.Select(e => new Scaling.RepairTransition(
-                            new(EvidenceSource.LevelLedger, _llEpoch, e.RailId), e.Kind,
-                            e.Side == EvidenceSide.Demand ? CampaignSide.Long : CampaignSide.Short,
-                            _session.Ticks(e.Range), e.FormedAt, e.RailOrigin)).ToArray(), true), RootSnapshot());
-                if (!market.IsValid) _session.Observer.Suspend(DateTimeOffset.UtcNow, "sample_quote_unavailable");
-                if (!_evidenceWarmupComplete) _session.SuspendRootEvidence(new DateTimeOffset(nowUtc, TimeSpan.Zero));
+                LogLiveEvidenceTransition(transition, allowTriggers && discover && _evidenceWarmupComplete);
+                if (TryTranslateLiveEvidence(transition, out CampaignEvidence evidence)) sampleEvidence.Add(evidence);
+            }
+            if (_session != null && (!_session.Roots.ObservedAt.HasValue
+                || new DateTimeOffset(nowUtc, TimeSpan.Zero) > _session.Roots.ObservedAt.Value))
+            {
+                double price = (_plan.Side == CampaignSide.Long ? frame.Bid : frame.Ask) / _tickSize;
+                var sample = new Scaling.RepairSample(EvidenceSource.LevelLedger, _llEpoch,
+                    _llSampleSequence, new DateTimeOffset(nowUtc, TimeSpan.Zero), price,
+                    sampleEvidence.ConvertAll(e => new Scaling.RepairTransition(
+                        new(EvidenceSource.LevelLedger, _llEpoch, e.RailId), e.Kind,
+                        e.Side == EvidenceSide.Demand ? CampaignSide.Long : CampaignSide.Short,
+                        _session.Ticks(e.Range), e.FormedAt, e.RailOrigin)).ToArray(), true);
+                if (discover && _evidenceWarmupComplete && sample.At >= _session.Observer.LastObservedAt)
+                {
+                    // Resuming at the end of a multi-sample batch hydrates owners,
+                    // but does not turn its historical transitions into scale proof.
+                    var liveSample = allowTriggers ? sample : sample with { Transitions = Array.Empty<Scaling.RepairTransition>() };
+                    _session.Observe(liveSample, RootSnapshot(), recoverScale: true);
+                    if (allowTriggers) _sampleEvidence.AddRange(sampleEvidence);
+                }
+                else
+                {
+                    _session.ObserveRootSample(sample, RootSnapshot());
+                    if (!_session.Observer.Suspended && !discover)
+                        _session.Observer.Suspend(_session.Observer.LastObservedAt, "capture_catchup_or_warming");
+                }
                 DrainRepairAudit();
             }
-            if (!_evidenceWarmupComplete) _sampleEvidence.Clear();
         }
 
-        private void MarkBookUnusable(string reason, BookSampleDiagnostic diagnostic)
+        private void LogCapturedBookHealth(CapturedBook frame)
         {
-            if (_evidenceState != "BookUnusable")
-                ResetEvidenceEpoch(reason ?? "book_unusable");
-            _evidenceState = "BookUnusable";
-            string signature = $"{reason}|{diagnostic?.L2AgeMs}|{diagnostic?.BidLevels}|{diagnostic?.AskLevels}";
-            if (string.Equals(signature, _lastBookHealthSignature, StringComparison.Ordinal))
+            if (frame.Valid)
+            {
+                if (frame.IsPriceOnly) return;
+                if (_lastBookHealthSignature != null)
+                    _decisions.Write("book_usable_recovered", ("market_data_symbol", _marketDataSymbol?.Name),
+                        ("captured_utc", frame.At.ToString("O", CultureInfo.InvariantCulture)));
+                _lastBookHealthSignature = null;
                 return;
-            _lastBookHealthSignature = signature;
-            _decisions.Write("book_unusable",
-                ("reason", reason),
+            }
+            if (_lastBookHealthSignature == frame.Error) return;
+            _lastBookHealthSignature = frame.Error;
+            _decisions.Write("book_unusable", ("reason", frame.Error),
                 ("market_data_symbol", _marketDataSymbol?.Name),
-                ("last_l2_utc", diagnostic?.LastL2Utc?.ToString("O", CultureInfo.InvariantCulture)),
-                ("l2_age_ms", diagnostic?.L2AgeMs),
-                ("bid_levels", diagnostic?.BidLevels),
-                ("ask_levels", diagnostic?.AskLevels),
-                ("symbol_bid", diagnostic?.SymbolBid),
-                ("symbol_ask", diagnostic?.SymbolAsk),
-                ("dom_bid", diagnostic?.DomBid),
-                ("dom_ask", diagnostic?.DomAsk),
-                ("error", diagnostic?.Error));
+                ("captured_utc", frame.At.ToString("O", CultureInfo.InvariantCulture)),
+                ("l2_source_age_ms", frame.L2SourceAgeMs), ("quote_source_age_ms", frame.QuoteSourceAgeMs),
+                ("bid_levels", frame.Diagnostic?.BidLevels), ("ask_levels", frame.Diagnostic?.AskLevels),
+                ("symbol_bid", frame.Diagnostic?.SymbolBid), ("symbol_ask", frame.Diagnostic?.SymbolAsk),
+                ("dom_bid", frame.Diagnostic?.DomBid), ("dom_ask", frame.Diagnostic?.DomAsk),
+                ("error", frame.Diagnostic?.Error));
         }
 
-        private void ResetEvidenceEpoch(string reason)
+        private void ResetEvidenceObservation(string reason)
         {
-            _session?.Observer.Suspend(DateTimeOffset.UtcNow, reason);
-            _session?.SuspendRootEvidence(DateTimeOffset.UtcNow);
-            _llEpoch = Guid.NewGuid().ToString("N");
+            _session?.SuspendObservation(DateTimeOffset.UtcNow, reason);
+            _lastEvidenceSampleUtc = DateTime.MinValue;
             _evidenceEpochStartedUtc = DateTime.MinValue;
             _evidenceEpochSampleCount = 0;
             _evidenceWarmupComplete = false;
             _evidenceEpochReason = string.IsNullOrWhiteSpace(reason)
                 ? "book_unusable"
                 : reason;
-            _liveEvidence = NewEvidenceEngine();
+            _liveEvidence.ResetObservation();
+            _decisions.Write("evidence_observation_reset", ("reason", reason), ("identity_epoch", _llEpoch),
+                ("last_sample_sequence", _llSampleSequence), ("root_binding", _state?.RootBinding));
         }
 
         private void StartEvidenceEpochIfNeeded(DateTime nowUtc)
@@ -1326,13 +1388,13 @@ namespace KahnRuntime
             return Math.Max(0, EvidenceWarmupSeconds - (nowUtc - _evidenceEpochStartedUtc).TotalSeconds);
         }
 
-        private void LogLiveEvidenceTransition(LlEvidenceTransition transition)
+        private void LogLiveEvidenceTransition(LlEvidenceTransition transition, bool actionable)
         {
             _decisions.Write("ll_transition",
                 ("kind", transition.Kind.ToString()),
                 ("reason", transition.Reason),
                 ("evidence_state", _evidenceState),
-                ("actionable", _evidenceWarmupComplete),
+                ("actionable", actionable),
                 ("event_utc", transition.TimeUtc.ToString("O", CultureInfo.InvariantCulture)),
                 ("mid_tick", transition.CurrentMidTick),
                 ("band_id", transition.Band?.Id),
@@ -1385,7 +1447,7 @@ namespace KahnRuntime
                 Range = range,
                 RailId = railId,
                 EvidenceEpoch = _llEpoch,
-                SampleSequence = _evidenceEpochSampleCount,
+                SampleSequence = _llSampleSequence,
                 FormedAt = transition.Band.FormedUtc == default ? null
                     : new DateTimeOffset(transition.Band.FormedUtc, TimeSpan.Zero),
                 RailOrigin = transition.Band.Source == LiveEvidence.EvidenceSource.Consumed
@@ -1424,12 +1486,15 @@ namespace KahnRuntime
                 _latestBid = bid;
                 _latestAsk = ask;
                 _lastQuoteUtc = now;
+                DateTime source = SourceQuoteClock.Utc(quote.Time);
+                _quoteSourceOrdered = SourceQuoteClock.TryAdvance(source, now, ref _quoteSourceUtc);
+                _quoteVersion++;
             }
 
             _marketEvents.Enqueue(new CampaignEvidence
             {
                 EventId = "quote-" + now.Ticks.ToString(CultureInfo.InvariantCulture),
-                Timestamp = new DateTimeOffset(now, TimeSpan.Zero),
+                Timestamp = new DateTimeOffset(SourceQuoteClock.Utc(quote.Time), TimeSpan.Zero),
                 Source = EvidenceSource.Price,
                 Kind = EvidenceKind.PriceTouch,
                 Side = EvidenceSide.None,
@@ -1451,7 +1516,11 @@ namespace KahnRuntime
                 return;
             }
             lock (_marketGate)
+            {
                 _lastL2Utc = DateTime.UtcNow;
+                DateTime source = SourceQuoteClock.Utc(l2?.Time ?? dom?.Time ?? default);
+                _l2SourceOrdered = SourceQuoteClock.TryAdvance(source, _lastL2Utc, ref _l2SourceUtc);
+            }
         }
 
         private bool TryBuildDepthSnapshot(DateTime nowUtc,
@@ -1472,7 +1541,8 @@ namespace KahnRuntime
                 diagnostic.AskLevels = dom.Asks?.Length ?? 0;
                 diagnostic.DomBid = NullableFinite(FirstValidPrice(dom.Bids));
                 diagnostic.DomAsk = NullableFinite(FirstValidPrice(dom.Asks));
-                if (diagnostic.BidLevels == 0 && diagnostic.AskLevels == 0)
+                if (!diagnostic.DomBid.HasValue || !diagnostic.DomAsk.HasValue
+                    || diagnostic.DomBid.Value > diagnostic.DomAsk.Value)
                 {
                     diagnostic.Reason = "dom_empty";
                     return false;
@@ -1494,7 +1564,6 @@ namespace KahnRuntime
             {
                 diagnostic.Reason = "dom_read_error";
                 diagnostic.Error = ex.Message;
-                _decisions.Write("book_sample_error", ("message", ex.Message));
                 return false;
             }
         }
@@ -1536,13 +1605,15 @@ namespace KahnRuntime
             lock (_marketGate)
             {
                 bool fresh = _lastQuoteUtc != DateTime.MinValue
-                    && (nowUtc - _lastQuoteUtc).TotalMilliseconds <= Math.Max(250, QuoteFreshnessMs);
+                    && SourceQuoteClock.Fresh(_lastQuoteUtc, nowUtc, Math.Max(250, QuoteFreshnessMs))
+                    && _quoteSourceOrdered
+                    && SourceQuoteClock.Fresh(_quoteSourceUtc, nowUtc, Math.Max(250, QuoteFreshnessMs));
                 return new ExecutableMarket
                 {
                     TimeUtc = nowUtc,
                     Bid = fresh ? _latestBid : double.NaN,
                     Ask = fresh ? _latestAsk : double.NaN,
-                    QuoteUtc = _lastQuoteUtc,
+                    QuoteUtc = _quoteSourceUtc,
                 };
             }
         }
@@ -1655,6 +1726,12 @@ namespace KahnRuntime
                 LlFailureSeconds = Math.Max(0, FailureSeconds),
                 TickSize = FiniteOrZero(_tickSize),
                 EvidenceState = _evidenceState,
+                CaptureRecoveryReason = _captureReason,
+                CaptureQueuedSamples = _bookBuffer?.Count ?? 0,
+                CaptureDroppedSamples = _bookBuffer?.Dropped ?? 0,
+                CaptureWorkerLagMs = _captureWorkerLagMs,
+                CaptureL2SourceAgeMs = _captureL2AgeMs,
+                CaptureQuoteSourceAgeMs = _captureQuoteAgeMs,
                 EvidenceEpochReason = _evidenceEpochReason,
                 EvidenceEpochStartedUtc = _evidenceEpochStartedUtc == DateTime.MinValue
                     ? null
@@ -2026,6 +2103,8 @@ namespace KahnRuntime
 
         private void Subscribe()
         {
+            _captureConnection = _marketDataSymbol.Connection;
+            if (_captureConnection != null) _captureConnection.StateChanged += CaptureConnectionChanged;
             _marketDataSymbol.NewQuote += Symbol_NewQuote;
             _marketDataSymbol.NewLevel2 += Symbol_NewLevel2;
             if (RuntimeAccount == null)
@@ -2041,6 +2120,8 @@ namespace KahnRuntime
 
         private void Unsubscribe()
         {
+            try { if (_captureConnection != null) _captureConnection.StateChanged -= CaptureConnectionChanged; } catch { }
+            _captureConnection = null;
             try { if (_marketDataSymbol != null) _marketDataSymbol.NewQuote -= Symbol_NewQuote; } catch { }
             try { if (_marketDataSymbol != null) _marketDataSymbol.NewLevel2 -= Symbol_NewLevel2; } catch { }
             try { Core.Instance.OrderAdded -= Core_OrderAdded; } catch { }
@@ -2129,6 +2210,7 @@ namespace KahnRuntime
             if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
                 return;
             _running = false;
+            StopBookCapture();
 
             Timer timer = Interlocked.Exchange(ref _workerTimer, null);
             if (timer != null)
@@ -2208,9 +2290,20 @@ namespace KahnRuntime
             _lastBookHealthSignature = null;
             _lastPositionSignature = null;
             _lastRecoverySignature = null;
-            _lastBookSampleUtc = DateTime.MinValue;
+            _lastEvidenceSampleUtc = DateTime.MinValue;
+            _llSampleSequence = 0;
             _lastQuoteUtc = DateTime.MinValue;
             _lastL2Utc = DateTime.MinValue;
+            _quoteSourceUtc = _l2SourceUtc = default;
+            _quoteSourceOrdered = _l2SourceOrdered = false;
+            _quoteVersion = 0;
+            _captureRecovery = new();
+            _captureConnectionChanged = 0;
+            _captureConnectionBoundary = _pendingCaptureConnectionBoundary = default;
+            _captureL2AgeMs = _captureQuoteAgeMs = null;
+            _captureWorkerLagMs = 0;
+            _bookBuffer = null;
+            _bookRecovery = null;
             _liveSettleUntilUtc = DateTime.MinValue;
             _liveCloseSettleUntilUtc = DateTime.MinValue;
             _evidenceEpochStartedUtc = DateTime.MinValue;
@@ -2262,6 +2355,8 @@ namespace KahnRuntime
                 AddMetric(metrics, "Pause", _state.ExecutionPauseReason ?? "execution_paused");
             AddMetric(metrics, "Exec/Data", $"{RuntimeSymbol?.Name ?? "-"}/{_marketDataSymbol?.Name ?? MarketDataSymbol?.Name ?? "-"}");
             AddMetric(metrics, "Evidence", _evidenceState);
+            AddMetric(metrics, "Capture", $"queued={_bookBuffer?.Count ?? 0} dropped={_bookBuffer?.Dropped ?? 0} lag={_captureWorkerLagMs:F0}ms");
+            AddMetric(metrics, "Source Age", $"L2={_captureL2AgeMs:F0}ms quote={_captureQuoteAgeMs:F0}ms");
             AddMetric(metrics, "Warmup Left", $"{EvidenceWarmupRemainingSeconds(DateTime.UtcNow):0}s");
             AddMetric(metrics, "Base Qty", sizing?.ProbeQuantity.ToString(CultureInfo.InvariantCulture) ?? "-");
             AddMetric(metrics, "Add Qty", sizing?.AddQuantity.ToString(CultureInfo.InvariantCulture) ?? "-");
@@ -2482,8 +2577,6 @@ namespace KahnRuntime
 
         private sealed class BookSampleDiagnostic
         {
-            public DateTime? LastL2Utc { get; set; }
-            public double? L2AgeMs { get; set; }
             public int BidLevels { get; set; }
             public int AskLevels { get; set; }
             public double? SymbolBid { get; set; }

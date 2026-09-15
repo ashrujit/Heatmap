@@ -59,6 +59,13 @@ hydrates root history from the actual pre-window prefix without replaying old
 scale events. Missing or offside owners produce `root_proxy_rejected` rows.
 Seeds remain explicitly counterfactual, not claimed as fresh live entry signals.
 
+Recovery regressions also run the actual pure LL engine. Discovery resets retain
+owned identities and reset pending failure timers; the coordinator must process
+their failures during warmup, preserve filled sponsor risk, reject gap-sample
+entries and handle irreversible identity loss through a separate recovery exit.
+The synthetic owned-rail fixtures do not establish live entry permission, and no
+offline test proves connectivity or executable exits during a broker outage.
+
 To compile the actual strategy without deploying:
 
 ```powershell
@@ -67,3 +74,9 @@ To compile the actual strategy without deploying:
 
 Do not omit that output override: the project's default output path deploys
 directly into Quantower.
+
+Capture recovery regressions cover bounded/concurrent queue overflow, delayed
+workers, short mismatches, repeated long gaps, clock regression, source-time
+freshness, slow-worker catch-up, deterministic LL equivalence, retained baseline
+and exact-owner failure timing through catch-up. The tests do not attest to QT
+provider timestamp quality or private delivery queue completeness.

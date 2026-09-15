@@ -37,6 +37,7 @@ namespace KahnRuntime
     internal sealed class RootEvidenceLedger
     {
         private readonly Dictionary<ClaimKey, RootClaim> _claims = new();
+        private readonly HashSet<ClaimKey> _conflicts = new();
         private readonly TimeSpan _maximumGap;
         private long _sequence = -1;
         public string Epoch { get; private set; }
@@ -68,6 +69,7 @@ namespace KahnRuntime
             if (Epoch != sample.Epoch)
             {
                 _claims.Clear();
+                _conflicts.Clear();
                 Epoch = sample.Epoch;
             }
             _sequence = sample.Sequence;
@@ -75,6 +77,9 @@ namespace KahnRuntime
             Available = true;
             if (snapshot != null)
             {
+                foreach (RootClaim claim in snapshot)
+                    if (Find(claim.Key) is { } prior && (prior.Side != claim.Side || prior.Coverage != claim.Coverage))
+                        _conflicts.Add(claim.Key);
                 if (snapshot.Any(c => !c.Key.IsValid || c.Key.Epoch != Epoch || !c.Coverage.IsValid
                     || c.UpdatedAt > sample.At || c.OwnedAt > sample.At || c.FormedAt > c.OwnedAt
                     || (Find(c.Key) is { } prior && (prior.Side != c.Side || prior.Coverage != c.Coverage)))
@@ -102,6 +107,7 @@ namespace KahnRuntime
                 RootClaim prior = Find(transition.Key);
                 if (prior != null && (prior.Side != transition.Side || prior.Coverage != transition.Coverage))
                 {
+                    _conflicts.Add(transition.Key);
                     Suspend();
                     continue;
                 }
@@ -121,12 +127,35 @@ namespace KahnRuntime
 
         public RootHealth Health(RootRiskBinding binding, DateTimeOffset now)
         {
-            if (binding == null || binding.Owner.Key.Epoch != Epoch) return RootHealth.Unknown;
+            if (binding == null || binding.Owner.Key.Epoch != Epoch || _conflicts.Contains(binding.Owner.Key)) return RootHealth.Unknown;
             RootClaim current = Find(binding.Owner.Key);
             if (current == null || current.Side != binding.Owner.Side || current.Coverage != binding.Owner.Coverage)
                 return RootHealth.Unknown;
             if (current?.FailedAt.HasValue == true) return RootHealth.Failed;
             return FreshAt(now) ? current.Health : RootHealth.Unknown;
+        }
+
+        public bool TrackingLost(ClaimKey key, CampaignSide side, TickInterval coverage)
+            => _conflicts.Contains(key) || (Epoch != null && key.Epoch != Epoch)
+                || (Available && (Find(key) is not { } claim || claim.Side != side || claim.Coverage != coverage));
+
+        public bool TrackingLost(RootRiskBinding binding)
+            => binding != null && TrackingLost(binding.Owner.Key, binding.Owner.Side, binding.Owner.Coverage);
+
+        public GroupHealth Health(ProofGroup group, CampaignSide side, DateTimeOffset now)
+        {
+            if (group == null) return GroupHealth.Unknown;
+            RootHealth[] health = group.Members.Select(member =>
+            {
+                RootClaim claim = Find(member.Key);
+                if (claim == null || member.Key.Epoch != Epoch || claim.Side != side
+                    || claim.Coverage != member.Coverage || _conflicts.Contains(member.Key)) return RootHealth.Unknown;
+                return claim.Health == RootHealth.Failed ? RootHealth.Failed
+                    : FreshAt(now) ? claim.Health : RootHealth.Unknown;
+            }).ToArray();
+            if (health.Contains(RootHealth.Live)) return GroupHealth.Live;
+            if (health.Contains(RootHealth.Unknown)) return GroupHealth.Unknown;
+            return health.All(x => x == RootHealth.Failed) ? GroupHealth.Failed : GroupHealth.Challenged;
         }
 
         public RootRiskBinding Resolve(CampaignEvidence trigger, CampaignSide side, DateTimeOffset now, out string reason)
@@ -143,7 +172,7 @@ namespace KahnRuntime
                     ? "root_pair_unresolved" : "root_owner_missing";
                 return null;
             }
-            if (!key.IsValid || trigger.Kind is not (EvidenceKind.RailOwned or EvidenceKind.RailHeld)
+            if (!key.IsValid || _conflicts.Contains(key) || trigger.Kind is not (EvidenceKind.RailOwned or EvidenceKind.RailHeld)
                 || !CampaignSideMath.IsSameSide(side, trigger.Side) || claim?.Side != side
                 || claim.Health != RootHealth.Live || claim.OwnedAt > trigger.Timestamp)
                 return null;

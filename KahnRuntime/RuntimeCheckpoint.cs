@@ -123,6 +123,12 @@ namespace KahnRuntime
         public string LastQuoteUtc { get; set; }
         public string LastL2Utc { get; set; }
         public string EvidenceState { get; set; }
+        public string CaptureRecoveryReason { get; set; }
+        public int CaptureQueuedSamples { get; set; }
+        public long CaptureDroppedSamples { get; set; }
+        public double CaptureWorkerLagMs { get; set; }
+        public double? CaptureL2SourceAgeMs { get; set; }
+        public double? CaptureQuoteSourceAgeMs { get; set; }
         public string EvidenceEpochReason { get; set; }
         public string EvidenceEpochStartedUtc { get; set; }
         public int EvidenceSampleCount { get; set; }

@@ -21,21 +21,23 @@ namespace KahnRuntime.Scaling
             RootAnchor = rootAnchor;
         }
 
-        public void Observe(RepairEpisodeObserver observer)
+        public void Observe(RepairEpisodeObserver observer, RootEvidenceLedger roots = null, DateTimeOffset now = default)
         {
-            if (Pending != null && observer.Health(Pending) == GroupHealth.Failed)
+            GroupHealth Health(ProofGroup group) => roots?.Health(group, Side, now) ?? observer.Health(group);
+            if (Pending != null && Health(Pending) == GroupHealth.Failed)
             {
                 Pending = null;
                 LastChange = "failed_pending_discarded";
             }
-            ActiveHealth = observer.Health(Active);
+            ActiveHealth = Health(Active);
         }
 
-        public void FirstFill(ProofGroup child, RepairEpisodeObserver observer, double currentPriceTicks)
+        public void FirstFill(ProofGroup child, RepairEpisodeObserver observer, double currentPriceTicks,
+            RootEvidenceLedger roots = null, DateTimeOffset now = default)
         {
             if (child == null || observer.Side != Side)
                 throw new ArgumentException("Sponsor fill needs campaign-side proof.");
-            Observe(observer);
+            Observe(observer, roots, now);
             FilledAddCount++;
             ProofGroup currentChild = observer.CurrentProof(child, currentPriceTicks);
             ProofGroup currentPending = observer.CurrentProof(Pending, currentPriceTicks);
@@ -53,7 +55,7 @@ namespace KahnRuntime.Scaling
             // Every filled episode has its own pending lineage, even at the same area.
             // A late physical fill with failed/unknown proof cannot sponsor new risk.
             Pending = currentChild;
-            ActiveHealth = observer.Health(Active);
+            ActiveHealth = roots?.Health(Active, Side, now) ?? observer.Health(Active);
         }
 
         private bool BeyondRoot(ProofGroup group)

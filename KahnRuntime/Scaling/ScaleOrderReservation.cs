@@ -30,15 +30,17 @@ namespace KahnRuntime.Scaling
     {
         private readonly RepairEpisodeObserver _observer;
         private readonly GroupSponsorState _sponsors;
+        private readonly RootEvidenceLedger _roots;
         private readonly Dictionary<string, ScaleReservationSnapshot> _orders = new(StringComparer.Ordinal);
         private long _number;
         public ScaleReservationSnapshot Outstanding { get; private set; }
         public bool HasUnresolvedOrder => Outstanding != null;
 
-        public ScaleOrderReservations(RepairEpisodeObserver observer, GroupSponsorState sponsors)
+        public ScaleOrderReservations(RepairEpisodeObserver observer, GroupSponsorState sponsors, RootEvidenceLedger roots = null)
         {
             _observer = observer ?? throw new ArgumentNullException(nameof(observer));
             _sponsors = sponsors ?? throw new ArgumentNullException(nameof(sponsors));
+            _roots = roots;
         }
 
         public bool TryReserve(ScaleOpportunity opportunity, ScaleAdmissionContext context,
@@ -133,7 +135,7 @@ namespace KahnRuntime.Scaling
                 if (!_observer.FreshAt(at) && !_observer.Suspended)
                     _observer.Suspend(at, "fill_report_observation_stale");
                 _observer.MarkConsumed(order.Opportunity, at);
-                _sponsors.FirstFill(order.Proof, _observer, currentExecutableTicks);
+                _sponsors.FirstFill(order.Proof, _observer, currentExecutableTicks, _roots, at);
             }
             Save(updated);
             if (updated.State == ScaleOrderState.Terminal && cumulativeFilledQuantity == 0)

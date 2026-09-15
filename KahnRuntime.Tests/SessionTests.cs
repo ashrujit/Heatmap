@@ -129,7 +129,19 @@ internal static partial class SessionTests
     private static void RootOnlyNeverUsesLegacyPress() { var f = new Fixture(rootOnly: true); Check(f.Session.PolicyCandidates([f.Evidence(5, lower: 420, upper: 424)], At(5)).All(x => x.Decision.Action is not (PolicyAction.AllowAdd or PolicyAction.TrackScaleCandidate)), "legacy press"); }
     private static void WatchDoesNotLoseClaims() { var f = new Fixture(false); f.Step(1, 408, f.T("root", 400, 404)); f.Session.GoLive(f.Control(time: 2), At(2)); Check(f.Session.Observer.KnownClaimCount == 1, "watch claims lost"); }
     private static void NoLegacyScaleTracking() { var f = new Fixture(); f.Step(5, 430, f.T("proof", 420, 424)); Check(f.Session.PolicyCandidates([f.Evidence(5, id: "proof", lower: 420, upper: 424)], At(5)).All(x => x.Decision.Action is not (PolicyAction.TrackScaleCandidate or PolicyAction.AllowAdd)), "new price entered"); }
-    private static void GroupSponsorPartialFailureDoesNotInvokeRootHull() { var f = new Fixture(); f.State.GroupSponsorActive = true; Check(f.Session.PolicyCandidates([f.Evidence(5, EvidenceKind.RailFailed)], At(5)).All(x => x.Decision.Action != PolicyAction.Flatten), "group replaced by hull"); }
+    private static void GroupSponsorPartialFailureDoesNotInvokeRootHull()
+    {
+        var f = new Fixture();
+        f.Step(3, 500, f.T("a", 420, 424), f.T("b", 440, 444));
+        ProofGroup Group(string id, long lower) => new(id, At(3),
+            [new(new(EvidenceSource.LevelLedger, "epoch", id), new(lower, lower + 4), ProofForm.Defended)],
+            f.Session.Observer.Attempt, f.Session.Observer.Generation);
+        f.Session.Sponsors.FirstFill(Group("a", 420), f.Session.Observer, 500);
+        f.Session.Sponsors.FirstFill(Group("b", 440), f.Session.Observer, 500);
+        Check(f.Session.Sponsors.Active != null, "fixture needs an actual promoted group");
+        Check(f.Session.PolicyCandidates([f.Evidence(5, EvidenceKind.RailFailed)], At(5))
+            .All(x => x.Decision.Action != PolicyAction.Flatten), "group replaced by hull");
+    }
     private static void RootRiskStillTyped() { var f = new Fixture(); Check(f.Session.PolicyCandidates([new CampaignEvidence { Timestamp = At(5), Price = 350, Kind = EvidenceKind.PriceTouch }], At(5)).All(x => x.Decision.Action != PolicyAction.Flatten), "hard root stop invented"); Check(f.Session.PolicyCandidates([f.Evidence(6, EvidenceKind.RailFailed)], At(6)).Any(x => x.Decision.Action == PolicyAction.Flatten), "typed root lost"); }
     private static void ScaledBreakevenEligible() { var f = new Fixture(); Check(!f.State.BreakevenBackstopEligible(f.Session.Plan), "root auto BE"); var o = f.ReserveScale(); f.Session.Report(o, 1, 473, false, At(30.1), 472); Check(f.State.BreakevenBackstopEligible(f.Session.Plan), "filled scale BE missing"); }
     private static void OperatorProbeBreakevenEligible() { var f = new Fixture(); f.State.SetOperatorProtection(408); Check(f.State.BreakevenBackstopEligible(f.Session.Plan), "operator BE missing"); }

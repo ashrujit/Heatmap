@@ -30,3 +30,13 @@
   counter-claim fixture by inventing its live partner. The session replay must
   hydrate only from the actual earlier prefix and report inadmissible proxy seeds
   as rejected, not force them through live admission or erase them from results.
+- Recovery coverage links the actual pure LL engine as well as the coordinator.
+  Test both sides and Lean/Consumed owners through repeated gaps, missing-time
+  timer resets and failure during warmup. Test-only reflection seeds an already
+  owned rail; it is not evidence of live ownership formation or a production
+  recovery/import API. Genuine identity loss needs a distinct infrastructure exit.
+
+- Capture tests use the production bounded buffer, continuity gate and source
+  clock, plus the real LL engine and session. Simulate worker delay separately
+  from absent capture. Historical hydration must not grant entry/add authority;
+  immediate versus buffered engine results must agree on original timestamps.
