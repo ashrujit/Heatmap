@@ -23,3 +23,8 @@
   That invalidates unfilled scale permission; it must not invalidate a filled
   sponsor's risk monitor. The session supplies the retained LL root ledger for
   filled-group health. Promotion still requires current-generation proof.
+
+- Optional flat continuation discovery reuses the same episode proof. It grants
+  no filled attempt or add count: only a real first fill consumes the episode
+  and activates its group immediately. Subsequent adds still queue then promote.
+  Authorization invalidates old offers; WATCH completion is never replayed.

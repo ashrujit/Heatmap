@@ -81,6 +81,18 @@ namespace KahnRuntime
                 // Captured book observations own observer time. Advancing it to
                 // wall time here would reject the next buffered sample as old.
                 _session.RefreshRiskHealth(now);
+                bool entryVeto = choices.Any(x => x.Decision.Priority > 525
+                    || x.Decision.Action is PolicyAction.SuppressAdd or PolicyAction.Cooldown
+                        or PolicyAction.Flatten or PolicyAction.Retire or PolicyAction.Reduce
+                        or PolicyAction.PassiveHarvest or PolicyAction.TightenRisk);
+                if (!_state.HasPosition && !_plan.Execution.StrictProbeRange)
+                {
+                    if (_session.TryContinuationEntry(EntryContext(now, market, !entryVeto),
+                        out var entry, out var trigger, out string entryReason))
+                        choices.Add((entry, trigger));
+                    else if (_session.Observer.Opportunity != null)
+                        _decisions.Write("continuation_entry_missed", ("reason", entryReason));
+                }
                 ScaleOpportunity opportunity = _session.Observer.Opportunity;
                 if (opportunity != null && _session.Reservations != null)
                 {
@@ -110,6 +122,14 @@ namespace KahnRuntime
             if (selected.Decision != null) ProcessEvidence(selected.Evidence, now, selected.Decision);
             _selectedScale = null;
         }
+
+        private ContinuationEntryContext EntryContext(DateTimeOffset now, ExecutableMarket market, bool policyAllows)
+            => new(now, new DateTimeOffset(market.QuoteUtc, TimeSpan.Zero),
+                TimeSpan.FromMilliseconds(Math.Max(250, QuoteFreshnessMs)), TimeSpan.FromSeconds(Math.Max(1, EvidenceMaxAgeSec)),
+                market.Bid / _tickSize, market.Ask / _tickSize,
+                _newRiskReady && CurrentPosition().IsFlat && !_awaitingFillPosition && !_pendingCloseQuantity.HasValue,
+                !_session.HasUnresolvedOrder && (!_runTradingEnabled || BoundWorkingOrders().Count == 0),
+                policyAllows && _evidenceWarmupComplete, Math.Max(1, InstanceMaxQuantity));
 
         private double ManagementTicks(ExecutableMarket market)
             => (_plan.Side == CampaignSide.Long ? market.Bid : market.Ask) / _tickSize;
@@ -166,8 +186,11 @@ namespace KahnRuntime
                 || !market.IsValid || (_plan.FindWaypoint(decision.WaypointId) is { RequirePriceInside: true } probe
                     && !probe.Range.Contains(market.Executable(_plan.Side)))))
                 return new GatewayResult { Message = "probe quote/location or outstanding orders changed before submission" };
-            if (decision.Action == PolicyAction.AllowProbe)
+            if (decision.Action == PolicyAction.AllowProbe && decision.EntryOpportunity == null)
             {
+                if (_plan.SchemaVersion == 2 && !_plan.WaypointsByRole(WaypointRole.TrapProbe)
+                    .Any(w => w.Range.Contains(market.Executable(_plan.Side))))
+                    return new GatewayResult { Message = "ordinary probe moved outside its range before submission" };
                 if (!_evidenceWarmupComplete || !_session.Observer.FreshAt(DateTimeOffset.UtcNow))
                     return new GatewayResult { Message = "root observation is recovering" };
                 string error = _session.Roots.Revalidate(decision.RootBinding, DateTimeOffset.UtcNow,
@@ -176,6 +199,18 @@ namespace KahnRuntime
                     ("entry_distance_ticks", decision.RootBinding?.EntryDistanceTicks(market.Executable(_plan.Side), _tickSize)),
                     ("max_entry_distance_ticks", _plan.Risk.MaxRootEntryDistanceTicks));
                 if (error != null) return new GatewayResult { Message = error };
+            }
+            ContinuationEntryContext entryContext = decision.EntryOpportunity == null ? null : EntryContext(DateTimeOffset.UtcNow, market, true);
+            if (entryContext != null)
+            {
+                string error = _session.RevalidateContinuation(decision, entryContext);
+                _decisions.Write("continuation_entry_pre_submit", ("sponsor", decision.EntrySponsor),
+                    ("reason", error ?? "accepted"));
+                if (error != null)
+                {
+                    _session.Observer.Miss(decision.EntryOpportunity, now, error);
+                    return new GatewayResult { Message = error };
+                }
             }
             ScaleReservationSnapshot scale = decision.Action == PolicyAction.AllowAdd ? _selectedScale : null;
             if (decision.Action == PolicyAction.AllowAdd)
@@ -194,7 +229,7 @@ namespace KahnRuntime
                 if (scale != null) _session.Reservations.Report(scale.Id, 0, null, true, now, ManagementTicks(market));
                 return new GatewayResult { Message = "shadow fill simulation disabled" };
             }
-            CampaignOrder order = _session.Reserve(decision, evidence, scale, now);
+            CampaignOrder order = _session.Reserve(decision, evidence, scale, entryContext?.At ?? now, entryContext);
             GatewayResult result = _gateway.Execute(decision, _plan, position, market);
             _session.Submitted(order, result.OrderId, result.Accepted, result.SubmissionUncertain);
             if (result.Shadow && result.Accepted)

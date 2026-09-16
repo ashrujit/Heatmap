@@ -41,6 +41,8 @@ namespace KahnRuntime.Scaling
         private ScaleOpportunity _opportunity;
         private bool _opportunityUsable;
         private bool _attemptActive;
+        private bool _continuationEntryEnabled;
+        private DateTimeOffset _entryAuthorizedAt;
 
         public CampaignSide Side { get; }
         public string Epoch { get; private set; }
@@ -130,6 +132,15 @@ namespace KahnRuntime.Scaling
             Suspended = true;
             SuspensionReason = reason;
             Audit(at, reason);
+        }
+
+        // Arming flat discovery creates no fictional position or filled attempt. Completed
+        // WATCH episodes stay spent; an unresolved challenge can complete after GO LIVE.
+        public void EnableContinuationEntry(DateTimeOffset authorizedAt)
+        {
+            _continuationEntryEnabled = true;
+            _entryAuthorizedAt = authorizedAt;
+            InvalidateOpportunity(authorizedAt, "continuation_entry_armed");
         }
 
         public void BeginAttempt(long attempt, TickInterval rootArea,
@@ -405,7 +416,7 @@ namespace KahnRuntime.Scaling
             if (cleared && support.Length > 0 && !ep.Offered)
             {
                 ep.Offered = true;
-                if (_attemptActive)
+                if (_attemptActive || (_continuationEntryEnabled && at > _entryAuthorizedAt))
                 {
                     ep.Stage = RepairStage.Eligible;
                     _opportunity = new(ep.Id, Attempt, Generation, at, ep.ResolvedAt.Value,

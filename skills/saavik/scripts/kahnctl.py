@@ -556,6 +556,7 @@ def command_status(args: argparse.Namespace) -> int:
                 "add_quantity": data.get("campaign_add_quantity"),
                 "max_position_quantity": data.get("campaign_max_position_quantity"),
                 "max_retry": data.get("campaign_max_retry"),
+                "strict_probe_range": data.get("campaign_strict_probe_range", True),
                 "retries_remaining": data.get("execution_retries_remaining"),
             },
             "position": {
@@ -703,6 +704,11 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
 
     execution = require_obj(campaign.get("execution", {}), "campaign.execution")
     max_retry = positive_int(execution, "max_retry", 3, "execution.max_retry")
+    strict_probe_range = execution.get("strict_probe_range", True)
+    if type(strict_probe_range) is not bool:
+        raise KahnctlError("execution.strict_probe_range must be a boolean")
+    if not strict_probe_range and campaign["schema_version"] != 2:
+        raise KahnctlError("continuation first entry requires schema 2")
 
     objective = campaign.get("objective")
     if objective is not None:
@@ -759,6 +765,7 @@ def validate_campaign(campaign: dict[str, Any], *, allow_stale: bool) -> dict[st
         "add_quantity": add_qty,
         "max_position_quantity": max_qty,
         "max_retry": max_retry,
+        "strict_probe_range": strict_probe_range,
         "waypoint_count": len(waypoints),
         "schema_version": campaign["schema_version"],
         "load_state": "WATCH" if campaign["schema_version"] == 2 else "LEGACY/AUDIT",
@@ -823,6 +830,8 @@ def stamp_campaign(args: argparse.Namespace, source: dict[str, Any]) -> dict[str
     execution = require_obj(campaign.setdefault("execution", {}), "campaign.execution")
     if args.max_retry is not None:
         execution["max_retry"] = args.max_retry
+    if getattr(args, "strict_probe_range", None) is not None:
+        execution["strict_probe_range"] = args.strict_probe_range
 
     return campaign
 
@@ -988,6 +997,9 @@ def prepare_campaign_dispatch(
             or number_or_zero(checkpoint.get("bound_working_order_count")) > 0):
         raise KahnctlError("dispatch requires a fresh path-correct, flat schema-2 runtime without unresolved orders")
 
+    if (campaign.get("execution", {}).get("strict_probe_range", True) is False
+            and checkpoint.get("continuation_entry_supported") is not True):
+        raise KahnctlError("runtime does not support continuation first entry; deploy the matching runtime first")
     active = active_campaign_summary(checkpoint)
     if not active["present"]:
         return None
@@ -1167,6 +1179,7 @@ def command_new_draft(args: argparse.Namespace) -> int:
         add_quantity=args.add_qty,
         max_position_quantity=args.max_qty,
         max_retry=args.max_retry,
+        strict_probe_range=args.strict_probe_range,
         root_stop_ticks=args.root_stop_ticks,
         sponsor_failure_buffer_ticks=args.sponsor_failure_buffer_ticks,
         allow_contest_beyond_risk_anchor=args.allow_contest_beyond_risk_anchor,
@@ -1258,6 +1271,7 @@ def add_stamp_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--add-qty", type=int, default=None)
     parser.add_argument("--max-qty", type=int, default=None)
     parser.add_argument("--max-retry", type=int, default=None)
+    parser.add_argument("--strict-probe-range", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--allow-stale", action="store_true", help="Allow active expired campaign windows.")
 
 
@@ -1383,6 +1397,8 @@ def parser() -> argparse.ArgumentParser:
     new_draft.add_argument("--add-qty", type=int, default=1)
     new_draft.add_argument("--max-qty", type=int, default=1)
     new_draft.add_argument("--max-retry", type=int, default=3)
+    new_draft.add_argument("--strict-probe-range", action=argparse.BooleanOptionalAction, default=True,
+                           help="Default strict. Disable only for confirmed-drive continuation first entries.")
     new_draft.add_argument("--root-stop-ticks", type=int, default=16)
     new_draft.add_argument("--sponsor-failure-buffer-ticks", type=int, default=2)
     new_draft.add_argument(

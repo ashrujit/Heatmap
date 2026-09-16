@@ -27,7 +27,7 @@ campaign handoff less error-prone.
   at different ES/NQ profiles by accident.
 - `SaavikProbe` import is form-fill only. It may set side, root/probe range
   and harvest range; it must not change sizing, scale
-  mode, TTL, retry, notes, or dispatch state.
+  mode, TTL, retry, strict entry permission, or dispatch state.
 - The schema-2 arena is the probe + harvest envelope. There is no automatic root
   `no_add` or middle `press`; repaired episodes own add permission. This is an
   approved policy migration, not a reversal of the old three-box bug fix. Legacy
@@ -51,3 +51,12 @@ campaign handoff less error-prone.
 - `CANCEL` requires flat exposure and no unresolved orders. FLAT may close bound
   exposure and stays pending until reconciled. GO LIVE and BE are scoped by the
   CLI from a fresh, path-correct checkpoint; no UI-created trade permission.
+
+- Strict probe range defaults on and is intentionally absent from saved settings:
+  a prior drive is not permission for the next session. Clear restores strict.
+  Unchecking is an explicit campaign option, not a live campaign mutation or an
+  automatic drive classifier. Passive sketches cannot grant this permission.
+- The red drive-only warning replaces freeform Notes. Command source metadata
+  remains automatic. Non-strict dispatch requires a fresh runtime checkpoint
+  advertising continuation-entry support, so an older binary cannot silently
+  accept an option it does not understand.

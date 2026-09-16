@@ -12,7 +12,7 @@ if (args.Length == 2 && args[0] == "validate-plan")
 {
     var plan = CampaignPlanParser.Parse(File.ReadAllText(args[1]));
     Console.WriteLine(JsonSerializer.Serialize(new { schema = plan.SchemaVersion, roles = plan.Waypoints.Select(w => w.Role.ToString()),
-        authorized = CampaignState.ForPlan(plan).ExecutionAuthorized }));
+        authorized = CampaignState.ForPlan(plan).ExecutionAuthorized, strict_probe_range = plan.Execution.StrictProbeRange }));
     return;
 }
 if (args.Length == 3 && args[0] == "session-replay")
@@ -33,6 +33,7 @@ Console.WriteLine("PASS existing RuntimeSelfTests (39 checks)");
 BookCaptureTests.RunAll();
 ScalingTests.RunAll();
 SessionTests.RunAll();
+ContinuationEntryTests.RunAll();
 RootRiskTests.RunAll();
 CheckpointTests.RunAll();
 }

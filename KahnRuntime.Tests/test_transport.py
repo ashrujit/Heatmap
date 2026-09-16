@@ -158,7 +158,68 @@ class TransportTests(unittest.TestCase):
             str(REPO / "KahnRuntime.Tests/bin/Release/net10.0/KahnRuntime.Tests.dll"), "validate-plan", str(path)],
             check=True, capture_output=True, text=True)
         parsed = json.loads(result.stdout)
-        self.assertEqual(parsed, {"schema": 2, "roles": ["TrapProbe", "Target"], "authorized": False})
+        self.assertEqual(parsed, {"schema": 2, "roles": ["TrapProbe", "Target"], "authorized": False, "strict_probe_range": True})
+
+    def test_strict_default_and_explicit_continuation(self):
+        self.assertTrue(draft()["execution"]["strict_probe_range"])
+        campaign = draft("--no-strict-probe-range")
+        self.assertFalse(campaign["execution"]["strict_probe_range"])
+        self.assertFalse(ctl.validate_campaign(campaign, allow_stale=True)["strict_probe_range"])
+        path = self.profile / "continuation.json"
+        ctl.atomic_write(path, campaign)
+        result = subprocess.run([str(Path.home() / "AppData/Local/Microsoft/dotnet/dotnet.exe"),
+            str(REPO / "KahnRuntime.Tests/bin/Release/net10.0/KahnRuntime.Tests.dll"), "validate-plan", str(path)],
+            check=True, capture_output=True, text=True)
+        self.assertFalse(json.loads(result.stdout)["strict_probe_range"])
+
+    def test_strict_omitted_is_backwards_compatible(self):
+        campaign = draft()
+        del campaign["execution"]["strict_probe_range"]
+        self.assertTrue(ctl.validate_campaign(campaign, allow_stale=True)["strict_probe_range"])
+
+    def test_strict_rejects_non_booleans_in_both_parsers(self):
+        for invalid in (None, 0, 1, "false", [], {}):
+            campaign = draft()
+            campaign["execution"]["strict_probe_range"] = invalid
+            with self.assertRaises(ctl.KahnctlError): ctl.validate_campaign(campaign, allow_stale=True)
+            path = self.profile / "invalid.json"
+            ctl.atomic_write(path, campaign)
+            result = subprocess.run([str(Path.home() / "AppData/Local/Microsoft/dotnet/dotnet.exe"),
+                str(REPO / "KahnRuntime.Tests/bin/Release/net10.0/KahnRuntime.Tests.dll"), "validate-plan", str(path)],
+                capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_continuation_rejects_legacy_campaign(self):
+        campaign = draft("--no-strict-probe-range")
+        campaign["schema_version"] = 1
+        with self.assertRaises(ctl.KahnctlError): ctl.validate_campaign(campaign, allow_stale=True)
+
+    def test_continuation_dispatch_requires_capable_runtime(self):
+        self.checkpoint.update(campaign_id=None, phase="Ready")
+        ctl.atomic_write(self.profile / "checkpoint.json", self.checkpoint)
+        with self.assertRaisesRegex(ctl.KahnctlError, "does not support"):
+            ctl.prepare_campaign_dispatch(self.profile, draft("--no-strict-probe-range"), argparse.Namespace())
+        self.checkpoint["continuation_entry_supported"] = True
+        ctl.atomic_write(self.profile / "checkpoint.json", self.checkpoint)
+        self.assertIsNone(ctl.prepare_campaign_dispatch(self.profile, draft("--no-strict-probe-range"), argparse.Namespace()))
+
+    def test_new_checkpoint_advertises_continuation(self):
+        subprocess.run([str(Path.home() / "AppData/Local/Microsoft/dotnet/dotnet.exe"),
+            str(REPO / "KahnRuntime.Tests/bin/Release/net10.0/KahnRuntime.Tests.dll"),
+            "write-checkpoint", str(self.profile)], check=True, capture_output=True, text=True)
+        self.assertTrue(ctl.read_checkpoint_if_present(self.profile)["continuation_entry_supported"])
+        self.assertIsNone(ctl.prepare_campaign_dispatch(self.profile, draft("--no-strict-probe-range"), argparse.Namespace()))
+
+    def test_stamp_preserves_or_overrides_entry_mode(self):
+        campaign = draft("--no-strict-probe-range")
+        args = ctl.parser().parse_args(["dispatch-draft", "NQ", "--draft", "unused.json", "--dry-run"])
+        self.assertFalse(ctl.stamp_campaign(args, campaign)["execution"]["strict_probe_range"])
+        args.strict_probe_range = True
+        self.assertTrue(ctl.stamp_campaign(args, campaign)["execution"]["strict_probe_range"])
+
+    def test_preflight_preview_existing_checkpoint(self):
+        ctl.atomic_write(self.profile / "checkpoint.json", self.checkpoint)
+        ctl.dispatch_preflight_preview(self.profile, argparse.Namespace())
 
 
 if __name__ == "__main__": unittest.main()

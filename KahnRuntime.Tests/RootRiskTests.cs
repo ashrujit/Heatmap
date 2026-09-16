@@ -46,6 +46,18 @@ internal static partial class RootRiskTests
         s.Submitted(o, "order", true, false);
         return (s, o);
     }
+    private static void ProbeRangeCannotBeBypassed()
+    {
+        var s = Session(); // Legacy waypoint flag is false; schema-2 ordinary entry must still stay inside.
+        s.Observe(Sample(1, 1, Transition(kind: EvidenceKind.RailHeld)), [Claim()]);
+        var outside = Evidence(price: 451);
+        Check(!s.PolicyCandidates([outside], At(1)).Any(x => x.Decision.Action == PolicyAction.AllowProbe),
+            "legacy waypoint flag bypassed strict range");
+        var inside = Evidence();
+        var decision = Decision(s, inside);
+        Throws(() => s.Reserve(decision, outside, null, At(1)));
+    }
+
     private static void Fill(CampaignSession s, CampaignOrder o, int qty = 2, bool terminal = true, double at = 2)
         => s.Report(o, qty, 408, terminal, At(at), 408);
 
@@ -61,7 +73,7 @@ internal static partial class RootRiskTests
             UnsetDistanceIsNotAnInventedStop, IncompleteSnapshotCannotAuthorize, FailedIdentityCannotRevive,
             BoundRiskSurvivesSnapshotPruning, BindingIsFrozen, ParserValidatesOptionalDistance,
             ChangedIdentityGeometryIsUnknown, OlderEpochSampleCannotRestoreAuthority, UnattestedExternalCannotProbe,
-            OwnerFailureHasIndependentRiskLatch];
+            OwnerFailureHasIndependentRiskLatch, ProbeRangeCannotBeBypassed];
         foreach (var test in tests)
         {
             try { test(); }

@@ -339,6 +339,7 @@ def build_campaign(
     press_preserves_root: bool,
     path_stress_max_qty: int | None,
     notes: str | None,
+    strict_probe_range: bool = True,
 ) -> dict[str, Any]:
     side_text = side.lower()
     if side_text not in {"long", "short"}:
@@ -394,6 +395,7 @@ def build_campaign(
         },
         "execution": {
             "max_retry": max_retry,
+            "strict_probe_range": strict_probe_range,
         },
         "risk": {
             "root_stop_ticks": root_stop_ticks,

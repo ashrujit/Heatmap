@@ -32,6 +32,16 @@ namespace KahnRuntime.Scaling
             ActiveHealth = Health(Active);
         }
 
+        // A continuation used as the first position has no older sponsor to inherit.
+        // Freeze the actual qualifying members immediately; do not count a fictitious add.
+        public void ActivateInitial(ProofGroup proof)
+        {
+            if (proof == null || Active != null || Pending != null || FilledAddCount != 0)
+                throw new InvalidOperationException("Initial sponsor can only be bound once.");
+            Active = proof;
+            LastChange = "continuation_entry_sponsor_active";
+        }
+
         public void FirstFill(ProofGroup child, RepairEpisodeObserver observer, double currentPriceTicks,
             RootEvidenceLedger roots = null, DateTimeOffset now = default)
         {

@@ -57,6 +57,8 @@ namespace KahnRuntime
         public int? CampaignMaxPositionQuantity { get; set; }
         public string CampaignScaleMode { get; set; }
         public int? CampaignMaxRetry { get; set; }
+        public bool ContinuationEntrySupported { get; set; } = true;
+        public bool? CampaignStrictProbeRange { get; set; }
         public bool? PassiveHarvestEnabled { get; set; }
         public PriceRange PassiveHarvestRange { get; set; }
         public int? PassiveHarvestInitialClipQuantity { get; set; }

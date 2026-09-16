@@ -26,6 +26,19 @@ internal static class Program
             Check(!arguments.Contains("--press") && !arguments.Contains("--no-add"), "legacy geography emitted");
             Check(arguments[arguments.ToList().IndexOf("--arena") + 1] == "29000:29200", "wrong envelope");
             Check(arguments.Contains("--dry-run") && !arguments.Contains("--dispatch"), "preview dispatched");
+            var strict = Field<CheckBox>("_strictProbeRange");
+            Check(strict.Checked && arguments.Contains("--strict-probe-range"), "strict entry must default on");
+            Check(typeof(MainForm).GetField("_notes", flags) == null, "notes input still present");
+            var warning = strict.Parent!.Controls.OfType<Label>().Single();
+            Check(warning.Text == "Use only during confirmed drives. NOT to be used during range repairs."
+                && warning.ForeColor == Color.Red, "drive warning missing or changed");
+            strict.Checked = false;
+            command = typeof(MainForm).GetMethod("BuildKahnCommand", flags)!.Invoke(form, [true])!;
+            arguments = (IReadOnlyList<string>)command.GetType().GetProperty("Arguments")!.GetValue(command)!;
+            Check(arguments.Contains("--no-strict-probe-range") && !arguments.Contains("--strict-probe-range"),
+                "continuation opt-in not transported");
+            Check(arguments.Contains("--dry-run") && !arguments.Contains("--dispatch"), "continuation preview dispatched");
+            strict.Checked = true;
             var parser = typeof(MainForm).GetMethod("TryParseSketchImport", BindingFlags.NonPublic | BindingFlags.Static)!;
             string sketch = """{"schema_version":2,"status":"ok","active_draft":{"side":"long","root_range":{"lower":29000,"upper":29010},"harvest_range":{"lower":29190,"upper":29200}}}""";
             object?[] values = [sketch, null];
@@ -49,8 +62,11 @@ internal static class Program
                 form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                 bitmap.Save(Path.Combine(directory, $"dispatcher-{size.Width}.png"));
             }
+            strict.Checked = false;
+            typeof(MainForm).GetMethod("ClearEntryFields", flags)!.Invoke(form, null);
+            Check(strict.Checked, "Clear must restore strict entry");
             form.Close();
-            Console.WriteLine("PASS Dispatcher geometry/import contracts; captured minimum and desktop layouts.");
+            Console.WriteLine("PASS Dispatcher geometry/import/entry-mode contracts; captured minimum and desktop layouts.");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }

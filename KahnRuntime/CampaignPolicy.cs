@@ -127,6 +127,8 @@ namespace KahnRuntime
                     RiskAnchor = decision.RiskAnchor,
                     RiskAnchorEvidenceId = decision.RiskAnchorEvidenceId,
                     RootBinding = decision.RootBinding,
+                    EntryOpportunity = decision.EntryOpportunity,
+                    EntrySponsor = decision.EntrySponsor,
                     ChildRiskAnchor = decision.ChildRiskAnchor,
                     ChildRiskAnchorEvidenceId = decision.ChildRiskAnchorEvidenceId,
                     DelayRiskAnchorPromotionOnAdd = decision.DelayRiskAnchorPromotionOnAdd,
@@ -235,7 +237,9 @@ namespace KahnRuntime
             CampaignWaypoint waypoint = NearestWaypoint(context, evidence, WaypointRole.TrapProbe, 8);
             CampaignWaypoint armedWaypoint = context.Plan.FindWaypoint(context.State.ArmedWaypointId);
             CampaignWaypoint triggerWaypoint = waypoint ?? armedWaypoint;
-            if (triggerWaypoint == null || !PriceGateAllows(triggerWaypoint, evidence))
+            if (triggerWaypoint == null || !PriceGateAllows(triggerWaypoint, evidence)
+                || (context.Plan.SchemaVersion == 2
+                    && (evidence.Price == null || !triggerWaypoint.Range.Contains(evidence.Price.Value))))
                 yield break;
 
             bool sameSide = CampaignSideMath.IsSameSide(context.Plan.Side, evidence.Side);

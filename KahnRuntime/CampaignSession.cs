@@ -6,7 +6,7 @@ using KahnRuntime.Scaling;
 namespace KahnRuntime
 {
     // Worker-owned; no broker dependencies. Reports are cumulative order facts, not position guesses.
-    internal sealed class CampaignSession
+    internal sealed partial class CampaignSession
     {
         public CampaignPlan Plan { get; }
         public CampaignState State { get; }
@@ -74,6 +74,7 @@ namespace KahnRuntime
                     _rootAudit.Enqueue(new(now, "non_owner_failure_ignored", item.EventId, State.RootBinding, null));
                 if (decision.Action != PolicyAction.NoAction) choices.Add((decision, item));
             }
+            RefreshRiskHealth(now);
             if (PendingRiskExit.HasValue && State.HasPosition) choices.Add(PendingRiskExit.Value);
             if (State.HasPosition && Sponsors?.ActiveHealth == GroupHealth.Failed)
             {
@@ -147,6 +148,7 @@ namespace KahnRuntime
             {
                 State.AuthorizeExecution();
                 AuthorizedAt = now;
+                if (!Plan.Execution.StrictProbeRange) Observer.EnableContinuationEntry(now);
             }
             return "accepted";
         }
@@ -250,6 +252,11 @@ namespace KahnRuntime
             RootRiskRecoveryReason = null;
             foreach (CampaignOrder order in _orders.Values.Where(o => o.Decision.Action == PolicyAction.AllowProbe && !o.Terminal))
             {
+                if (order.Decision.EntrySponsor != null)
+                {
+                    RefreshPendingEntrySponsor(order, now);
+                    continue;
+                }
                 RootRiskBinding binding = order.Decision.RootBinding;
                 RootHealth health = Roots.Health(binding, now);
                 if (health == RootHealth.Failed)
@@ -312,12 +319,24 @@ namespace KahnRuntime
         }
 
         public CampaignOrder Reserve(PolicyDecision decision, CampaignEvidence evidence,
-            ScaleReservationSnapshot scale, DateTimeOffset now)
+            ScaleReservationSnapshot scale, DateTimeOffset now, ContinuationEntryContext entryContext = null)
         {
             if (HasUnresolvedOrder || RecoveryReason != null || RootRiskRecoveryReason != null || !State.ExecutionAuthorized)
                 throw new InvalidOperationException("New risk is not admissible.");
-            if (decision.Action == PolicyAction.AllowProbe)
+            if (decision.EntryOpportunity != null)
             {
+                if (decision.Action != PolicyAction.AllowProbe || entryContext == null
+                    || decision.Quantity != Plan.Sizing.ProbeQuantity
+                    || decision.EvidenceId != evidence.EventId || entryContext.At != now)
+                    throw new InvalidOperationException("Invalid continuation entry reservation.");
+                string error = RevalidateContinuation(decision, entryContext);
+                if (error != null) throw new InvalidOperationException(error);
+            }
+            else if (decision.Action == PolicyAction.AllowProbe)
+            {
+                if (Plan.SchemaVersion == 2 && (evidence.Price == null
+                    || !Plan.WaypointsByRole(WaypointRole.TrapProbe).Any(w => w.Range.Contains(evidence.Price.Value))))
+                    throw new InvalidOperationException("Ordinary probe requires price inside the probe range.");
                 if (!Observer.FreshAt(now)) throw new InvalidOperationException("Root observation is recovering.");
                 string error = Roots.Revalidate(decision.RootBinding, now, evidence.Price ?? double.NaN,
                     TickSize, Plan.Risk.MaxRootEntryDistanceTicks);
@@ -339,7 +358,9 @@ namespace KahnRuntime
             var order = new CampaignOrder(Guid.NewGuid().ToString("N"), decision, evidence,
                 scale?.Id, quantity, State.SimulatedPositionQuantity, State.SimulatedAveragePrice ?? 0, now);
             _orders.Add(order.Id, order);
-            if (decision.Action == PolicyAction.AllowProbe)
+            if (decision.EntryOpportunity != null)
+                Observer.MarkReserved(decision.EntryOpportunity, now);
+            else if (decision.Action == PolicyAction.AllowProbe)
                 _reservedRootTriggers.Add((evidence.EvidenceEpoch, evidence.RailId, evidence.Kind, evidence.Timestamp));
             return order;
         }
@@ -416,6 +437,8 @@ namespace KahnRuntime
                 || (filled == order.Filled && average != order.FillAverage))
                 throw new InvalidOperationException("Contradictory cumulative fill report; recovery required.");
             if (order.Terminal && filled == order.Filled) return false;
+            if (order.Decision.EntrySponsor != null)
+                RefreshPendingEntrySponsor(order, now);
             bool first = order.Filled == 0 && filled > 0;
             bool retired = State.IsRetired;
             bool late = order.Terminal && filled > order.Filled;
@@ -440,6 +463,12 @@ namespace KahnRuntime
                 {
                     TickInterval root = Ticks(State.RootRiskAnchor ?? Plan.Arena);
                     Sponsors = new(Plan.Side, root);
+                    if (order.Decision.EntrySponsor != null)
+                    {
+                        Observer.MarkConsumed(order.Decision.EntryOpportunity, now);
+                        Sponsors.ActivateInitial(order.Decision.EntrySponsor);
+                        State.GroupSponsorActive = true;
+                    }
                     _attemptOpen = true;
                     if (!Observer.Suspended && Observer.FreshAt(now) && double.IsFinite(executableTicks))
                         StartRootObservation(order, now, executableTicks, State.ExecutionAttemptCount == 1 && order.CarryLiveEvidence);
@@ -453,17 +482,25 @@ namespace KahnRuntime
             if (added > 0)
             {
                 if (order.Decision.Action == PolicyAction.AllowProbe)
-                    RootEntryDistanceTicks = order.Decision.RootBinding.EntryDistanceTicks(average.Value, TickSize);
+                    RootEntryDistanceTicks = order.Decision.EntrySponsor != null
+                        ? EntrySponsorDistance(order.Decision.EntrySponsor, average.Value / TickSize)
+                        : order.Decision.RootBinding.EntryDistanceTicks(average.Value, TickSize);
                 // Only new fills change exposure; repeated snapshots cannot undo an intervening exit.
                 State.ReconcileFill(positionBefore + added, (valueBefore + addedValue) / (positionBefore + added));
                 if (order.FailureBeforeFill != null)
-                    LatchRootExit(order.Decision.RootBinding, order.FailureBeforeFill);
+                {
+                    if (order.Decision.EntrySponsor != null) LatchEntrySponsorExit(order, now);
+                    else LatchRootExit(order.Decision.RootBinding, order.FailureBeforeFill);
+                }
                 if (order.TrackingLostBeforeFill)
                     LatchTrackingLoss(now, "root_owner_tracking_lost");
             }
             order.Filled = filled;
             order.FillAverage = average;
             order.Terminal |= terminal || filled == order.Quantity;
+            if (order.Terminal && filled == 0 && order.Decision.EntryOpportunity != null)
+                Observer.Miss(order.Decision.EntryOpportunity, now, "entry_zero_fill_no_automatic_retry");
+            RefreshRiskHealth(now);
             State.GroupSponsorActive = Sponsors?.Active != null;
             if (retired && filled > 0)
             {

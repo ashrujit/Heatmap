@@ -80,3 +80,11 @@ workers, short mismatches, repeated long gaps, clock regression, source-time
 freshness, slow-worker catch-up, deterministic LL equivalence, retained baseline
 and exact-owner failure timing through catch-up. The tests do not attest to QT
 provider timestamp quality or private delivery queue completeness.
+
+Continuation-entry regressions cover both directions, strict defaults, fresh
+post-GO-LIVE resolution, pending/partial/late fills, exact group failure and
+identity loss, retry/capacity/location vetoes, and later normal sponsor promotion.
+Transport checks exercise the real plan parser and checkpoint writer, including
+rejection by an older runtime. Dispatcher checks assert default-on selection,
+explicit opt-in transport, the red warning and Clear reset in offline layouts.
+These establish mechanics, not the profitability of drive entries.

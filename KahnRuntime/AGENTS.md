@@ -265,3 +265,25 @@ Stage 1 is live-capable dry-run infrastructure:
 Use shadow mode first when validating a new directive shape. Enable broker
 routing only on a test account and only after confirming `Symbol`, `Market Data
 Symbol`, `Account`, paths, campaign sizing, and runtime quantity cap.
+
+## Optional continuation first entry
+
+- Schema-2 `execution.strict_probe_range` defaults true. Explicit false allows
+  a fresh repaired-continuation opportunity to initiate a flat campaign beyond
+  its probe in the campaign direction, inside the arena and before harvest.
+  Ordinary schema-2 probes remain inside even if an older waypoint omits its
+  price-inside flag; only this continuation path may enter outside. The option
+  does not relax normal probe evidence or classify confirmed drives.
+- Reuse the scale observer without inventing inventory: GO LIVE enables flat
+  discovery, but an actual first fill alone starts an attempt. Repair resolution
+  and opportunity must postdate authorization; completed WATCH proof cannot be
+  banked. Normal expiry, retry, capacity, policy and reconciliation gates apply.
+- This is a probe-sized initial fill, not an add. Its exact qualifying sponsor
+  group is ACTIVE immediately because there is no older owner to protect it.
+  Group envelopes are diagnostic only; holes are never owned and failed members
+  cannot be rescued by neighbors. Later adds keep ordinary delayed promotion and
+  weighted BE behavior. Pending/late fills retain typed failure and identity-loss
+  exits even if cancellation wins the race only partially.
+- Keep this option immutable per campaign and advertised in the checkpoint.
+  Rollback of binaries uses the existing stopped/flat release procedure; do not
+  reinterpret an in-position continuation campaign with an older runtime.

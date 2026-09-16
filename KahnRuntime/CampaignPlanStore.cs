@@ -146,6 +146,8 @@ namespace KahnRuntime
             {
                 throw Invalid("sizing.add_quantity must be positive when scale_mode is scale_allowed");
             }
+            if (schemaVersion != 2 && !plan.Execution.StrictProbeRange)
+                throw Invalid("continuation first entry requires schema 2");
             ValidateObjectiveRanges(plan);
 
             foreach (CampaignWaypoint waypoint in plan.Waypoints)
@@ -217,10 +219,14 @@ namespace KahnRuntime
 
         private static CampaignExecution ParseExecution(JsonElement? element, JsonElement root)
         {
+            if (element.HasValue && element.Value.TryGetProperty("strict_probe_range", out var strict)
+                && strict.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw Invalid("strict_probe_range must be a boolean");
             int maxRetry = OptionalPositiveInt(root, "max_retry", 3);
             if (element.HasValue)
                 maxRetry = OptionalPositiveInt(element.Value, "max_retry", maxRetry);
-            return new CampaignExecution { MaxRetry = maxRetry };
+            return new CampaignExecution { MaxRetry = maxRetry,
+                StrictProbeRange = !element.HasValue || OptionalBool(element.Value, "strict_probe_range", true) };
         }
 
         private static CampaignRisk ParseRisk(JsonElement? element)

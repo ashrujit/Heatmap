@@ -27,7 +27,7 @@ internal sealed class MainForm : Form
     private TextBox _maxRetry = null!;
     private TextBox _ttlMinutes = null!;
     private CheckBox _retireExistingIfFlat = null!;
-    private TextBox _notes = null!;
+    private CheckBox _strictProbeRange = null!;
     private Label _statusLine = null!;
     private TextBox _output = null!;
 
@@ -218,21 +218,27 @@ internal sealed class MainForm : Form
         _toolTip.SetToolTip(_retireExistingIfFlat,
             "Allows replacement only when the existing Kahn campaign is Ready and flat.");
 
-        AddLabel(form, "Notes", 0, 4);
-        _notes = new TextBox
+        var entryMode = new FlowLayoutPanel
         {
-            Width = 300,
-            Height = 44,
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            PlaceholderText = "notes",
-            BackColor = Palette.Input,
-            ForeColor = Palette.Fore,
-            BorderStyle = BorderStyle.FixedSingle,
-            Margin = new Padding(0, 2, 8, 6),
+            AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            BackColor = Palette.Back, Margin = new Padding(0, 2, 0, 6),
         };
-        form.Controls.Add(_notes, 1, 4);
-        form.SetColumnSpan(_notes, 3);
+        _strictProbeRange = new CheckBox
+        {
+            Text = "Strict probe range", Checked = true, AutoSize = true,
+            BackColor = Palette.Back, ForeColor = Palette.Fore,
+        };
+        _toolTip.SetToolTip(_strictProbeRange,
+            "Checked: first entry stays in the probe range. Unchecked: qualified continuation may supply the first entry within the arena.");
+        entryMode.Controls.Add(_strictProbeRange);
+        entryMode.Controls.Add(new Label
+        {
+            Text = "Use only during confirmed drives. NOT to be used during range repairs.",
+            ForeColor = Color.Red, BackColor = Palette.Back, AutoSize = true,
+            MaximumSize = new Size(550, 0), Margin = new Padding(0, 2, 0, 0),
+        });
+        form.Controls.Add(entryMode, 0, 4);
+        form.SetColumnSpan(entryMode, 6);
 
         _preview = new Label
         {
@@ -300,6 +306,7 @@ internal sealed class MainForm : Form
         _shortSide.CheckedChanged += (_, _) => UpdatePreview();
         _probeOnlyMode.CheckedChanged += (_, _) => UpdatePreview();
         _scaleMode.CheckedChanged += (_, _) => UpdatePreview();
+        _strictProbeRange.CheckedChanged += (_, _) => UpdatePreview();
         _rootRange.TextChanged += (_, _) => UpdatePreview();
         _harvestRange.TextChanged += (_, _) => UpdatePreview();
         _baseQuantity.TextChanged += (_, _) => UpdatePreview();
@@ -428,7 +435,7 @@ internal sealed class MainForm : Form
 
         List<string> args = RuntimeCommand("cancel");
         args.Add("--reason");
-        args.Add(BuildNotesOrDefault("KahnDispatcher CANCEL"));
+        args.Add("KahnDispatcher CANCEL");
         CommandResult result = await RunCommandAsync("cancel", args, silent: false);
         ShowOutput(OutputLabel("cancel", result.ExitCode), FormatCommandResult("cancel", result));
         if (result.ExitCode == 0)
@@ -482,7 +489,7 @@ internal sealed class MainForm : Form
 
         List<string> args = RuntimeCommand("flat");
         args.Add("--reason");
-        args.Add(BuildNotesOrDefault("KahnDispatcher FLAT"));
+        args.Add("KahnDispatcher FLAT");
         CommandResult result = await RunCommandAsync("flat", args, silent: false);
         ShowOutput(OutputLabel("flat", result.ExitCode), FormatCommandResult("flat", result));
         if (result.ExitCode == 0)
@@ -546,7 +553,8 @@ internal sealed class MainForm : Form
         args.Add(ParseIntBox(_ttlMinutes, "ttl", 1, 480).ToString(CultureInfo.InvariantCulture));
         args.Add("--summary-only");
 
-        string notes = BuildNotes();
+        args.Add(_strictProbeRange.Checked ? "--strict-probe-range" : "--no-strict-probe-range");
+        string notes = $"KahnDispatcher {_settings.ActiveProfile}";
         if (!string.IsNullOrWhiteSpace(notes))
         {
             args.Add("--notes");
@@ -619,7 +627,7 @@ internal sealed class MainForm : Form
                 : command.OutgoingMax.ToString(CultureInfo.InvariantCulture);
             _preview.Text =
                 $"{command.Side.ToUpperInvariant()} trap_probe {command.Root} -> target {command.Harvest} | WATCH | "
-                + $"arena {command.Arena} | {command.Mode} | "
+                + $"arena {command.Arena} | {command.Mode} | {(_strictProbeRange.Checked ? "strict probe" : "continuation entry")} | "
                 + $"base {command.BaseQty} scale {command.ScaleQty} max {maxText}";
         }
         catch (InputException ex)
@@ -799,6 +807,7 @@ internal sealed class MainForm : Form
         {
             lines.Add($"Campaign: {Str(summary, "id")} | {Str(summary, "status")} | {Str(summary, "side")}");
             lines.Add($"Window: {Str(summary, "not_before")} -> {Str(summary, "expires_at")}");
+            lines.Add($"Entry: {(Str(summary, "strict_probe_range") == "False" || Str(summary, "strict_probe_range") == "false" ? "continuation allowed" : "strict probe range")}");
             lines.Add($"Sizing: {Str(summary, "scale_mode")} base {Str(summary, "probe_quantity")} add {Str(summary, "add_quantity")} max {Str(summary, "max_position_quantity")} retry {Str(summary, "max_retry")}");
             lines.Add($"Waypoints: {Str(summary, "waypoint_count")}");
         }
@@ -844,7 +853,7 @@ internal sealed class MainForm : Form
         _maxRetry.Text = Clamp(_settings.MaxRetry, 1, 20).ToString(CultureInfo.InvariantCulture);
         _ttlMinutes.Text = Clamp(_settings.TtlMinutes, 1, 480).ToString(CultureInfo.InvariantCulture);
         _retireExistingIfFlat.Checked = _settings.RetireExistingIfFlat;
-        _notes.Text = _settings.Notes;
+        _strictProbeRange.Checked = true; // Drive permission is deliberately not persisted.
 
         if (_settings.Side.Equals("short", StringComparison.OrdinalIgnoreCase))
             _shortSide.Checked = true;
@@ -872,7 +881,7 @@ internal sealed class MainForm : Form
         _settings.MaxRetry = ReadIntOr(_maxRetry, _settings.MaxRetry, 1, 20);
         _settings.TtlMinutes = ReadIntOr(_ttlMinutes, _settings.TtlMinutes, 1, 480);
         _settings.RetireExistingIfFlat = _retireExistingIfFlat.Checked;
-        _settings.Notes = _notes.Text;
+
         _settings.Save();
     }
 
@@ -1081,21 +1090,8 @@ internal sealed class MainForm : Form
         _settings.MiddleRange = "";
         _rootRange.Clear();
         _harvestRange.Clear();
-        _notes.Clear();
+        _strictProbeRange.Checked = true;
         UpdatePreview();
-    }
-
-    private string BuildNotes()
-    {
-        string notes = _notes.Text.Trim();
-        string source = $"KahnDispatcher {_settings.ActiveProfile}";
-        return string.IsNullOrWhiteSpace(notes) ? source : $"{source} | {notes}";
-    }
-
-    private string BuildNotesOrDefault(string fallback)
-    {
-        string notes = _notes.Text.Trim();
-        return string.IsNullOrWhiteSpace(notes) ? fallback : notes;
     }
 
     private void SetBusy(bool busy, string label)
@@ -1685,7 +1681,7 @@ internal sealed class DispatcherSettings
     public int MaxRetry { get; set; } = 3;
     public int TtlMinutes { get; set; } = 30;
     public bool RetireExistingIfFlat { get; set; } = true;
-    public string Notes { get; set; } = "";
+
 
     public static DispatcherSettings Load()
     {

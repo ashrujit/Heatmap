@@ -178,6 +178,7 @@ namespace KahnRuntime
 
     internal sealed class CampaignExecution
     {
+        public bool StrictProbeRange { get; init; } = true;
         public int MaxRetry { get; init; } = 3;
     }
 
@@ -401,6 +402,8 @@ namespace KahnRuntime
 
     internal sealed class PolicyDecision
     {
+        public Scaling.ScaleOpportunity EntryOpportunity { get; init; }
+        public Scaling.ProofGroup EntrySponsor { get; init; }
         public RootRiskBinding RootBinding { get; init; }
         public PolicyAction Action { get; init; }
         public string Policy { get; init; }
@@ -420,7 +423,7 @@ namespace KahnRuntime
 
         public string DedupeKey
             => $"{Action}:{Policy}:{ReasonCode}:{WaypointId}:{RiskAnchor}:{ChildRiskAnchor}:{ProtectionPrice}"
-                + (Policy == "repair_episode" ? $":{EvidenceId}" : "");
+                + (Policy is "repair_episode" or "continuation_entry" ? $":{EvidenceId}" : "");
 
         public static PolicyDecision None(string policy, CampaignEvidence evidence)
             => new()
